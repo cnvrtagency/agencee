@@ -54,8 +54,7 @@ function extractContent(html: string): string {
     .replace(/\s+/g, ' ')
     .trim()
 
-  // Return up to 3000 characters of meaningful content
-  return text.slice(0, 3000)
+  return text.slice(0, 20000)
 }
 
 function extractHeadings(html: string): string[] {

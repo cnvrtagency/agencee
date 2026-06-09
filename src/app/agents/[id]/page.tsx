@@ -26,14 +26,27 @@ function buildSystemPrompt(agent: Agent, clients: Client[], plannedTasks: Planne
   if (agent.boundaries?.trim()) parts.push(`WHAT YOU NEVER DO:\n${agent.boundaries}`)
   if (agent.instructions?.trim()) parts.push(`ADDITIONAL INSTRUCTIONS:\n${agent.instructions}`)
 
-  parts.push(`GITHUB CAPABILITY:
+  parts.push(`HOW TO WORK LIKE A PROFESSIONAL:
+You are not a passive assistant. Think, investigate, and act like a real SEO professional would.
+
+When Dan starts a conversation about a client, build context before offering opinions:
+- Call audit_site first to understand what is broken or missing
+- Call search_history before planning any new content to know what angles are already covered
+- Call read_page when you need to understand what a specific live page actually says
+- Call read_file when you need the source code before editing it
+
+When you identify an issue, fix it — do not just report it. When Dan asks you to add a blog post, do not ask for permission at each step. Read an existing post to learn the format, write the new one, commit it, and report back what you did.
+
+Think in terms of the bigger picture: keyword gaps, content clusters, internal linking, page quality, site structure. Make recommendations that move the needle.
+
+GITHUB CAPABILITY:
 You have direct read and write access to each client's GitHub repo.
 
-read_file: Read any file from the repo. Always do this before editing an existing file so you make precise, targeted changes rather than overwriting blindly.
+read_file: Read any file from the repo. Always do this before editing an existing file.
 
-write_file: Write or update any file in the repo. Use this to add new blog posts, edit existing page content, update metadata, fix SEO issues, or change site structure. Provide a clear commit message. After writing, confirm to Dan exactly what changed and why.
+write_file: Write or update any file. Add blog posts, edit pages, fix SEO issues, change structure. Provide a clear commit message. Report back exactly what changed and why.
 
-Work methodically: read first, understand the file format and conventions, then write. If adding a blog post, read an existing one first so yours matches the exact format.
+Work methodically: read first, understand the format, then write. If adding a blog post, read an existing one so yours matches exactly.
 
 PLANNED TASKS CAPABILITY:
 You can create and update planned tasks that appear in the scheduler. When the user asks you to plan, save, or create a future task — or when you have agreed on a content piece — call the save_planned_task function with all the details. When the user asks to update an existing planned task, call update_planned_task with the task id and the fields to change. Always confirm what you saved or updated in your response, listing the key details so the user can verify.
@@ -145,6 +158,41 @@ const TOOLS = [
         file_path: { type: 'string', description: 'The file path relative to repo root, e.g. src/app/page.tsx or content/blog/my-post.mdx' },
       },
       required: ['client_name', 'file_path'],
+    },
+  },
+  {
+    name: 'audit_site',
+    description: 'Run a full SEO audit on a client\'s crawled site. Returns structured issues: pages missing meta descriptions, thin content, keyword cannibalisation (multiple pages targeting the same keyword), orphan pages with no internal links pointing to them, and pages with no H1. Call this at the start of any strategy conversation to understand the current state before making recommendations.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        client_name: { type: 'string', description: 'The client to audit' },
+      },
+      required: ['client_name'],
+    },
+  },
+  {
+    name: 'read_page',
+    description: 'Read the full crawled content of a specific live page by URL. Use this when you need to deeply analyse what a page actually says — for content gap analysis, editorial improvements, or understanding what is already covered before writing something new.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        client_name: { type: 'string', description: 'The client' },
+        url: { type: 'string', description: 'The full URL of the page to read' },
+      },
+      required: ['client_name', 'url'],
+    },
+  },
+  {
+    name: 'search_history',
+    description: 'Search the content history for a client to find previously published pieces on a topic or keyword. Always call this before planning or writing new content to avoid repeating angles and to find internal linking opportunities.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        client_name: { type: 'string', description: 'The client' },
+        query: { type: 'string', description: 'Topic, keyword, or theme to search for' },
+      },
+      required: ['client_name', 'query'],
     },
   },
   {
@@ -308,6 +356,84 @@ export default function AgentPage() {
         if (data.error) return `Could not read file: ${data.error}`
         return `File: ${toolInput.file_path}\n\n${data.content}`
       } catch { return 'Failed to read file.' }
+    }
+
+    if (toolName === 'audit_site') {
+      const client = clients.find(c => c.name.toLowerCase().includes((toolInput.client_name || '').toLowerCase()))
+      if (!client) return `Could not find client matching "${toolInput.client_name}".`
+      const pages = sitePages[client.id] || []
+      if (pages.length === 0) return 'No crawled pages found for this client. Run a site crawl first.'
+
+      const issues: string[] = []
+
+      // Missing meta descriptions
+      const noMeta = pages.filter(p => !p.meta_description)
+      if (noMeta.length > 0) issues.push(`MISSING META DESCRIPTIONS (${noMeta.length} pages):\n${noMeta.map(p => `  ${p.url}`).join('\n')}`)
+
+      // Missing H1
+      const noH1 = pages.filter(p => !p.h1)
+      if (noH1.length > 0) issues.push(`MISSING H1 (${noH1.length} pages):\n${noH1.map(p => `  ${p.url}`).join('\n')}`)
+
+      // Thin content (under 300 words)
+      const thin = pages.filter(p => p.word_count !== null && p.word_count < 300)
+      if (thin.length > 0) issues.push(`THIN CONTENT under 300 words (${thin.length} pages):\n${thin.map(p => `  ${p.url} — ${p.word_count} words`).join('\n')}`)
+
+      // Keyword cannibalisation — fetch keyword_banks to compare
+      const { data: keywords } = await supabase.from('keyword_banks').select('keyword,content_targeting_this').eq('client_id', client.id)
+      if (keywords && keywords.length > 0) {
+        const targeted = keywords.filter(k => k.content_targeting_this)
+        const urlCounts: Record<string, string[]> = {}
+        for (const k of targeted) {
+          if (!urlCounts[k.content_targeting_this]) urlCounts[k.content_targeting_this] = []
+          urlCounts[k.content_targeting_this].push(k.keyword)
+        }
+        // Pages targeting more than one keyword (possible cannibalisation)
+        const cannibalised = Object.entries(urlCounts).filter(([, kws]) => kws.length > 3)
+        if (cannibalised.length > 0) issues.push(`POSSIBLE KEYWORD CANNIBALISATION (pages targeting many keywords):\n${cannibalised.map(([url, kws]) => `  ${url} — ${kws.join(', ')}`).join('\n')}`)
+
+        // Keywords with no content assigned
+        const untargeted = keywords.filter(k => !k.content_targeting_this)
+        if (untargeted.length > 0) issues.push(`KEYWORDS WITH NO CONTENT (${untargeted.length}):\n${untargeted.map(k => `  ${k.keyword}`).join('\n')}`)
+      }
+
+      // Summary stats
+      const avgWords = pages.length > 0 ? Math.round(pages.reduce((a, p) => a + (p.word_count || 0), 0) / pages.length) : 0
+      const summary = `AUDIT SUMMARY — ${client.name}\nPages crawled: ${pages.length} | Avg word count: ${avgWords} | Issues found: ${issues.length > 0 ? issues.reduce((a, i) => a + i.split('\n').length, 0) : 0}`
+
+      return [summary, ...issues].join('\n\n') || `No critical issues found across ${pages.length} pages.`
+    }
+
+    if (toolName === 'read_page') {
+      const client = clients.find(c => c.name.toLowerCase().includes((toolInput.client_name || '').toLowerCase()))
+      if (!client) return `Could not find client matching "${toolInput.client_name}".`
+      const { data } = await supabase.from('site_pages').select('url,title,h1,meta_description,word_count,content,content_summary,internal_links').eq('client_id', client.id).eq('url', toolInput.url).single()
+      if (!data) return `Page not found in crawl data: ${toolInput.url}. Try running a fresh crawl.`
+      return [
+        `URL: ${data.url}`,
+        `Title: ${data.title || 'none'}`,
+        `H1: ${data.h1 || 'none'}`,
+        `Meta description: ${data.meta_description || 'MISSING'}`,
+        `Word count: ${data.word_count || 0}`,
+        `Internal links: ${(data.internal_links || []).join(', ') || 'none'}`,
+        `\nFull content:\n${data.content || 'No content stored. Re-crawl to capture full content.'}`,
+      ].join('\n')
+    }
+
+    if (toolName === 'search_history') {
+      const client = clients.find(c => c.name.toLowerCase().includes((toolInput.client_name || '').toLowerCase()))
+      if (!client) return `Could not find client matching "${toolInput.client_name}".`
+      const query = (toolInput.query || '').toLowerCase()
+      const { data } = await supabase.from('content_history').select('title,url,primary_keyword,summary,published_at,performance_notes').eq('client_id', client.id).order('published_at', { ascending: false })
+      if (!data || data.length === 0) return `No content history found for ${client.name}.`
+      const matches = data.filter(h =>
+        (h.title || '').toLowerCase().includes(query) ||
+        (h.primary_keyword || '').toLowerCase().includes(query) ||
+        (h.summary || '').toLowerCase().includes(query)
+      )
+      if (matches.length === 0) return `No published content matching "${toolInput.query}" found for ${client.name}. Total history: ${data.length} pieces.`
+      return `Content history matching "${toolInput.query}" for ${client.name}:\n\n` + matches.map(h =>
+        `Title: ${h.title}\nKeyword: ${h.primary_keyword || 'not set'}\nURL: ${h.url || 'not published'}\nPublished: ${h.published_at ? new Date(h.published_at).toLocaleDateString('en-GB') : 'unknown'}\nAngle: ${h.summary || 'no summary'}\nPerformance: ${h.performance_notes || 'no data yet'}`
+      ).join('\n\n---\n\n')
     }
 
     if (toolName === 'write_file') {
