@@ -11,6 +11,10 @@ const S = {
   label: { fontSize: 11, color: '#8B91A8', textTransform: 'uppercase' as const, letterSpacing: '1px', marginBottom: 8 },
 }
 
+function slugify(str: string) {
+  return str.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+}
+
 export default function OutputDetail() {
   const { id } = useParams<{ id: string }>()
   const router = useRouter()
@@ -21,12 +25,19 @@ export default function OutputDetail() {
   const [notes, setNotes] = useState('')
   const [showApprove, setShowApprove] = useState(false)
   const [copied, setCopied] = useState(false)
+  const [showPublish, setShowPublish] = useState(false)
+  const [publishing, setPublishing] = useState(false)
+  const [publishPath, setPublishPath] = useState('')
+  const [publishError, setPublishError] = useState('')
+  const [publishedUrl, setPublishedUrl] = useState('')
 
   useEffect(() => {
     if (!id) return
     supabase.from('content_outputs').select('*, client_profiles(*)').eq('id', id).single().then(({ data }) => {
       setOutput(data)
       setNotes(data?.notes || '')
+      if (data?.published_url) setPublishedUrl(data.published_url)
+      if (data?.primary_keyword) setPublishPath(`content/blog/${slugify(data.primary_keyword)}.md`)
     })
   }, [id])
 
@@ -44,6 +55,34 @@ export default function OutputDetail() {
     })
     setApproving(false)
     router.push('/outputs')
+  }
+
+  async function publish() {
+    if (!output || !publishPath.trim()) return
+    setPublishing(true); setPublishError('')
+    const slug = publishPath.trim()
+    const frontmatter = [
+      '---',
+      `title: "${(output.title || output.primary_keyword || 'Draft').replace(/"/g, "'")}"`,
+      output.meta_description ? `description: "${output.meta_description.replace(/"/g, "'")}"` : '',
+      output.primary_keyword ? `keyword: "${output.primary_keyword}"` : '',
+      `date: "${new Date().toISOString().split('T')[0]}"`,
+      '---',
+    ].filter(Boolean).join('\n')
+    const fileContent = `${frontmatter}\n\n${output.content}`
+    const commitMessage = `Add blog post: ${output.title || output.primary_keyword || slug}`
+    try {
+      const res = await fetch('/api/github', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ client_id: output.client_id, path: slug, content: fileContent, message: commitMessage }),
+      })
+      const data = await res.json()
+      if (!res.ok || !data.success) { setPublishError(data.error || 'Commit failed'); setPublishing(false); return }
+      await supabase.from('content_outputs').update({ published_url: data.url }).eq('id', id)
+      setPublishedUrl(data.url); setShowPublish(false)
+    } catch (e: any) { setPublishError(e.message || 'Something went wrong') }
+    setPublishing(false)
   }
 
   async function copy() {
@@ -64,6 +103,11 @@ export default function OutputDetail() {
           <button style={{ ...S.btnSecondary, padding: '7px 14px', fontSize: 13 }} onClick={copy}>{copied ? 'Copied!' : 'Copy content'}</button>
           {!output.approved && <button style={S.btn} onClick={() => setShowApprove(s => !s)}>Approve & log</button>}
           {output.approved && <span style={{ fontSize: 13, color: '#34D399', fontWeight: 500 }}>✓ Approved</span>}
+          {(output as any).client_profiles?.github_repo && (
+            publishedUrl
+              ? <a href={publishedUrl} target="_blank" rel="noopener noreferrer" style={{ fontSize: 13, color: '#34D399', fontWeight: 500, textDecoration: 'none' }}>↗ Published</a>
+              : <button style={{ ...S.btnSecondary, padding: '7px 14px', fontSize: 13 }} onClick={() => setShowPublish(s => !s)}>Publish to repo</button>
+          )}
         </div>
 
         <div style={S.panel}>
@@ -105,6 +149,24 @@ export default function OutputDetail() {
             <button style={S.btn} onClick={approve} disabled={approving || !summary.trim()}>
               {approving ? 'Approving...' : 'Confirm approval'}
             </button>
+          </div>
+        )}
+
+        {showPublish && (
+          <div style={{ ...S.panel, border: '1px solid #34D39930', background: '#34D39908' }}>
+            <h3 style={{ fontSize: 16, fontWeight: 600, color: '#E2E4EE', marginBottom: 8 }}>Publish to repo</h3>
+            <p style={{ fontSize: 13, color: '#8B91A8', marginBottom: 20, lineHeight: 1.6 }}>Commits the draft as a markdown file to the client's GitHub repo. The file path is relative to the repo root.</p>
+            <div style={{ marginBottom: 20 }}>
+              <label style={S.label}>File path in repo</label>
+              <input value={publishPath} onChange={e => setPublishPath(e.target.value)} placeholder="e.g. next-public/content/blog/my-post.md" style={{ fontFamily: '"JetBrains Mono",monospace', fontSize: 13 }} />
+            </div>
+            {publishError && <div style={{ fontSize: 13, color: '#F87171', marginBottom: 14 }}>{publishError}</div>}
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button style={S.btn} onClick={publish} disabled={publishing || !publishPath.trim()}>
+                {publishing ? 'Committing...' : 'Commit to GitHub'}
+              </button>
+              <button style={S.btnSecondary} onClick={() => { setShowPublish(false); setPublishError('') }}>Cancel</button>
+            </div>
           </div>
         )}
       </div>

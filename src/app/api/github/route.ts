@@ -90,6 +90,61 @@ export async function POST(req: NextRequest) {
   }
 }
 
+export async function PUT(req: NextRequest) {
+  try {
+    const { client_id, path, content, message } = await req.json()
+    if (!client_id || !path || !content) return NextResponse.json({ error: 'client_id, path and content required' }, { status: 400 })
+
+    const { data: client } = await supabase
+      .from('client_profiles')
+      .select('github_repo, github_branch, github_token')
+      .eq('id', client_id)
+      .single()
+
+    if (!client?.github_repo || !client?.github_token) return NextResponse.json({ error: 'GitHub not configured' }, { status: 400 })
+
+    const parsed = parseRepoUrl(client.github_repo)
+    if (!parsed) return NextResponse.json({ error: 'Invalid repo URL' }, { status: 400 })
+
+    const branch = client.github_branch || 'main'
+    const token = client.github_token
+    const apiUrl = `https://api.github.com/repos/${parsed.owner}/${parsed.repo}/contents/${path}`
+
+    // Check if file already exists (need its SHA to update)
+    let sha: string | undefined
+    const existingRes = await fetch(`${apiUrl}?ref=${branch}`, {
+      headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github.v3+json' },
+    })
+    if (existingRes.ok) {
+      const existing = await existingRes.json()
+      sha = existing.sha
+    }
+
+    const body: Record<string, string> = {
+      message: message || `Add ${path}`,
+      content: Buffer.from(content).toString('base64'),
+      branch,
+    }
+    if (sha) body.sha = sha
+
+    const res = await fetch(apiUrl, {
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github.v3+json', 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    if (!res.ok) {
+      const err = await res.json()
+      throw new Error(err.message || `GitHub API error ${res.status}`)
+    }
+    const data = await res.json()
+    const fileUrl = data.content?.html_url || `https://github.com/${parsed.owner}/${parsed.repo}/blob/${branch}/${path}`
+    return NextResponse.json({ success: true, url: fileUrl, sha: data.content?.sha })
+  } catch (err: any) {
+    console.error('github PUT error:', err.message)
+    return NextResponse.json({ error: err.message }, { status: 500 })
+  }
+}
+
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url)
