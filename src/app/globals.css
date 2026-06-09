@@ -1,0 +1,58 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg: #0D0F14;
+  --color-surface: #141720;
+  --color-surface-2: #1C1F2A;
+  --color-border: #252836;
+  --color-text: #E2E4EE;
+  --color-text-2: #8B91A8;
+  --color-accent: #6366F1;
+  --color-green: #34D399;
+  --color-amber: #F59E0B;
+  --color-red: #F87171;
+  --font-sans: 'Inter', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+  --font-display: 'Instrument Serif', serif;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: #0D0F14;
+  color: #E2E4EE;
+  font-family: 'Inter', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #252836; border-radius: 3px; }
+
+input, textarea, select {
+  font-family: inherit;
+  background: #1C1F2A;
+  border: 1px solid #252836;
+  color: #E2E4EE;
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 14px;
+  outline: none;
+  width: 100%;
+}
+
+input:focus, textarea:focus, select:focus {
+  border-color: #6366F1;
+}
+
+input::placeholder, textarea::placeholder {
+  color: #8B91A8;
+}
+
+select option {
+  background: #1C1F2A;
+}
