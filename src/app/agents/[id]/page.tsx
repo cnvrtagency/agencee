@@ -26,7 +26,16 @@ function buildSystemPrompt(agent: Agent, clients: Client[], plannedTasks: Planne
   if (agent.boundaries?.trim()) parts.push(`WHAT YOU NEVER DO:\n${agent.boundaries}`)
   if (agent.instructions?.trim()) parts.push(`ADDITIONAL INSTRUCTIONS:\n${agent.instructions}`)
 
-  parts.push(`PLANNED TASKS CAPABILITY:
+  parts.push(`GITHUB CAPABILITY:
+You have direct read and write access to each client's GitHub repo.
+
+read_file: Read any file from the repo. Always do this before editing an existing file so you make precise, targeted changes rather than overwriting blindly.
+
+write_file: Write or update any file in the repo. Use this to add new blog posts, edit existing page content, update metadata, fix SEO issues, or change site structure. Provide a clear commit message. After writing, confirm to Dan exactly what changed and why.
+
+Work methodically: read first, understand the file format and conventions, then write. If adding a blog post, read an existing one first so yours matches the exact format.
+
+PLANNED TASKS CAPABILITY:
 You can create and update planned tasks that appear in the scheduler. When the user asks you to plan, save, or create a future task — or when you have agreed on a content piece — call the save_planned_task function with all the details. When the user asks to update an existing planned task, call update_planned_task with the task id and the fields to change. Always confirm what you saved or updated in your response, listing the key details so the user can verify.
 
 When confirming a saved task, format it clearly:
@@ -128,7 +137,7 @@ const TOOLS = [
   },
   {
     name: 'read_file',
-    description: 'Read the full content of a specific file from the client codebase on GitHub. Use this when you need to study the actual code or content of a specific page or component.',
+    description: 'Read the full content of a specific file from the client codebase on GitHub. Use this when you need to study the actual code or content of a specific page or component before making changes.',
     input_schema: {
       type: 'object',
       properties: {
@@ -136,6 +145,20 @@ const TOOLS = [
         file_path: { type: 'string', description: 'The file path relative to repo root, e.g. src/app/page.tsx or content/blog/my-post.mdx' },
       },
       required: ['client_name', 'file_path'],
+    },
+  },
+  {
+    name: 'write_file',
+    description: 'Write or update a file in the client\'s GitHub repo. Use this to add blog posts, edit existing pages, update content, or make structural changes. Always read the file first if it already exists so you can make precise edits rather than overwriting the whole thing blindly. Provide a clear commit message describing what changed and why.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        client_name: { type: 'string', description: 'The client whose repo to write to' },
+        file_path: { type: 'string', description: 'The file path relative to repo root' },
+        content: { type: 'string', description: 'The full file content to write' },
+        commit_message: { type: 'string', description: 'A clear description of what was changed and why' },
+      },
+      required: ['client_name', 'file_path', 'content', 'commit_message'],
     },
   },
 ]
@@ -285,6 +308,26 @@ export default function AgentPage() {
         if (data.error) return `Could not read file: ${data.error}`
         return `File: ${toolInput.file_path}\n\n${data.content}`
       } catch { return 'Failed to read file.' }
+    }
+
+    if (toolName === 'write_file') {
+      const client = clients.find(c => c.name.toLowerCase().includes((toolInput.client_name || '').toLowerCase()))
+      if (!client) return `Could not find client matching "${toolInput.client_name}".`
+      try {
+        const res = await fetch('/api/github', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            client_id: client.id,
+            path: toolInput.file_path,
+            content: toolInput.content,
+            message: toolInput.commit_message,
+          }),
+        })
+        const data = await res.json()
+        if (data.error) return `Failed to write file: ${data.error}`
+        return `File written successfully: ${toolInput.file_path}\nCommit: ${toolInput.commit_message}\nURL: ${data.url}`
+      } catch { return 'Failed to write file.' }
     }
 
     return 'Unknown tool.'
