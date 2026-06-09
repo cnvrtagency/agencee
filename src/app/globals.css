@@ -1,58 +1,101 @@
 @import "tailwindcss";
 
-@theme {
-  --color-bg: #0D0F14;
-  --color-surface: #141720;
-  --color-surface-2: #1C1F2A;
-  --color-border: #252836;
-  --color-text: #E2E4EE;
-  --color-text-2: #8B91A8;
-  --color-accent: #6366F1;
-  --color-green: #34D399;
-  --color-amber: #F59E0B;
-  --color-red: #F87171;
-  --font-sans: 'Inter', system-ui, sans-serif;
-  --font-mono: 'JetBrains Mono', monospace;
-  --font-display: 'Instrument Serif', serif;
+/* ─── Design tokens ─────────────────────────────────────────
+   All colours, fonts and radii live here.
+   To white-label: edit lib/theme.ts and these variables.
+   ────────────────────────────────────────────────────────── */
+:root {
+  --bg:           #030507;
+  --surface:      #0C0F16;
+  --surface-2:    #131820;
+  --surface-3:    #181D28;
+  --border:       rgba(255,255,255,0.07);
+  --border-mid:   rgba(255,255,255,0.11);
+
+  --text:         #EDEEF2;
+  --text-muted:   #6B7280;
+  --text-dim:     #374151;
+
+  --accent:       #6366F1;
+  --accent-hover: #818CF8;
+  --accent-glow:  rgba(99,102,241,0.15);
+  --accent-bg:    rgba(99,102,241,0.08);
+
+  --green:        #22C55E;
+  --green-bg:     rgba(34,197,94,0.1);
+  --amber:        #F59E0B;
+  --amber-bg:     rgba(245,158,11,0.1);
+  --red:          #EF4444;
+  --red-bg:       rgba(239,68,68,0.1);
+
+  --font-sans:    "Inter", system-ui, sans-serif;
+  --font-mono:    "JetBrains Mono", monospace;
+  --font-display: "Calistoga", serif;
+
+  --radius:       8px;
+  --radius-md:    10px;
+  --radius-lg:    14px;
+  --ease:         cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-* {
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
+@theme {
+  --color-bg:       #030507;
+  --color-surface:  #0C0F16;
+  --color-accent:   #6366F1;
+  --color-text:     #EDEEF2;
+  --font-sans:      "Inter", system-ui, sans-serif;
+  --font-mono:      "JetBrains Mono", monospace;
+  --font-display:   "Calistoga", serif;
 }
+
+/* ─── Reset ─────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html { color-scheme: dark; }
 
 body {
-  background: #0D0F14;
-  color: #E2E4EE;
-  font-family: 'Inter', system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.6;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
-::-webkit-scrollbar { width: 6px; height: 6px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #252836; border-radius: 3px; }
+/* ─── Scrollbars ─────────────────────────────────────────── */
+::-webkit-scrollbar              { width: 5px; height: 5px; }
+::-webkit-scrollbar-track        { background: transparent; }
+::-webkit-scrollbar-thumb        { background: rgba(255,255,255,0.08); border-radius: 99px; }
+::-webkit-scrollbar-thumb:hover  { background: rgba(255,255,255,0.14); }
 
+/* ─── Form elements ──────────────────────────────────────── */
 input, textarea, select {
-  font-family: inherit;
-  background: #1C1F2A;
-  border: 1px solid #252836;
-  color: #E2E4EE;
-  border-radius: 6px;
-  padding: 8px 12px;
+  font-family: var(--font-sans);
   font-size: 14px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: var(--radius);
+  padding: 9px 12px;
   outline: none;
   width: 100%;
+  transition: border-color 0.15s var(--ease), box-shadow 0.15s var(--ease);
 }
 
 input:focus, textarea:focus, select:focus {
-  border-color: #6366F1;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
 }
 
-input::placeholder, textarea::placeholder {
-  color: #8B91A8;
-}
+input::placeholder, textarea::placeholder { color: var(--text-dim); }
 
-select option {
-  background: #1C1F2A;
+select option { background: var(--surface-2); }
+
+textarea { resize: vertical; line-height: 1.6; }
+
+/* ─── Selection ──────────────────────────────────────────── */
+::selection {
+  background: var(--accent-bg);
+  color: var(--text);
 }
