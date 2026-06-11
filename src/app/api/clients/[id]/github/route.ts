@@ -19,7 +19,14 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
 
   // Only encrypt and save the token if a new one was provided
   if (github_token && github_token.trim()) {
-    updates.github_token = encrypt(github_token.trim())
+    try {
+      updates.github_token = encrypt(github_token.trim())
+    } catch (encryptErr: any) {
+      console.error('[github/route] encrypt failed:', encryptErr?.message)
+      return NextResponse.json({
+        error: 'Token encryption failed. Check that ENCRYPTION_KEY is set correctly in Vercel environment variables. It must be a 32-byte base64 string.',
+      }, { status: 500 })
+    }
   }
 
   const { error } = await supabase

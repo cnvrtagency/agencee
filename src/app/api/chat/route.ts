@@ -67,13 +67,18 @@ export async function POST(req: NextRequest) {
     system = [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }]
   }
 
+  const betaHeaders = ['prompt-caching-2024-07-31']
+  if (body.thinking) betaHeaders.push('interleaved-thinking-2025-05-14')
+  const hasWebSearch = (body.tools || []).some((t: any) => t.type === 'web_search_20250305')
+  if (hasWebSearch) betaHeaders.push('web-search-2025-03-05')
+
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'x-api-key': anthropicKey,
       'anthropic-version': '2023-06-01',
-      'anthropic-beta': 'prompt-caching-2024-07-31',
+      'anthropic-beta': betaHeaders.join(','),
     },
     body: JSON.stringify({ ...body, system }),
   })

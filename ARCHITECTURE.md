@@ -1,7 +1,7 @@
 # Agencee — Master Architecture Document
 
 **Living document. Update at the end of every build session.**
-Last updated: 11 June 2026. Session: Cost optimisations — sitemap-first crawl, conversation summarisation, stored competitor gaps.
+Last updated: 11 June 2026. Session: Web search tool, knowledge docs UI, weekly SEO digest, GitHub 500 fix, GSC OAuth redirect fix.
 
 ---
 
@@ -171,6 +171,7 @@ Exist as cards in `/marketplace` only. No agent_type, tools, or system prompt.
 | `suggest_internal_links` | agents/[id]/page.tsx | Scores existing `sitePages` state by keyword relevance. Returns top 5. | Creates `briefing_item`. Logs to `agent_activity`. |
 | `analyse_gsc` | agents/[id]/page.tsx | Reads `search_performance` table. Returns near-misses (pos 5-15, >50 imp), low-CTR, top queries, totals. | Runs `discoverKeywordsFromGSC` — may add to `keyword_suggestions`. |
 | `update_agent_notes` | agents/[id]/page.tsx | Upserts to `client_knowledge.agent_notes[agent.slug]`. | None |
+| `web_search` | Anthropic native (web_search_20250305) | Searches the web for current information — rankings, algorithm changes, competitor content, industry trends. Requires `web-search-2025-03-05` beta header. Handled server-side by Anthropic; results returned as `web_search_tool_result` blocks in the same response, not as a custom tool call. SEO agents only (not Theo). | None — results flow through the agentic loop automatically. |
 
 ---
 
@@ -198,7 +199,7 @@ Exist as cards in `/marketplace` only. No agent_type, tools, or system prompt.
 |---|---|
 | `/` | Dashboard. Briefing room (AI opportunity cards, expand/collapse, Act/Dismiss). Stat cards (Clients, Queued, Running, Needs review — mono font, 36px number). What needs attention panel. Token usage (by agent + 5-week activity calendar). Pending review (inline approve/delete). Queue activity. |
 | `/clients` | Client list table. Add client modal (name, website, industry, slug — minimal). Saves immediately, redirects to client detail page to complete profile. |
-| `/clients/[id]` | 9 tabs: Profile, Keywords, Pages, Codebase, Connections, Schedule, Competitors, Search, Reports. AI overview panel (Haiku, 24h cache). Crawl button. GSC sync button. Refresh knowledge panel button (crawl + GSC sync + backfill-targeting in parallel). |
+| `/clients/[id]` | 10 tabs: Profile, Keywords, Pages, Codebase, Connections, Schedule, Competitors, Search, Reports, Knowledge. AI overview panel (Haiku, 24h cache). Crawl button. GSC sync button. Refresh knowledge panel button. Knowledge tab: free-form docs per client (SEO guidelines, brand rules, industry context) stored in `client_knowledge.docs` jsonb array. Reads `?tab=` and `?gsc=` URL params on mount for OAuth redirect handling. |
 | `/clients/[id]/gsc-setup` | Google OAuth for GSC connection |
 | `/outputs` | Global outputs — Drafts/Approved/Published tabs. Thumbnail, title, client, keyword, agent, word count, date, status pill, action buttons (Approve, Review, Publish, View live). |
 | `/outputs/[id]` | Full output detail. Pipeline bar (Draft/Approved/Published). Image gallery with Supabase URLs. SEO metadata bar (title char count, meta char count). Preview/Edit toggle. 12 feedback preset chips (Generate images, Add TOC, Strengthen intro, Fix title/meta, Featured snippet, Internal links, Improve CTA, FAQ section, Expand, Fix headings, Strengthen trust signals, Adjust tone). Feedback to Ada panel. Version history. Approve/Revert/Publish/Delete. |
@@ -210,7 +211,7 @@ Exist as cards in `/marketplace` only. No agent_type, tools, or system prompt.
 | `/marketplace` | Agent cards. Ada + Theo installed. 5 others not installed. |
 | `/settings` | Workspace name, Anthropic key, Gemini key, token budget + usage bar, notification prefs (email toggle, Slack webhook + test button, per-type toggles). |
 | `/agents` | Agent list |
-| `/agents/[id]` | Main agent interface. Chat + Settings tabs. Left panel: New chat, task log (Active/Last session), planned tasks, conversation list with delete. Right panel: agent header with avatar/name/role, message thread, quick action chips (empty state), suggested reply chips (after ambiguous responses), textarea + Send. |
+| `/agents/[id]` | Main agent interface. Chat + Automations + Settings tabs. Left panel: New chat, task log (Active/Last session), planned tasks, conversation list with delete. Right panel: agent header with avatar/name/role, message thread, quick action chips (empty state), suggested reply chips (after ambiguous responses), textarea + Send. Automations tab: toggleable background tasks with cadence, last run status, run now button. |
 | `/agents/[id]/calendar` | Per-agent calendar. Generator panel (client, 2w/4w/8w, 1-4 posts/week, optional focus, "Generate plan" button). Month grid view (chips on dates, drawer on click). List view toggle. Status flow bar. Unscheduled strip. Bulk approve/schedule bar. |
 | `/agents/[id]/keywords` | Per-agent keyword suggestions with importance scoring |
 | `/agents/[id]/outputs` | Per-agent outputs — Needs review / Approved |
@@ -253,6 +254,8 @@ Exist as cards in `/marketplace` only. No agent_type, tools, or system prompt.
 |---|---|---|
 | `/api/intelligence/decay` | POST | Compare 28d vs 56d GSC data. Flag keywords dropped >3 positions with >50 impressions → briefing_items + agent_activity. |
 | `/api/intelligence/score-keywords` | POST | Recalculate opportunity_score for all keyword_banks rows (position + volume + KD + content_targeting_this). |
+| `/api/intelligence/run-automation` | POST | Executes one agent automation by type. Handlers: weekly_keyword_scan, monthly_content_plan, competitor_analysis, site_audit, gsc_review, internal_link_audit. Returns `{ ok, summary }`. Called by the Automations tab "Run now" button and by cron via schedule/check. |
+| `/api/intelligence/knowledge-digest` | POST | Searches the web for current SEO developments via native web_search tool, summarises with Sonnet, stores in `agent_knowledge`. Runs Mondays via cron. Deduplicates by week — skips if row already exists for current week. Agentic loop handles web search turns (max 6 iterations). |
 
 ### Knowledge and clients
 
@@ -336,6 +339,8 @@ Exist as cards in `/marketplace` only. No agent_type, tools, or system prompt.
 | `reports` | client_id, period_start, period_end, status, data jsonb | Monthly reports |
 | `scheduled_jobs` | client_id, workspace_id, agent_id, name, job_type, cadence, run_day, run_hour, next_run_at, last_run_at, last_run_status, last_run_summary, enabled | Background jobs |
 | `job_runs` | job_id, workspace_id, client_id, status, summary, completed_at | Job execution history |
+| `agent_automations` | agent_id, automation_type, name, description, enabled, cadence, run_day, run_hour, last_run_at, last_run_status, last_run_summary, next_run_at, config jsonb | Per-agent background tasks. 6 defaults seeded on first load: weekly_keyword_scan, monthly_content_plan, competitor_analysis, site_audit, gsc_review, internal_link_audit. UNIQUE(agent_id, automation_type). |
+| `agent_knowledge` | agent_type, week_of, summary, sources[] | Global SEO intelligence digest. Written weekly by `/api/intelligence/knowledge-digest` (Mondays). Injected into Ada's system prompt as CURRENT SEO INTELLIGENCE block. UNIQUE(agent_type, week_of). |
 
 ---
 
@@ -360,7 +365,8 @@ The persistent brain per client. Injected into every agent session — eliminate
 - Content summary prose
 - Agent notes for the current agent's slug
 - Competitor analysis: if `agent_notes.competitor_analysis` exists and is under 7 days old, injected as a `COMPETITOR ANALYSIS (from Xh ago):` block — Ada has the gap analysis without calling the tool again
-- Knowledge docs (user-editable, not yet surfaced in UI)
+- Knowledge docs: `docs` jsonb array, each `{ id, title, content, updated_at }`. Injected as `KNOWLEDGE DOCUMENTS — read and apply these on every response:` block. Editable via client Knowledge tab.
+- Current SEO intelligence: latest `agent_knowledge` row injected as `CURRENT SEO INTELLIGENCE (week of ...)` block if present
 
 ---
 
@@ -403,12 +409,20 @@ GET /api/schedule/check
 ├── On 1st of month:
 │   └── POST /api/reports/generate per client with content last month
 │
+├── On Mondays (day === 1):
+│   └── POST /api/intelligence/knowledge-digest
+│       └── Web search current SEO developments → summarise with Sonnet → agent_knowledge
+│
 ├── For each due scheduled_job:
 │   └── POST /api/jobs/run
 │       ├── gsc_intelligence: sync + decay detection + score-keywords + overview refresh
 │       ├── keyword_research: discoverKeywordsFromGSC from stored search_performance
 │       ├── content: run client_schedule → content_queue (respects content_autonomy)
 │       └── site_audit: crawl → site_pages + client_knowledge
+│
+├── For each due agent_automation:
+│   └── POST /api/intelligence/run-automation
+│       └── Updates last_run_at, last_run_status, last_run_summary on completion
 │
 └── POST /api/notifications/digest
     └── Per workspace: count drafts + pending keywords + next schedule → email + Slack
@@ -498,16 +512,21 @@ GET /api/schedule/check
 | Client profile top panel not editable | Medium | clients/[id]/page.tsx | **Fixed 11 Jun 2026** — profileFields rendered as textareas with onBlur save |
 | Collapsible sections (Brand, Business, SEO) closed by default | Low | clients/[id]/page.tsx | **Fixed 11 Jun 2026** — all three sections open by default |
 | GSC redirect_uri_mismatch | High | Google Cloud Console config | Open — needs redirect URI added: https://agencee.vercel.app/api/auth/google/callback (manual config fix) |
+| GitHub 500 on save | High | api/clients/[id]/github/route.ts | **Fixed 11 Jun 2026** — encrypt() failure now returns a clear 500 error message explaining ENCRYPTION_KEY must be a 32-byte base64 string. ENCRYPTION_KEY env var required in Vercel. |
+| GSC connections tab empty after OAuth redirect | High | clients/[id]/page.tsx | **Fixed 11 Jun 2026** — client page now reads `?tab=` and `?gsc=` URL params on mount. Tab param switches to the correct tab. gsc=connected shows a 4s success message. gsc=error with message=no_properties shows appropriate error. |
 
 ---
 
 ## Next to Build (Priority Order)
 
 ### Immediate fixes
-1. Verify agent overhaul prompt was fully applied (check buildSystemPrompt + getToolsForAgent in production)
-2. Fix task log UI bug — raw JSON showing in Working... panel
-3. Fix token tracking — tokens_used in agent_activity and workspace_settings
-4. Upgrade run-task to use full system prompt + knowledge panel
+1. ~~Verify agent overhaul prompt was fully applied~~ — done (getToolsForAgent + buildSystemPrompt both updated, web search added)
+2. ~~Fix task log UI bug~~ — done
+3. ~~Fix token tracking~~ — done
+4. ~~Upgrade run-task~~ — done
+5. ~~Web search tool~~ — done (native web_search_20250305, SEO agents only)
+6. ~~Knowledge docs UI~~ — done (client Knowledge tab, docs injected into system prompt)
+7. ~~Weekly SEO digest~~ — done (knowledge-digest route, Monday cron, agent_knowledge table)
 
 ### Advanced intelligence (next session)
 5. Extended thinking mode for complex strategy sessions (one parameter change in send())
@@ -610,6 +629,27 @@ GET /api/schedule/check
 - Sitemap-first crawl — `fetchSitemapUrls()` tries /sitemap.xml, /sitemap_index.xml (recursing into sub-sitemaps, max 5), /sitemap/, /sitemap before falling back to link crawling. Applied to both client site crawl (maxPages 60) and competitor crawl (maxPages 40). When sitemap mode is active, link extraction inside the while loop is skipped (`usingSitemap` flag). Uses Chrome browser UA for sitemap fetches.
 - Conversation summarisation — `summariseOldMessages()` added before `send()`. When conversation > 8 messages, all but the last 6 are condensed via a Haiku call (600 tokens) into a 2-message summary block. Falls back silently to full history on error. Cuts input tokens 60-80% on sessions > 8 turns.
 - Stored competitor analysis — `analyse_competitors` now upserts `client_knowledge.agent_notes.competitor_analysis` with result (capped 4000 chars) and timestamp. `buildSystemPrompt` injects this into the knowledge panel if under 7 days old, labelled with age in hours. Ada doesn't need to re-call the tool on subsequent asks in the same window.
+
+### 11 June 2026 (session 6)
+**Built:**
+- Web search tool — native Anthropic `web_search_20250305` tool added to SEO agent's tool array. `getToolsForAgent` updated to inject it for non-technical agents. `web_search` filtered from `toolBlocks` so it doesn't call `handleToolCall` — Anthropic handles it server-side. `TOOL_STATUS` label added ("Searching the web..."). `web-search-2025-03-05` beta header dynamically added in `/api/chat` when tools include the web search type. System prompt updated with guidance on when to use web_search.
+- Knowledge docs UI — new Knowledge tab on `/clients/[id]` page. Documents stored as `client_knowledge.docs` jsonb array (`{ id, title, content, updated_at }`). Inline editing, add/delete. `addDoc`, `saveDoc`, `deleteDoc` functions. Knowledge docs injected into Ada's system prompt as `KNOWLEDGE DOCUMENTS` block (prominent, per-client). `buildSystemPrompt` updated to use a cleaner `### Title\nContent` format.
+- Weekly SEO knowledge digest — new `agent_knowledge` DB table. New `/api/intelligence/knowledge-digest` route: uses web_search to find current SEO developments, summarises with Sonnet, stores weekly by `agent_type`. Deduplicates — skips if this week's row already exists. Cron runs it on Mondays. `loadDigest()` function on agent page loads latest row. Injected into system prompt as `CURRENT SEO INTELLIGENCE (week of ...)` block.
+- GitHub 500 fix — `encrypt()` call wrapped in try/catch in github route. Clear 500 error returned with ENCRYPTION_KEY instructions. `saveGithub()` on client page now checks the response and surfaces the error in `syncError` state.
+- GSC OAuth redirect fix — client detail page now reads `?tab=` and `?gsc=` URL params on mount via `useSearchParams`. Redirects from OAuth callback or gsc-setup page now land on the Connections tab with a 4s success message. `gsc=error&message=no_properties` shows the correct error.
+
+**DB migration required (run in Supabase dashboard SQL editor):**
+```sql
+CREATE TABLE IF NOT EXISTS agent_knowledge (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  agent_type text NOT NULL DEFAULT 'seo',
+  week_of date NOT NULL,
+  summary text NOT NULL,
+  sources text[] DEFAULT '{}',
+  created_at timestamptz DEFAULT now(),
+  UNIQUE(agent_type, week_of)
+);
+```
 
 ### 11 June 2026 (session 4)
 **Built:**

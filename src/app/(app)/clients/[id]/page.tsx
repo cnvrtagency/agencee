@@ -1,6 +1,6 @@
 'use client'
 import { useEffect, useState } from 'react'
-import { useParams } from 'next/navigation'
+import { useParams, useSearchParams } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import { Client, Keyword, SiteConnection, CompetitorSite, ClientSchedule } from '@/lib/types'
 
@@ -44,7 +44,7 @@ const PLATFORM_LABELS: Record<string, { label: string; color: string }> = {
   webflow: { label: 'Webflow', color: '#4353ff' },
 }
 
-type TabKey = 'profile' | 'keywords' | 'pages' | 'codebase' | 'connections' | 'schedule' | 'competitors' | 'search' | 'reports'
+type TabKey = 'profile' | 'keywords' | 'pages' | 'codebase' | 'connections' | 'schedule' | 'competitors' | 'search' | 'reports' | 'knowledge'
 
 type GscConnection = {
   id: string; client_id: string; google_account_email: string; property_url: string
@@ -64,6 +64,7 @@ type ReportRow = {
 
 export default function ClientDetail() {
   const { id } = useParams<{ id: string }>()
+  const searchParams = useSearchParams()
   const [client, setClient] = useState<Client | null>(null)
   const [keywords, setKeywords] = useState<Keyword[]>([])
   const [sitePages, setSitePages] = useState<SitePage[]>([])
@@ -136,6 +137,11 @@ export default function ClientDetail() {
   const [savingJob, setSavingJob] = useState(false)
   const [runningJobId, setRunningJobId] = useState<string | null>(null)
 
+  // Knowledge docs state
+  const [knowledgeDocs, setKnowledgeDocs] = useState<{ id: string; title: string; content: string; updated_at: string }[]>([])
+  const [editingDoc, setEditingDoc] = useState<string | null>(null)
+  const [savingDoc, setSavingDoc] = useState(false)
+
   // Competitors state
   const [compOpen, setCompOpen] = useState(false)
   const [compForm, setCompForm] = useState({ url: '', name: '' })
@@ -157,6 +163,27 @@ export default function ClientDetail() {
     })
     // Load AI overview (cached if fresh)
     loadOverview()
+
+    // Load knowledge docs
+    supabase.from('client_knowledge').select('docs').eq('client_id', id).maybeSingle().then(({ data: kn }) => {
+      if (kn?.docs) setKnowledgeDocs(kn.docs as any[])
+    })
+
+    // Read tab from URL param — handles OAuth redirects
+    const tabParam = searchParams?.get('tab') as TabKey | null
+    if (tabParam && ['profile', 'keywords', 'pages', 'codebase', 'connections', 'schedule', 'competitors', 'search', 'reports', 'knowledge'].includes(tabParam)) {
+      setActiveTab(tabParam)
+    }
+
+    // Show GSC success/error message if redirected from OAuth
+    const gscParam = searchParams?.get('gsc')
+    if (gscParam === 'connected') {
+      setGscMsg('Google Search Console connected successfully.')
+      setTimeout(() => setGscMsg(''), 4000)
+    } else if (gscParam === 'error') {
+      const msg = searchParams?.get('message')
+      setGscMsg(msg === 'no_properties' ? 'No GSC properties found for this Google account.' : 'Failed to connect Google Search Console.')
+    }
   }, [id])
 
   useEffect(() => {
@@ -381,17 +408,54 @@ export default function ClientDetail() {
 
   async function saveGithub() {
     setSavingGithub(true)
-    // POST to server route so the token is encrypted before being stored
+    setSyncError('')
     const payload: any = { github_repo: githubForm.github_repo, github_branch: githubForm.github_branch || 'main' }
     if (githubTokenDirty && githubForm.github_token.trim()) {
       payload.github_token = githubForm.github_token.trim()
     }
-    await fetch(`/api/clients/${id}/github`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    })
-    setSavingGithub(false); setGithubTokenDirty(false); loadClient()
+    try {
+      const res = await fetch(`/api/clients/${id}/github`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      const data = await res.json()
+      if (!res.ok || data.error) {
+        setSyncError(data.error || 'Failed to save GitHub config')
+        setSavingGithub(false)
+        return
+      }
+    } catch {
+      setSyncError('Failed to save GitHub config')
+      setSavingGithub(false)
+      return
+    }
+    setSavingGithub(false)
+    setGithubTokenDirty(false)
+    loadClient()
+  }
+
+  async function saveDoc(docId: string, title: string, content: string) {
+    setSavingDoc(true)
+    const updated = knowledgeDocs.map(d => d.id === docId ? { ...d, title, content, updated_at: new Date().toISOString() } : d)
+    setKnowledgeDocs(updated)
+    await supabase.from('client_knowledge').upsert({ client_id: id, docs: updated }, { onConflict: 'client_id' })
+    setSavingDoc(false)
+    setEditingDoc(null)
+  }
+
+  async function addDoc() {
+    const newDoc = { id: crypto.randomUUID(), title: 'New document', content: '', updated_at: new Date().toISOString() }
+    const updated = [...knowledgeDocs, newDoc]
+    setKnowledgeDocs(updated)
+    await supabase.from('client_knowledge').upsert({ client_id: id, docs: updated }, { onConflict: 'client_id' })
+    setEditingDoc(newDoc.id)
+  }
+
+  async function deleteDoc(docId: string) {
+    const updated = knowledgeDocs.filter(d => d.id !== docId)
+    setKnowledgeDocs(updated)
+    await supabase.from('client_knowledge').upsert({ client_id: id, docs: updated }, { onConflict: 'client_id' })
   }
 
   async function syncRepo() {
@@ -542,6 +606,7 @@ export default function ClientDetail() {
     { key: 'schedule', label: schedule?.enabled ? 'Schedule ✓' : 'Schedule' },
     { key: 'search', label: gscConn ? 'Search Performance ✓' : 'Search Performance' },
     { key: 'reports', label: `Reports (${reports.length})` },
+    { key: 'knowledge', label: `Knowledge${knowledgeDocs.length > 0 ? ` (${knowledgeDocs.length})` : ''}` },
   ]
 
   return (
@@ -1578,6 +1643,79 @@ export default function ClientDetail() {
                 ))}
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* ── Knowledge docs ── */}
+      {activeTab === 'knowledge' && (
+        <div>
+          <div style={S.panel}>
+            <div style={S.panelHead}>
+              <span>Knowledge docs ({knowledgeDocs.length})</span>
+              <button style={S.btn} onClick={addDoc}>+ Add doc</button>
+            </div>
+            {knowledgeDocs.length === 0 ? (
+              <div style={{ padding: '40px 20px', textAlign: 'center', fontSize: 13, color: 'var(--text-2)', lineHeight: 1.7 }}>
+                <div style={{ marginBottom: 12 }}>No knowledge docs yet.</div>
+                <div style={{ maxWidth: 420, margin: '0 auto', marginBottom: 20 }}>Add anything you want Ada to know permanently — SEO guidelines, brand rules, industry context, competitor notes, what works for this client.</div>
+                <button style={S.btn} onClick={addDoc}>Add first doc</button>
+              </div>
+            ) : (
+              <div>
+                {knowledgeDocs.map((doc, i) => (
+                  <div key={doc.id} style={{ borderBottom: i < knowledgeDocs.length - 1 ? '1px solid var(--border)' : 'none' }}>
+                    {editingDoc === doc.id ? (
+                      <div style={{ padding: '16px 20px' }}>
+                        <input
+                          defaultValue={doc.title}
+                          id={`doc-title-${doc.id}`}
+                          placeholder="Document title"
+                          style={{ width: '100%', marginBottom: 10, fontSize: 14, fontWeight: 600 }}
+                        />
+                        <textarea
+                          defaultValue={doc.content}
+                          id={`doc-content-${doc.id}`}
+                          rows={10}
+                          placeholder="Write anything Ada should know about this client — industry context, specific guidelines, what has worked before, competitor notes..."
+                          style={{ width: '100%', fontSize: 13, lineHeight: 1.6, resize: 'vertical' }}
+                        />
+                        <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                          <button style={S.btn} disabled={savingDoc} onClick={() => {
+                            const title = (document.getElementById(`doc-title-${doc.id}`) as HTMLInputElement)?.value || doc.title
+                            const content = (document.getElementById(`doc-content-${doc.id}`) as HTMLTextAreaElement)?.value || doc.content
+                            saveDoc(doc.id, title, content)
+                          }}>
+                            {savingDoc ? 'Saving...' : 'Save'}
+                          </button>
+                          <button style={S.btnSm} onClick={() => setEditingDoc(null)}>Cancel</button>
+                          <button style={{ ...S.btnSm, color: 'var(--red, #f87171)', borderColor: 'rgba(239,68,68,0.3)', marginLeft: 'auto' }} onClick={() => deleteDoc(doc.id)}>Delete</button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div style={{ padding: '16px 20px', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16 }}
+                        onClick={() => setEditingDoc(doc.id)}>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>{doc.title}</div>
+                          <div style={{ fontSize: 12, color: 'var(--text-2)', lineHeight: 1.5 }}>
+                            {doc.content ? doc.content.slice(0, 120) + (doc.content.length > 120 ? '...' : '') : 'Empty — click to edit'}
+                          </div>
+                        </div>
+                        <div style={{ fontSize: 11, color: 'var(--text-dim)', flexShrink: 0, fontFamily: 'var(--font-mono)' }}>
+                          {new Date(doc.updated_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div style={{ ...S.panel, padding: '14px 20px' }}>
+            <div style={{ fontSize: 12, color: 'var(--text-2)', lineHeight: 1.7 }}>
+              <strong style={{ color: 'var(--text)' }}>What to add here:</strong> SEO best practices for this industry, brand voice rules with examples, what content formats have worked, competitor weaknesses, audience pain points, local market context, things Ada should always or never say. The more specific the better — "avoid clinical language" is weaker than "never say audiological assessment, always say hearing test".
+            </div>
           </div>
         </div>
       )}

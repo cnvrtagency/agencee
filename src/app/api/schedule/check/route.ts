@@ -68,8 +68,17 @@ export async function GET(req: NextRequest) {
     }).catch((err) => console.error('[schedule/check] Sub-request failed:', err.message))
   }
 
-  // Monthly auto-generate reports on the 1st
+  // Monthly auto-generate reports on the 1st / weekly SEO digest on Mondays
   const now = new Date()
+
+  // Weekly SEO knowledge digest — runs on Mondays
+  if (now.getDay() === 1) {
+    fetch(`${baseUrl}/api/intelligence/knowledge-digest`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    }).catch(() => {})
+  }
+
   if (now.getDate() === 1) {
     const prevMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1).toISOString().split('T')[0]
     const prevMonthEnd = new Date(now.getFullYear(), now.getMonth(), 0).toISOString().split('T')[0]

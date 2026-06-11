@@ -48,7 +48,7 @@ type PlannedTask = { id: string; primary_keyword: string; content_type: string; 
 type SitePage = { url: string; title: string | null; h1: string | null; meta_description: string | null; word_count: number | null; content_summary: string | null }
 type GscRow = { query: string; page: string; position: number; impressions: number; clicks: number; ctr: number; period_start?: string; period_end?: string }
 
-function buildSystemPrompt(agent: Agent, clients: Client[], knowledgePanels: Record<string, any> = {}): string {
+function buildSystemPrompt(agent: Agent, clients: Client[], knowledgePanels: Record<string, any> = {}, digest?: { summary: string; week_of: string } | null): string {
   const parts: string[] = []
 
   // Identity
@@ -143,7 +143,13 @@ General questions (how does X work, what is Y) can be answered without specifyin
     }
 
     if (k.content_summary) kParts.push(`Content state: ${k.content_summary}`)
-    if (k.docs?.length) k.docs.forEach((d: any) => kParts.push(`Doc — ${d.title}:\n${d.content}`))
+    if (k.docs?.length) {
+      const filteredDocs = (k.docs as any[]).filter((d: any) => d.content?.trim())
+      if (filteredDocs.length > 0) {
+        const docsText = filteredDocs.map((d: any) => `### ${d.title}\n${d.content}`).join('\n\n')
+        kParts.push(`KNOWLEDGE DOCUMENTS — read and apply these on every response:\n${docsText}`)
+      }
+    }
     if (k.agent_notes?.[agent.slug]) kParts.push(`Your notes on this client:\n${k.agent_notes[agent.slug]}`)
 
     if (k.agent_notes?.competitor_analysis) {
@@ -183,6 +189,7 @@ Tool usage guide:
 - save_planned_task / update_planned_task: call to log agreed content to the scheduler
 - suggest_internal_links: call after every write_content
 - suggest_keyword: call when you spot a valuable keyword not in the bank
+- web_search: use for current information — what's ranking for a keyword right now, recent algorithm changes, competitor content, industry trends, or any question where training data may be outdated. Search before answering questions about current best practices.
 
 DATA ACCURACY RULE:
 Before claiming any keyword is "untargeted" or any topic "has not been covered," cross-reference all three:
@@ -237,6 +244,10 @@ PROACTIVE RESPONSIBILITIES:
 - After publishing, call suggest_internal_links
 - Spot keyword gaps and cannibalisation unprompted — raise them when relevant
 - If the GSC snapshot is more than 48 hours old, mention it and offer to refresh`)
+  }
+
+  if (isSeo && digest) {
+    parts.push(`CURRENT SEO INTELLIGENCE (week of ${digest.week_of}):\n${digest.summary}\n\nApply this current knowledge when making recommendations. If something here contradicts older best practices you know, the current information takes precedence.`)
   }
 
   if (isTechnical) {
@@ -603,10 +614,17 @@ Supports: wordpress, shopify, github (MDX), webflow`,
   },
 ]
 
-function getToolsForAgent(_agentType: string) {
-  // All agents have access to all tools.
-  // Specialists use their expertise to decide what to call, not restricted access.
-  return ALL_TOOLS
+function getToolsForAgent(agentType: string) {
+  const customTools = ALL_TOOLS
+
+  // Add native Anthropic web search for SEO agents
+  if (agentType !== 'technical') {
+    return [
+      ...customTools,
+      { type: 'web_search_20250305', name: 'web_search' } as any,
+    ]
+  }
+  return customTools
 }
 
 const S = {
@@ -729,6 +747,7 @@ export default function AgentPage() {
   const [automations, setAutomations] = useState<Automation[]>([])
   const [togglingAutomation, setTogglingAutomation] = useState<string | null>(null)
   const [runningAutomation, setRunningAutomation] = useState<string | null>(null)
+  const [latestDigest, setLatestDigest] = useState<{ summary: string; week_of: string } | null>(null)
   const scroller = useRef<HTMLDivElement>(null)
 
   // Map tool names → human-readable status labels
@@ -750,6 +769,7 @@ export default function AgentPage() {
     analyse_competitors: 'Analysing competitor sites…',
     suggest_internal_links: 'Finding internal link opportunities…',
     analyse_gsc: 'Analysing Search Console data…',
+    web_search: 'Searching the web…',
   }
 
   useEffect(() => {
@@ -762,7 +782,7 @@ export default function AgentPage() {
         if (ws) setWorkspaceId(ws.id)
       }
     })
-    loadAgent(); loadClients(); loadConversations(); loadPlannedTasks(); loadAutomations()
+    loadAgent(); loadClients(); loadConversations(); loadPlannedTasks(); loadAutomations(); loadDigest()
     const params = new URLSearchParams(window.location.search)
     const convParam = params.get('conversation')
     if (convParam) loadMessages(convParam)
@@ -792,6 +812,17 @@ export default function AgentPage() {
       send()
     }
   }, [agent, clients])
+
+  async function loadDigest() {
+    const { data } = await supabase
+      .from('agent_knowledge')
+      .select('summary, week_of')
+      .eq('agent_type', 'seo')
+      .order('week_of', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+    setLatestDigest(data || null)
+  }
 
   async function loadAgent() {
     const { data } = await supabase.from('agents').select('*').eq('id', id).single()
@@ -1674,7 +1705,7 @@ export default function AgentPage() {
     setThoughts([]); thoughtsRef.current = []
     pendingDraftCardRef.current = null
     await supabase.from('messages').insert({ conversation_id: convId, role: 'user', content: userMsg.content, user_id: uid })
-    const systemPrompt = buildSystemPrompt(agent, clients, knowledgePanels)
+    const systemPrompt = buildSystemPrompt(agent, clients, knowledgePanels, latestDigest)
     const addTask = (label: string, done = false) => {
       const entry: TaskEntry = { label, done, ts: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }
       taskLogRef.current = [...taskLogRef.current, entry]
@@ -1779,7 +1810,7 @@ export default function AgentPage() {
           })
           apiMessages.push({ role: 'assistant', content: trimmedContent })
           const toolResults: any[] = []
-          const toolBlocks = data.content.filter((b: any) => b.type === 'tool_use')
+          const toolBlocks = data.content.filter((b: any) => b.type === 'tool_use' && b.name !== 'web_search')
           // Add all tasks to the log upfront and capture their indices so parallel completions
           // can mark the correct entry done (completeLastTask only marks index length-1).
           const taskIndices: number[] = []
