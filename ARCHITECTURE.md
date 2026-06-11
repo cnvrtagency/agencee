@@ -1,0 +1,588 @@
+# Agencee — Master Architecture Document
+
+**Living document. Update at the end of every build session.**
+Last updated: 11 June 2026. Session: Ada capabilities, knowledge panel, calendar rebuild, keyword targeting fixes.
+
+---
+
+## What Agencee is
+
+Internal AI agent SaaS for CNVRT (Dan's Manchester digital agency). AI agents handle SEO strategy, content production, keyword planning, site analysis, and publishing for clients. Eventually reseller-ready. Not currently client-facing.
+
+---
+
+## Stack
+
+| Layer | Tech |
+|---|---|
+| Framework | Next.js 16 (App Router), React 19, TypeScript |
+| Styling | Tailwind v4 in globals.css only. All components use inline styles. Do not add Tailwind classes to JSX. |
+| Database | Supabase (Postgres + Storage) |
+| Primary AI | Anthropic — Sonnet 4.6 (agents, calendar planning, reports), Haiku 4.5 (utility calls) |
+| Image AI | Gemini 3 Pro Image / Nano Banana Pro (`gemini-3-pro-image`) |
+| Publishing | GitHub MDX + Vercel, WordPress, Shopify, Webflow |
+| Notifications | Resend (email) + Slack webhooks |
+| Cron | Vercel cron daily 07:00 UTC → `/api/schedule/check` |
+| Hosting | Vercel (app) + Railway (worker) |
+| App repo | github.com/cnvrtagency/agencee |
+| Hear Better repo | github.com/cnvrtagency/wireframe-whisperer-89 |
+
+---
+
+## Agents
+
+### Ada — SEO Specialist
+**agent_type:** `seo` | **DB agent_id:** `1300a385-17d3-41e1-9535-50f5b9c49823`
+
+Ada is the primary content and SEO strategy agent. She plans, researches, writes, analyses, and saves drafts for human review.
+
+#### What Ada can do
+
+| Capability | How it works |
+|---|---|
+| Keyword gap analysis | Cross-references keyword bank + knowledge panel site pages + content history. Flags data conflicts. Reports genuine gaps only. |
+| GSC performance analysis | Calls `analyse_gsc` for live data. Knowledge panel snapshot provides baseline without a tool call. Returns near-misses, low-CTR pages, top queries, click/impression totals. Also runs `discoverKeywordsFromGSC` to suggest new keywords on every analyse_gsc call. |
+| Blog post writing | Full markdown + YAML frontmatter. Title tag, meta description, keyword placement, location terms, internal links, FAQ with JSON-LD schema, credentialed practitioner for health content. 2-4 images. |
+| Image generation | Calls `generate_images` (single array call) AFTER writing the post. SCHEMA-structured prompts (Subject/Context/Lighting/Atmosphere/Camera/Style/Mandatory/Prohibitions) derived from actual post content and client profile. 1K resolution default. |
+| Site audit | `audit_site` checks crawled pages for: missing meta descriptions, missing H1s, thin content (<300w), keyword cannibalisation (pages targeting >3 keywords), untargeted keywords. |
+| Competitor analysis | `analyse_competitors` reads `competitor_sites` and `competitor_pages` tables. Returns per-site page inventory with summaries. |
+| Content planning | `create_content_plan` inserts to `content_calendar`. The calendar generator route (`/api/calendar/generate-plan`) is the preferred path — one Sonnet call with full context. |
+| Internal link suggestions | `suggest_internal_links` after every `write_content`. Scores existing pages by keyword relevance, returns top 5. Creates a briefing_item for the user. |
+| Keyword suggestions | `suggest_keyword` adds to `keyword_suggestions` table (pending, awaiting user approval). |
+| Read/write files | `read_file` and `write_file` for direct GitHub repo operations. |
+| Save planned tasks | `save_planned_task` / `update_planned_task` to `planned_tasks` table. Shown in the agent sidebar. |
+| Agent notes | `update_agent_notes` writes to `client_knowledge.agent_notes[agent.slug]`. Persists across sessions. |
+| Suggested replies | When Ada ends with a question or options, she appends `<suggestions>["a","b","c"]</suggestions>` — parsed by the UI into clickable chips. |
+
+#### Ada's workflow — blog post
+
+1. **Acknowledge** (brief, 1 sentence, Haiku)
+2. Call `search_history` + `get_keywords` in parallel — check coverage, find best untargeted keyword
+3. Knowledge panel provides site pages — no tool call needed
+4. Write the complete markdown post with frontmatter
+5. Call `generate_images` with SCHEMA prompts derived from the post content
+6. Call `write_content` — saves to `content_outputs`, updates `keyword_banks.content_targeting_this`, fires output-ready notification
+7. Call `suggest_internal_links` for the new page — creates briefing_item
+
+#### Ada's workflow — keyword gap analysis
+
+1. **Acknowledge**
+2. Call `get_keywords` + `search_history` in parallel
+3. Cross-reference against knowledge panel site pages (no tool call — already in context)
+4. Reconcile all three before drawing conclusions — never claim a keyword is untargeted without checking all sources
+5. Return ranked gaps with angles, sequenced by commercial impact
+
+#### Ada's system prompt structure
+
+1. Identity (name, role, backstory, expertise, personality, communication style, working style, boundaries, custom instructions from DB)
+2. Universal working principles (research-first, data reconciliation rule, acknowledgement behaviour, suggested replies format)
+3. Client context (all profile fields, dynamically from DB — no hardcoding)
+4. Knowledge panel (site_pages, gsc_snapshot, content_summary, agent_notes)
+5. SEO-specific instructions: working approach, blog post rules, content format, workflow, content planning rules
+6. Image generation: SCHEMA methodology, content-derived prompts, 1K default
+7. Response style: conversational, UK English, zero em-dashes, length rules, suggested replies, acknowledgement format
+
+**Note:** The system prompt in `buildSystemPrompt()` is NOT yet updated to the overhaul spec. It still has the old hardcoded Hear Better image rules and the old three-tool mandatory research block. The overhaul prompt was written but may not have been fully applied. Verify before next session.
+
+#### Ada's tool access
+
+All tools available. `getToolsForAgent()` currently still uses the old filter logic (SHARED + ADA names). The overhaul prompt specified making all tools available to all agents — verify this was applied.
+
+Current effective tool list for Ada:
+`write_content`, `generate_images`, `save_planned_task`, `update_planned_task`, `suggest_keyword`, `create_content_plan`, `analyse_competitors`, `suggest_internal_links`, `analyse_gsc`, `search_history`, `get_site_pages`, `get_keywords`, `read_file`, `read_page`, `audit_site`, `update_agent_notes`
+
+#### Ada's known gaps
+
+- No proactive analysis between sessions (cron doesn't trigger Ada to write briefing items autonomously)
+- No content performance feedback loop (doesn't know GSC data for published posts)
+- No cross-conversation memory beyond agent_notes
+- Em-dashes still appearing in responses despite system prompt rule
+- Task log panel shows raw JSON/code during Working... state (UI bug)
+- Thoughts captured but only shown in a truncated block — not surfaced clearly
+
+---
+
+### Theo — Technical SEO & Publisher
+**agent_type:** `technical` | **slug in DB:** `technical` (not `theo`)
+
+Theo reads approved drafts and publishes them to client platforms.
+
+#### What Theo can do
+
+| Capability | How it works |
+|---|---|
+| Publish to GitHub | Commits images to `/public/assets/`, commits MDX file with `/assets/` image paths, triggers Vercel deploy |
+| Publish to WordPress | Via site_connections config |
+| Publish to Shopify | Via site_connections config |
+| Publish to Webflow | Via site_connections config |
+| Image frontmatter | Injects `image:` and `image_alt:` into MDX frontmatter on publish |
+| Read/write files | `read_file`, `write_file` for direct repo operations |
+
+#### Theo's workflow — publish
+
+1. Verify `content_outputs.approved = true` (returns error if not)
+2. Load `site_connections` for the client
+3. Call `publish_content` → `/api/connections/publish`
+4. Images committed to GitHub `/public/assets/` first
+5. MDX committed with `/assets/filename` paths in frontmatter
+6. Vercel deploy triggered
+7. `content_outputs.published_url` set
+8. `keyword_banks.content_targeting_this` updated to live URL
+9. Live URL reported back
+
+#### Theo's tool access
+`publish_content`, `write_file`, `read_file`, `get_site_pages`, `search_history`, `get_keywords`, `audit_site`, `read_page`
+
+---
+
+### Marketplace agents (not yet built)
+
+Exist as cards in `/marketplace` only. No agent_type, tools, or system prompt.
+
+| Name | Intended role |
+|---|---|
+| Leo | Link building and outreach |
+| Iris | Analytics interpretation (GSC + GA4) |
+| Scout | Competitor intelligence and monitoring |
+| Ellie | E-commerce copywriting (Shopify/WooCommerce) |
+| Theo (marketplace) | Technical SEO auditor — separate from publisher Theo |
+
+---
+
+## All Tools (ALL_TOOLS in agents/[id]/page.tsx)
+
+| Tool | Handler location | What it does | Side effects |
+|---|---|---|---|
+| `write_content` | agents/[id]/page.tsx | Inserts to `content_outputs`. Fires output-ready notification. Logs to `agent_activity`. | Updates `keyword_banks.content_targeting_this`. Sets `pendingDraftCardRef` for draft card UI. |
+| `publish_content` | agents/[id]/page.tsx | Calls `/api/connections/publish`. Checks output is approved. | Updates `published_url`. Updates `keyword_banks.content_targeting_this` to live URL. |
+| `generate_images` | agents/[id]/page.tsx | Parallel calls to `/api/generate-image`. Enhances prompts with client style context. | Uploads to Supabase Storage `blog-images` bucket. Returns public URLs. |
+| `save_planned_task` | agents/[id]/page.tsx | Inserts to `planned_tasks`. | Reloads `plannedTasks` state. |
+| `update_planned_task` | agents/[id]/page.tsx | Updates `planned_tasks` row. | Reloads `plannedTasks` state. |
+| `read_file` | agents/[id]/page.tsx | GET `/api/github?client_id=&path=` | None |
+| `audit_site` | agents/[id]/page.tsx | Reads from `sitePages` state (loaded at session start). Checks: missing meta, missing H1, thin content, cannibalisation, untargeted keywords. | None |
+| `read_page` | agents/[id]/page.tsx | Reads from `site_pages` table by URL. Returns url, title, H1, meta, word_count, internal_links, full content. | None |
+| `search_history` | agents/[id]/page.tsx | Reads `content_history` table. Filters by query match on title/keyword/summary. | None |
+| `write_file` | agents/[id]/page.tsx | PUT `/api/github`. Also inserts to `content_outputs` and `content_history`. | Fires output-ready notification. |
+| `get_site_pages` | agents/[id]/page.tsx | Reads from `sitePages` state. Keyword-filters to top 10 relevant. Supports filter: all/no_meta/no_h1/thin. | None |
+| `get_keywords` | agents/[id]/page.tsx | Reads `keyword_banks` ordered by `opportunity_score` desc. Supports filter: all/untargeted/ranking/high_volume. | None |
+| `suggest_keyword` | agents/[id]/page.tsx | Inserts to `keyword_suggestions` (status: pending). | Logs to `agent_activity`. |
+| `create_content_plan` | agents/[id]/page.tsx | Inserts to `content_calendar`. | Logs to `agent_activity`. |
+| `analyse_competitors` | agents/[id]/page.tsx | Reads `competitor_sites` and `competitor_pages`. | Logs to `agent_activity`. |
+| `suggest_internal_links` | agents/[id]/page.tsx | Scores existing `sitePages` state by keyword relevance. Returns top 5. | Creates `briefing_item`. Logs to `agent_activity`. |
+| `analyse_gsc` | agents/[id]/page.tsx | Reads `search_performance` table. Returns near-misses (pos 5-15, >50 imp), low-CTR, top queries, totals. | Runs `discoverKeywordsFromGSC` — may add to `keyword_suggestions`. |
+| `update_agent_notes` | agents/[id]/page.tsx | Upserts to `client_knowledge.agent_notes[agent.slug]`. | None |
+
+---
+
+## Agentic loop (send() function)
+
+- Max 12 iterations
+- Each iteration: POST `/api/chat` → Anthropic API
+- On `tool_use`: all tool blocks executed in **parallel** via `Promise.all`
+- Tool inputs with large content (write_file, write_content) trimmed to 2000 chars before pushing to history
+- Tool results trimmed to 8000 chars max before pushing to history
+- Thinking text (pre-tool text blocks) captured to `thoughtsRef` and shown in task log
+- On `end_turn` with empty reply: fires a summary request (Haiku, 512 tokens) asking Ada to summarise what she just did
+- On `max_tokens`: saves partial + "Reply 'continue' to get the rest"
+- Task log: persists across navigation via `encodeMessageMeta` / `decodeMessageMeta` in message content
+- `pendingDraftCardRef`: holds draft card data (title, word count, image count, review URL) set by write_content, attached to the final assistant message
+
+---
+
+## Pages
+
+### App pages (`src/app/(app)/`)
+
+| Route | What it does |
+|---|---|
+| `/` | Dashboard. Briefing room (AI opportunity cards, expand/collapse, Act/Dismiss). Stat cards (Clients, Queued, Running, Needs review — mono font, 36px number). What needs attention panel. Token usage (by agent + 5-week activity calendar). Pending review (inline approve/delete). Queue activity. |
+| `/clients` | Client list table. Add client modal (name, slug, industry, website, description, ICP, USP, brand voice, content goals). |
+| `/clients/[id]` | 9 tabs: Profile, Keywords, Pages, Codebase, Connections, Schedule, Competitors, Search, Reports. AI overview panel (Haiku, 24h cache). Crawl button. GSC sync button. Refresh knowledge panel button (crawl + GSC sync + backfill-targeting in parallel). |
+| `/clients/[id]/gsc-setup` | Google OAuth for GSC connection |
+| `/outputs` | Global outputs — Drafts/Approved/Published tabs. Thumbnail, title, client, keyword, agent, word count, date, status pill, action buttons (Approve, Review, Publish, View live). |
+| `/outputs/[id]` | Full output detail. Pipeline bar (Draft/Approved/Published). Image gallery with Supabase URLs. SEO metadata bar (title char count, meta char count). Preview/Edit toggle. 12 feedback preset chips (Generate images, Add TOC, Strengthen intro, Fix title/meta, Featured snippet, Internal links, Improve CTA, FAQ section, Expand, Fix headings, Strengthen trust signals, Adjust tone). Feedback to Ada panel. Version history. Approve/Revert/Publish/Delete. |
+| `/keywords` | Global keyword suggestions. Pending/Approved/Rejected tabs. Client filter. Importance stars (scored from GSC position + impressions). Approve all. Per-row approve (→ keyword_banks) / reject with reason input. |
+| `/reports` | Reports list. Generate modal (client + period_start + period_end). |
+| `/queue` | Global content queue |
+| `/activity` | Global agent activity log |
+| `/calendar` | Global content calendar (separate from per-agent) |
+| `/marketplace` | Agent cards. Ada + Theo installed. 5 others not installed. |
+| `/settings` | Workspace name, Anthropic key, Gemini key, token budget + usage bar, notification prefs (email toggle, Slack webhook + test button, per-type toggles). |
+| `/agents` | Agent list |
+| `/agents/[id]` | Main agent interface. Chat + Settings tabs. Left panel: New chat, task log (Active/Last session), planned tasks, conversation list with delete. Right panel: agent header with avatar/name/role, message thread, quick action chips (empty state), suggested reply chips (after ambiguous responses), textarea + Send. |
+| `/agents/[id]/calendar` | Per-agent calendar. Generator panel (client, 2w/4w/8w, 1-4 posts/week, optional focus, "Generate plan" button). Month grid view (chips on dates, drawer on click). List view toggle. Status flow bar. Unscheduled strip. Bulk approve/schedule bar. |
+| `/agents/[id]/keywords` | Per-agent keyword suggestions with importance scoring |
+| `/agents/[id]/outputs` | Per-agent outputs — Needs review / Approved |
+| `/agents/[id]/queue` | Per-agent queue. Status filters. Clear queue. Remove individual items. |
+| `/agents/[id]/activity` | Day-grouped activity log. Token count + estimated cost ($4/M blended). Pagination. |
+
+### Auth pages
+
+| Route | Purpose |
+|---|---|
+| `/login` | Supabase email/password. Brand green background (#063227). AgenceeLogo animated. White card form. |
+| `/signup` | Account creation |
+| `/onboarding` | Post-signup setup |
+
+---
+
+## API Routes
+
+### Agents and content
+
+| Route | Method | Purpose | Notes |
+|---|---|---|---|
+| `/api/chat` | POST | Anthropic API proxy. Accepts model, messages, tools, system. | All agent tool calls go through here. |
+| `/api/run-task` | POST | Autonomous content gen for queued items. Single Sonnet call, no tools, simplified prompt. | **Critical gap: no knowledge panel, no tools. Lower quality than interactive.** |
+| `/api/generate-image` | POST | Nano Banana Pro image gen → Supabase Storage blog-images bucket. Default 1K. | Returns url, filename, storage_path, mime_type. |
+
+### Scheduling and jobs
+
+| Route | Method | Purpose |
+|---|---|---|
+| `/api/schedule/check` | GET | Vercel cron entry. Triggers due client_schedules, GSC syncs, monthly reports, scheduled_jobs, daily digest. Requires x-vercel-cron-signature or Bearer CRON_SECRET. |
+| `/api/schedule/run` | POST | Execute one client_schedule: pick untargeted keyword by priority → content_queue → update next_run_at. |
+| `/api/jobs` | GET/POST | List or create scheduled_jobs. |
+| `/api/jobs/run` | POST | Run a scheduled_job. Types: gsc_intelligence, keyword_research, content, site_audit. |
+| `/api/jobs/[id]` | POST | Update/delete a job. |
+
+### Intelligence
+
+| Route | Method | Purpose |
+|---|---|---|
+| `/api/intelligence/decay` | POST | Compare 28d vs 56d GSC data. Flag keywords dropped >3 positions with >50 impressions → briefing_items + agent_activity. |
+| `/api/intelligence/score-keywords` | POST | Recalculate opportunity_score for all keyword_banks rows (position + volume + KD + content_targeting_this). |
+
+### Knowledge and clients
+
+| Route | Method | Purpose |
+|---|---|---|
+| `/api/crawl` | POST | Crawl client website → site_pages → client_knowledge (site_pages, site_summary, content_summary via Haiku). |
+| `/api/gsc/sync` | POST | Full GSC sync: 7d/28d/90d → search_performance, keyword position updates, briefing_items, client_knowledge gsc_snapshot. |
+| `/api/gsc/properties` | GET | List GSC properties for a Google account. |
+| `/api/knowledge/[clientId]` | GET/PATCH | Read or upsert client_knowledge panel. |
+| `/api/calendar/generate-plan` | POST | Load full client context (knowledge panel + keyword bank + content history + existing plan) → one Sonnet call → JSON plan → insert to content_calendar. |
+| `/api/clients/[id]/overview` | POST | Haiku AI overview for client (24h cache). Uses GSC totals + content stats. |
+| `/api/keywords/approve` | POST | Approve keyword_suggestion → insert to keyword_banks. Rounds float positions. |
+| `/api/keywords/reject` | POST | Reject a keyword_suggestion. |
+| `/api/keywords/backfill-targeting` | POST | Haiku semantic match: untargeted keywords → live site pages → update content_targeting_this. Validates URLs against site_pages. |
+
+### Publishing
+
+| Route | Method | Purpose |
+|---|---|---|
+| `/api/connections/publish` | POST | Publish approved content_output. GitHub: commit images + MDX, inject image frontmatter, trigger Vercel. WordPress/Shopify/Webflow via config. Updates keyword_banks.content_targeting_this to live URL. |
+| `/api/connections/read` | GET/POST | Read content from site connection. |
+| `/api/connections/test` | POST | Test a site connection. |
+| `/api/outputs/[id]` | POST | Update output (approve, edit). |
+| `/api/repair/frontmatter-images` | POST | One-off: fix missing image: fields in published MDX. |
+
+### Auth
+
+| Route | Purpose |
+|---|---|
+| `/api/auth/google` | Initiate Google OAuth |
+| `/api/auth/google/callback` | OAuth callback, store tokens |
+| `/api/auth/google/refresh` | Refresh access token |
+| `/api/auth/google/select-property` | Save selected GSC property |
+
+### Other
+
+| Route | Method | Purpose |
+|---|---|---|
+| `/api/agent-activity` | GET/POST | Log or list agent_activity. GET supports agent_id, client_id, page, page_size, totals_only. |
+| `/api/briefing-items` | GET/POST | List (with dismissed filter) or dismiss (single or bulk) briefing_items. |
+| `/api/notifications/digest` | POST | Daily digest per workspace: draft count + keyword suggestions + next schedule → email + Slack. |
+| `/api/notifications/output-ready` | POST | Fire when a draft is ready for review. |
+| `/api/reports/generate` | POST | Monthly report: loads content_outputs, search_performance, keyword_banks, agent_activity → Sonnet executive summary → stored in reports table. |
+| `/api/github` | GET/PUT | GitHub API proxy for read_file (GET) and write_file (PUT). |
+| `/api/clients/[id]/github` | GET/POST | GitHub-specific client operations. |
+| `/api/vercel/promote` | POST | Promote a Vercel deployment. |
+| `/api/workspace/api-key` | POST | Save encrypted API keys to workspace_settings. |
+
+---
+
+## Database Tables
+
+| Table | Key columns | Purpose |
+|---|---|---|
+| `workspaces` | id, owner_id, name | One per account |
+| `workspace_settings` | user_id, anthropic_api_key, gemini_api_key, monthly_token_budget, tokens_used_this_month | API keys + usage |
+| `client_profiles` | id, name, slug, website, description, icp, usp, brand_voice, content_goals, content_tone, location_info, competitors[], github_repo, content_autonomy, pricing_info, team_info, trust_signals, service_differentiators, target_keywords, avoid_topics, cta_approach, schema_type, ai_overview, ai_overview_updated_at | All client context |
+| `client_knowledge` | client_id, site_pages jsonb, site_pages_updated_at, site_summary, gsc_snapshot jsonb, gsc_snapshot_updated_at, content_summary, content_updated_at, docs jsonb, agent_notes jsonb | Persistent client brain |
+| `client_schedules` | client_id, agent_id, cadence, content_types[], target_word_count, next_run_at, last_run_at | Recurring content schedules |
+| `agents` | id, name, role, slug, agent_type, avatar_initials, instructions, backstory, expertise, personality, communication_style, working_style, boundaries, nav_items, active | Agent config |
+| `conversations` | id, agent_id, title, updated_at, user_id | Chat sessions |
+| `messages` | conversation_id, role, content, user_id | Content has __META__ prefix encoding task log + thoughts |
+| `planned_tasks` | agent_id, client_id, conversation_id, content_type, primary_keyword, supporting_keywords, title_brief, word_count, internal_links, notes, status | Agent-saved planned content |
+| `content_queue` | client_id, agent_type, content_type, primary_keyword, supporting_keywords, word_count, scheduled_for, status, output_id, calendar_id | Job queue |
+| `content_outputs` | client_id, title, content, primary_keyword, meta_description, word_count, approved, published_url, images jsonb, platform_output jsonb, format, source, notes, current_version | All drafts/published |
+| `content_history` | client_id, title, url, primary_keyword, summary, published_at, ranking_position, ranking_date, traffic_notes, performance_notes | Published content record |
+| `content_calendar` | client_id, title, primary_keyword, content_type, scheduled_date, status, rationale, priority, agent_id, notes, output_id, queue_item_id | Calendar planning |
+| `keyword_banks` | client_id, keyword, intent, funnel_stage, monthly_volume, difficulty, current_position, content_targeting_this, opportunity_score, priority | Approved keyword targets |
+| `keyword_suggestions` | client_id, keyword, rationale, source, metadata jsonb, status, suggested_by, monthly_volume_estimate, difficulty_estimate, intent, funnel_stage | Pending keyword proposals |
+| `search_performance` | client_id, query, page, position, impressions, clicks, ctr, period_start, period_end | GSC data. __total__/__page__/__device__ special rows for aggregates. |
+| `content_performance` | client_id, url, keyword, impressions, clicks, position, recorded_at | Per-URL GSC snapshots |
+| `site_pages` | client_id, url, title, h1, meta_description, word_count, content_summary, content, internal_links, crawled_at | Crawled page inventory |
+| `competitor_sites` | client_id, url, name, notes, last_crawled_at | Competitor records |
+| `competitor_pages` | competitor_id, client_id, url, title, h1, word_count, keywords[], content_summary | Crawled competitor content |
+| `google_connections` | client_id, property_url, access_token, refresh_token, last_synced_at, status | GSC OAuth |
+| `site_connections` | client_id, platform, label, config, status, last_tested_at | GitHub/WordPress/Shopify/Webflow |
+| `briefing_items` | client_id, workspace_id, type, title, body, action_url, action_label, priority, dismissed | Dashboard intelligence cards |
+| `agent_activity` | agent_id, client_id, workspace_id, action, detail, tokens_used | Agent action log |
+| `notification_preferences` | workspace_id, email_enabled, slack_webhook_url, notify_output_ready, notify_ranking_changes, notify_schedule_complete, notify_schedule_failed, notify_ranking_threshold | Notification config |
+| `notification_log` | workspace_id, type, subject, body, channels[], sent_at | Sent notification history |
+| `reports` | client_id, period_start, period_end, status, data jsonb | Monthly reports |
+| `scheduled_jobs` | client_id, workspace_id, agent_id, name, job_type, cadence, run_day, run_hour, next_run_at, last_run_at, last_run_status, last_run_summary, enabled | Background jobs |
+| `job_runs` | job_id, workspace_id, client_id, status, summary, completed_at | Job execution history |
+
+---
+
+## Knowledge Panel (client_knowledge)
+
+The persistent brain per client. Injected into every agent session — eliminates redundant tool calls.
+
+**Written by:**
+
+| Trigger | Fields written |
+|---|---|
+| `/api/crawl` completes | site_pages, site_pages_updated_at, site_summary, content_summary (Haiku call using content_history + keyword_banks) |
+| `/api/gsc/sync` completes | gsc_snapshot (near_miss pos 3-20 >15imp, low_ctr pos<=10 ctr<3% >30imp, top_queries by clicks, totals), gsc_snapshot_updated_at |
+| `update_agent_notes` tool | agent_notes[agent.slug] |
+| `/api/keywords/backfill-targeting` | Updates keyword_banks.content_targeting_this (not a knowledge panel field, but called from refresh) |
+| Agent session start (background, fire and forget) | Triggers crawl if site_pages >7 days old. Triggers GSC sync if snapshot >48 hours old. |
+| Refresh button (client page) | Crawl + GSC sync + backfill-targeting in parallel |
+
+**Injected into buildSystemPrompt as:**
+- Full page inventory: url, title, word_count, H1 — with crawl date
+- GSC snapshot: totals (clicks, impressions, avg_position, ctr), near-miss keywords, low-CTR pages, top 30 queries
+- Content summary prose
+- Agent notes for the current agent's slug
+- Knowledge docs (user-editable, not yet surfaced in UI)
+
+---
+
+## Token Routing
+
+| Turn type | Model | Max tokens |
+|---|---|---|
+| Writing (blog post, article, plan) | claude-sonnet-4-6 | 16,000 |
+| Standard analytical/conversational | claude-sonnet-4-6 | 4,000 |
+| Fetch/lookup/tool-only turns | claude-haiku-4-5-20251001 | 2,000 |
+| Acknowledgement turn | claude-haiku-4-5-20251001 | 150 |
+| Calendar plan generation | claude-sonnet-4-6 | 4,000 |
+| Client overview | claude-haiku-4-5-20251001 | 512 |
+| Content summary (on crawl) | claude-haiku-4-5-20251001 | 300 |
+| Keyword backfill matching | claude-haiku-4-5-20251001 | 1,500 |
+| Report executive summary | claude-sonnet-4-6 | 300 |
+| Silent summary (empty end_turn) | claude-sonnet-4-6 | 512 |
+
+---
+
+## Cron Pipeline (daily 07:00 UTC)
+
+```
+GET /api/schedule/check
+├── For each due client_schedule:
+│   └── POST /api/schedule/run
+│       └── Pick untargeted keyword (highest priority, content_targeting_this IS NULL)
+│           → insert content_queue → update next_run_at
+│
+├── For each GSC connection not synced in 23h:
+│   └── POST /api/gsc/sync
+│       ├── Fetch 7d/28d/90d from GSC API
+│       ├── Delete + reinsert search_performance rows
+│       ├── Update keyword_banks.current_position
+│       ├── Create briefing_items (near-miss, low-CTR)
+│       ├── Write client_knowledge.gsc_snapshot
+│       ├── Update file_tree (sitemap) on client_profiles
+│       └── discoverKeywordsFromGSC → keyword_suggestions
+│
+├── On 1st of month:
+│   └── POST /api/reports/generate per client with content last month
+│
+├── For each due scheduled_job:
+│   └── POST /api/jobs/run
+│       ├── gsc_intelligence: sync + decay detection + score-keywords + overview refresh
+│       ├── keyword_research: discoverKeywordsFromGSC from stored search_performance
+│       ├── content: run client_schedule → content_queue (respects content_autonomy)
+│       └── site_audit: crawl → site_pages + client_knowledge
+│
+└── POST /api/notifications/digest
+    └── Per workspace: count drafts + pending keywords + next schedule → email + Slack
+```
+
+---
+
+## Content Lifecycle
+
+```
+1. DISCOVERY
+   GSC sync / analyse_gsc tool → keyword_suggestions (pending)
+   User approves at /keywords → keyword_banks
+
+2. PLANNING
+   Ada chat or /api/calendar/generate-plan → content_calendar (planned)
+   OR client_schedule fires → content_queue (queued, via cron)
+
+3. WRITING — two paths:
+   Path A (interactive): User asks Ada in chat → Ada writes → write_content tool
+     → content_outputs (draft, approved=false)
+     → keyword_banks.content_targeting_this = /outputs/{id}
+     → output-ready notification
+
+   Path B (autonomous): /api/run-task picks queued item → simplified Sonnet call (no tools)
+     → content_outputs (draft)
+     ⚠ KNOWN GAP: simplified prompt, no knowledge panel, lower quality
+
+4. REVIEW
+   User reviews at /outputs/{id}
+   Optional: feedback chips → Ada revises via chat (send feedback to Ada button)
+   Optional: version history
+   User approves → content_outputs.approved = true
+   → content_history insert
+   → keyword_banks.content_targeting_this updated
+
+5. PUBLISH (Theo)
+   publish_content tool → /api/connections/publish
+   → GitHub: images committed to /public/assets/, MDX committed with frontmatter
+   → Vercel deploy triggered
+   → content_outputs.published_url set
+   → keyword_banks.content_targeting_this = live URL
+
+6. MONITORING
+   GSC sync daily → search_performance updated
+   intelligence/decay → briefing_items if ranking drops
+   intelligence/score-keywords → opportunity_score recalculated
+   knowledge panel gsc_snapshot refreshed
+```
+
+---
+
+## Autonomy Levels (client_profiles.content_autonomy)
+
+| Level | Behaviour |
+|---|---|
+| `manual` | Queue item created, human writes interactively |
+| `auto_approve` | Content written autonomously (run-task) and auto-approved, human publishes |
+| `full_autopilot` | Written, approved, and submitted for Vercel promotion automatically |
+
+---
+
+## Active Clients
+
+| Client | ID | Platform | Status |
+|---|---|---|---|
+| Hear Better | d46432ec-520c-4b16-8752-9b3f3b908f79 | Next.js + GitHub + Vercel | Active. Knowledge panel populated. 26 pages. 3 posts live. 17/19 keywords targeted. |
+
+---
+
+## Known Bugs
+
+| Bug | Severity | File | Status |
+|---|---|---|---|
+| Task log panel renders raw JSON/code during Working... state | Medium | agents/[id]/page.tsx render | Open |
+| Em-dashes still appearing in agent responses | Medium | buildSystemPrompt | Open — rule exists but not enforced hard enough |
+| `run-task` route uses simplified prompt with no knowledge panel or tools | High | api/run-task/route.ts | Open — autonomous content is lower quality than interactive |
+| `getToolsForAgent` still uses old filter logic (not all-tools-for-all-agents) | Medium | agents/[id]/page.tsx | Open — overhaul prompt may not have applied this |
+| `buildSystemPrompt` still has old hardcoded image rules | Medium | agents/[id]/page.tsx | Open — overhaul prompt may not have applied new version |
+| microsuction-near-me-north-east.mdx missing image frontmatter | Low | GitHub repo | Open — repair route needs running |
+| Suggested replies `<suggestions>` tags not always stripped cleanly | Low | agents/[id]/page.tsx | Open |
+| Token usage not recording (tokens_used always 0 in agent_activity) | High | agents/[id]/page.tsx | Open — bug fix prompt written, may not be applied |
+
+---
+
+## Next to Build (Priority Order)
+
+### Immediate fixes
+1. Verify agent overhaul prompt was fully applied (check buildSystemPrompt + getToolsForAgent in production)
+2. Fix task log UI bug — raw JSON showing in Working... panel
+3. Fix token tracking — tokens_used in agent_activity and workspace_settings
+4. Upgrade run-task to use full system prompt + knowledge panel
+
+### Advanced intelligence (next session)
+5. Extended thinking mode for complex strategy sessions (one parameter change in send())
+6. Auto debrief — agents auto-call update_agent_notes at end of every conversation
+7. Content decay surface in Ada — she should be aware of declining pages from knowledge panel
+8. Proactive GSC briefing — cron triggers Ada to analyse and write briefing_items autonomously
+9. Performance feedback loop — link GSC data back to content_outputs so Ada knows post performance
+10. Topic cluster mapping tool — pillar/supporting content architecture
+11. Internal link equity audit — pages with no inbound or outbound internal links
+
+### Scale and reseller
+12. Weekly personalised briefing email per client (not generic digest)
+13. Client onboarding automation — new client triggers full audit + knowledge panel + opportunity report
+14. White-label system — zero Agencee references in any agent output
+15. Cross-client intelligence — pattern analysis across multiple clients
+
+### New tools (larger lift)
+16. SERP analysis tool — live SERP data per keyword (DataForSEO or SerpAPI)
+17. E-E-A-T audit — credential/entity optimisation for regulated niches
+18. Competitor monitoring on schedule — crawl weekly, surface new pages as briefing items
+19. Second client (WordPress) — stress-test multi-tenancy
+
+---
+
+## Environment Variables
+
+| Variable | Purpose |
+|---|---|
+| NEXT_PUBLIC_SUPABASE_URL | Supabase project URL |
+| NEXT_PUBLIC_SUPABASE_ANON_KEY | Supabase anon key |
+| SUPABASE_SERVICE_KEY | Supabase service role key |
+| ANTHROPIC_API_KEY | Anthropic API key |
+| GEMINI_API_KEY | Gemini / Nano Banana key |
+| CRON_SECRET | Vercel cron auth secret |
+| NEXT_PUBLIC_SITE_URL | Production URL (used in cron sub-requests and notifications) |
+| GOOGLE_CLIENT_ID | Google OAuth client ID |
+| GOOGLE_CLIENT_SECRET | Google OAuth client secret |
+| GOOGLE_REDIRECT_URI | Must match Google Cloud Console exactly |
+| RESEND_API_KEY | Resend email API key |
+| GITHUB_TOKEN | GitHub token for Hear Better repo |
+| VERCEL_TOKEN | Vercel API token (deploy triggers) |
+
+---
+
+## Key IDs
+
+| Item | Value |
+|---|---|
+| Supabase project | qzyksnszutnorppfqchz |
+| Hear Better client_id | d46432ec-520c-4b16-8752-9b3f3b908f79 |
+| Ada agent_id | 1300a385-17d3-41e1-9535-50f5b9c49823 |
+| GSC connection | b6be250d-0eec-4429-a601-77d8495dbd57 |
+| Hear Better Vercel project | ear-better-next-public (prj_bXp45NsRLpRolrmkvOf1arAbTrtr) |
+| Hear Better GitHub repo | cnvrtagency/wireframe-whisperer-89 (branch: main) |
+| VERCEL_TOKEN | stored in Vercel env vars — do not commit |
+| User email | danlyons@gmail.com |
+
+---
+
+## Session Change Log
+
+### 11 June 2026
+**Built:**
+- Knowledge panel (`client_knowledge` table) — site_pages, gsc_snapshot, content_summary, docs, agent_notes
+- `/api/knowledge/[clientId]` GET/PATCH route
+- GSC sync writes gsc_snapshot to knowledge panel (near_miss, low_ctr, top_queries, totals)
+- Crawl writes site_pages + content_summary (Haiku) to knowledge panel
+- `update_agent_notes` tool added to ALL_TOOLS
+- Backfill auto-trigger on agent session start (background, fire and forget)
+- "Refresh knowledge panel" button on client page
+- `/api/keywords/backfill-targeting` — Haiku semantic matching of keywords to live site pages
+- `/api/calendar/generate-plan` — full context, one Sonnet call, JSON plan, inserts to content_calendar
+- Calendar page rebuilt — month grid view, drawer, Write now, list toggle, staged generation progress
+- Keyword approve float→integer fix (`Math.round` on position)
+- keyword_banks.content_targeting_this now updated on: write_content, approve (outputs page), approve (dashboard), publish (publish route)
+- SQL backfill run for Hear Better (1 match)
+- Haiku backfill-targeting run for Hear Better (17/19 keywords matched)
+- AgenceeLogo component (PNG-based, animated, splash/sidebar variants)
+- Design overhaul prompt written (colours, responsive sidebar, brand tokens)
+- Agent system overhaul prompt written (universal working principles, knowledge panel injection, SCHEMA images, suggested replies, model routing)
+
+**Known still open:**
+- Task log raw JSON bug
+- Em-dashes in responses
+- run-task simplified prompt
+- Token tracking not recording
+- Verify agent overhaul prompt applied in production
