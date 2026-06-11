@@ -355,6 +355,11 @@ export default function ClientDetail() {
           body: JSON.stringify({ client_id: id }),
         }),
       ])
+      await fetch('/api/keywords/backfill-targeting', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ client_id: id }),
+      })
       setRefreshed(new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }))
     } catch (e) {
       console.error('Knowledge refresh failed:', e)
