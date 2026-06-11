@@ -1,7 +1,7 @@
 # Agencee — Master Architecture Document
 
 **Living document. Update at the end of every build session.**
-Last updated: 11 June 2026. Session: Ada capabilities, knowledge panel, calendar rebuild, keyword targeting fixes.
+Last updated: 11 June 2026. Session: Bug fixes — task log thoughts render, token tracking, run-task quality upgrade.
 
 ---
 
@@ -233,7 +233,7 @@ Exist as cards in `/marketplace` only. No agent_type, tools, or system prompt.
 | Route | Method | Purpose | Notes |
 |---|---|---|---|
 | `/api/chat` | POST | Anthropic API proxy. Accepts model, messages, tools, system. | All agent tool calls go through here. |
-| `/api/run-task` | POST | Autonomous content gen for queued items. Single Sonnet call, no tools, simplified prompt. | **Critical gap: no knowledge panel, no tools. Lower quality than interactive.** |
+| `/api/run-task` | POST | Autonomous content gen for queued items. Single Sonnet call, no tools. Loads knowledge panel, content history, site pages, keyword bank in parallel before calling Sonnet. | Full system prompt with client context, GSC snapshot, live pages, keyword bank, and content history. max_tokens: 12000. |
 | `/api/generate-image` | POST | Nano Banana Pro image gen → Supabase Storage blog-images bucket. Default 1K. | Returns url, filename, storage_path, mime_type. |
 
 ### Scheduling and jobs
@@ -481,14 +481,14 @@ GET /api/schedule/check
 
 | Bug | Severity | File | Status |
 |---|---|---|---|
-| Task log panel renders raw JSON/code during Working... state | Medium | agents/[id]/page.tsx render | Open |
+| Task log panel renders raw JSON/code during Working... state | Medium | agents/[id]/page.tsx render | **Fixed 11 Jun 2026** — thoughts render block removed |
 | Em-dashes still appearing in agent responses | Medium | buildSystemPrompt | Open — rule exists but not enforced hard enough |
-| `run-task` route uses simplified prompt with no knowledge panel or tools | High | api/run-task/route.ts | Open — autonomous content is lower quality than interactive |
+| `run-task` route uses simplified prompt with no knowledge panel or tools | High | api/run-task/route.ts | **Fixed 11 Jun 2026** — full system prompt + parallel context loading |
 | `getToolsForAgent` still uses old filter logic (not all-tools-for-all-agents) | Medium | agents/[id]/page.tsx | Open — overhaul prompt may not have applied this |
 | `buildSystemPrompt` still has old hardcoded image rules | Medium | agents/[id]/page.tsx | Open — overhaul prompt may not have applied new version |
 | microsuction-near-me-north-east.mdx missing image frontmatter | Low | GitHub repo | Open — repair route needs running |
 | Suggested replies `<suggestions>` tags not always stripped cleanly | Low | agents/[id]/page.tsx | Open |
-| Token usage not recording (tokens_used always 0 in agent_activity) | High | agents/[id]/page.tsx | Open — bug fix prompt written, may not be applied |
+| Token usage not recording (tokens_used always 0 in agent_activity) | High | agents/[id]/page.tsx | **Fixed 11 Jun 2026** — totalTokensUsed accumulator + increment_token_usage RPC after loop |
 
 ---
 
@@ -581,8 +581,11 @@ GET /api/schedule/check
 - Agent system overhaul prompt written (universal working principles, knowledge panel injection, SCHEMA images, suggested replies, model routing)
 
 **Known still open:**
-- Task log raw JSON bug
 - Em-dashes in responses
-- run-task simplified prompt
-- Token tracking not recording
-- Verify agent overhaul prompt applied in production
+- Verify agent overhaul prompt applied in production (getToolsForAgent, buildSystemPrompt)
+
+### 11 June 2026 (session 2)
+**Fixed:**
+- Task log thoughts render block removed (raw AI reasoning no longer shown to user in task log panel)
+- Token tracking: totalTokensUsed accumulator wired into send() loop + increment_token_usage RPC called after loop
+- run-task upgraded: parallel context load (knowledge panel, content history, site pages, keyword bank) + full system prompt with client context + max_tokens raised to 12000

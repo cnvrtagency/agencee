@@ -42,7 +42,59 @@ export async function POST(req: NextRequest) {
 
     const client = item.client_profiles as any
 
-    // Build content generation prompt
+    // Load context in parallel: knowledge panel, content history, site pages, keyword bank
+    const [{ data: knowledge }, { data: history }, { data: sitePages }, { data: keywords }] = await Promise.all([
+      supabase.from('client_knowledge').select('site_pages,gsc_snapshot,content_summary,agent_notes').eq('client_id', item.client_id).maybeSingle(),
+      supabase.from('content_history').select('title,primary_keyword,url,summary').eq('client_id', item.client_id).order('published_at', { ascending: false }).limit(40),
+      supabase.from('site_pages').select('url,title,h1,meta_description,word_count').eq('client_id', item.client_id).order('url').limit(60),
+      supabase.from('keyword_banks').select('keyword,intent,funnel_stage,monthly_volume,difficulty,current_position,content_targeting_this,opportunity_score').eq('client_id', item.client_id).order('opportunity_score', { ascending: false, nullsFirst: false }).limit(100),
+    ])
+
+    const sitePagesList = (sitePages || []).map((p: any) =>
+      `${p.url} | "${p.title || ''}"${p.h1 ? ` | H1: "${p.h1}"` : ''}${p.meta_description ? '' : ' [NO META]'}${p.word_count ? ` | ${p.word_count}w` : ''}`
+    ).join('\n')
+
+    const historyList = (history || []).map((h: any) =>
+      `"${h.title}" [${h.primary_keyword || 'no keyword'}]${h.url ? ` -> ${h.url}` : ''} | ${h.summary || ''}`
+    ).join('\n')
+
+    const keywordList = (keywords || []).map((k: any) =>
+      `"${k.keyword}" | ${k.intent || '-'} | vol: ${k.monthly_volume || '?'} | KD: ${k.difficulty || '?'} | pos: ${k.current_position || 'not ranking'} | targeting: ${k.content_targeting_this || 'nothing yet'}`
+    ).join('\n')
+
+    const gscSnapshot = knowledge?.gsc_snapshot as any
+    const gscLines = gscSnapshot ? [
+      `Total clicks (28d): ${gscSnapshot.total_clicks ?? '-'}`,
+      `Total impressions (28d): ${gscSnapshot.total_impressions ?? '-'}`,
+      `Average position: ${gscSnapshot.avg_position ?? '-'}`,
+      gscSnapshot.near_misses?.length ? `Near-miss keywords: ${(gscSnapshot.near_misses as any[]).slice(0, 5).map((m: any) => `"${m.query}" pos ${m.position}`).join(', ')}` : '',
+    ].filter(Boolean).join('\n') : null
+
+    const systemPrompt = [
+      `You are Ada, an expert SEO content writer working for ${client?.name || 'the client'}.`,
+      '',
+      'WORKING PRINCIPLES:',
+      '- Write for humans first, search engines second',
+      '- Every claim must be accurate and useful to the reader',
+      '- Match the brand voice consistently throughout',
+      '- Integrate keywords naturally -- never stuff',
+      '',
+      client?.brand_voice ? `BRAND VOICE:\n${client.brand_voice}` : '',
+      client?.icp ? `TARGET READER:\n${client.icp}` : '',
+      client?.usp ? `USP / DIFFERENTIATORS:\n${client.usp}` : '',
+      client?.trust_signals ? `TRUST SIGNALS:\n${client.trust_signals}` : '',
+      client?.cta_approach ? `CTA APPROACH:\n${client.cta_approach}` : '',
+      '',
+      knowledge?.content_summary ? `SITE CONTENT SUMMARY:\n${knowledge.content_summary}` : '',
+      gscLines ? `GSC PERFORMANCE (28d):\n${gscLines}` : '',
+      '',
+      sitePagesList ? `LIVE SITE PAGES (for internal links):\n${sitePagesList}` : '',
+      '',
+      historyList ? `CONTENT HISTORY (do not repeat these angles):\n${historyList}` : '',
+      '',
+      keywordList ? `KEYWORD BANK:\n${keywordList}` : '',
+    ].filter(s => s !== undefined && s !== null && s !== '').join('\n').trim()
+
     const supporting = Array.isArray(item.supporting_keywords) && item.supporting_keywords.length
       ? `Supporting keywords: ${item.supporting_keywords.join(', ')}`
       : ''
@@ -60,8 +112,6 @@ export async function POST(req: NextRequest) {
       `Target word count: ${item.word_count || 1200} words`,
       brief,
       internalLinks,
-      client?.brand_voice ? `Brand voice: ${client.brand_voice}` : '',
-      client?.icp ? `Target reader: ${client.icp}` : '',
       '',
       'Requirements:',
       '- Start with YAML frontmatter (title, description, keyword, date)',
@@ -71,7 +121,9 @@ export async function POST(req: NextRequest) {
       '- Proper heading hierarchy (H2/H3)',
       '- FAQ section targeting related long-tail questions',
       '- Clear CTA in the conclusion',
-      '- Suggest 2–3 image placements with SEO filename + descriptive alt text',
+      '- Suggest 2-3 image placements with SEO filename + descriptive alt text',
+      '- Add 2-3 internal links using real URLs from the live site pages list above',
+      '- Do not repeat topics or angles already covered in the content history',
       '',
       'Return the complete article as markdown, starting with --- frontmatter --- then the body.',
     ].filter(Boolean).join('\n')
@@ -86,7 +138,8 @@ export async function POST(req: NextRequest) {
       },
       body: JSON.stringify({
         model: 'claude-sonnet-4-6',
-        max_tokens: 8000,
+        max_tokens: 12000,
+        system: systemPrompt,
         messages: [{ role: 'user', content: userPrompt }],
       }),
     })

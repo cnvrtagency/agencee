@@ -1791,11 +1791,6 @@ export default function AgentPage() {
                               <span>{agentStatus}</span>
                             </div>
                           )}
-                          {msgThoughts.length > 0 && (
-                            <div style={{ marginTop: 6, paddingTop: 6, borderTop: '1px solid var(--border)', color: 'var(--text-2)', lineHeight: 1.5, fontStyle: 'italic' }}>
-                              {msgThoughts[msgThoughts.length - 1].slice(0, 240)}{msgThoughts[msgThoughts.length - 1].length > 240 ? '…' : ''}
-                            </div>
-                          )}
                         </div>
                       )}
                       <div style={{ padding: '12px 16px', borderRadius: m.role === 'user' ? '12px 12px 3px 12px' : '3px 12px 12px 12px', background: m.role === 'user' ? 'var(--brand)' : 'var(--surface)', color: m.role === 'user' ? '#fff' : 'var(--text)', border: m.role === 'assistant' ? '1px solid var(--border)' : 'none', borderLeft: m.role === 'assistant' ? '2px solid var(--brand)' : 'none' }}>
