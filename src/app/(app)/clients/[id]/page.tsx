@@ -414,8 +414,32 @@ export default function ClientDetail() {
 
   async function saveConnection() {
     setSavingConn(true)
-    await supabase.from('site_connections').insert({ client_id: id, platform: connForm.platform, label: connForm.label || null, config: connForm.config, status: 'connected' })
-    setSavingConn(false); setConnOpen(false); setConnForm({ platform: 'wordpress', label: '', config: {} }); loadConnections()
+    let config = connForm.config
+
+    if (connForm.platform === 'github' && (!config.repo || config.repo === '')) {
+      config = {
+        repo: (client as any).github_repo || '',
+        branch: (client as any).github_branch || 'main',
+      }
+    }
+
+    if (connForm.platform === 'github' && !config.repo) {
+      setSavingConn(false)
+      alert('No GitHub repo configured. Add one in the Codebase tab first.')
+      return
+    }
+
+    await supabase.from('site_connections').insert({
+      client_id: id,
+      platform: connForm.platform,
+      label: connForm.label || null,
+      config,
+      status: 'connected',
+    })
+    setSavingConn(false)
+    setConnOpen(false)
+    setConnForm({ platform: 'wordpress', label: '', config: {} })
+    loadConnections()
   }
 
   async function testConnection(connId: string) {
@@ -1654,7 +1678,14 @@ export default function ClientDetail() {
               </div>
             ))}
 
-            {connForm.platform === 'github' && <p style={{ fontSize: 13, color: 'var(--text-2)', marginBottom: 14 }}>GitHub is configured in the Codebase tab. This connection type uses those credentials.</p>}
+            {connForm.platform === 'github' && (
+              <div style={{ fontSize: 13, color: 'var(--text-2)', marginBottom: 14, lineHeight: 1.6 }}>
+                {(client as any).github_repo
+                  ? <span style={{ color: 'var(--green)' }}>Repo: {(client as any).github_repo} -- credentials will be loaded from the Codebase tab automatically.</span>
+                  : <span style={{ color: 'var(--amber)' }}>No GitHub repo configured yet. Go to the Codebase tab and add your repo first, then add this connection.</span>
+                }
+              </div>
+            )}
 
             <div style={{ display: 'flex', gap: 10 }}>
               <button style={S.btn} onClick={saveConnection} disabled={savingConn}>{savingConn ? 'Saving...' : 'Add connection'}</button>

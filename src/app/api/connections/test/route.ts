@@ -50,15 +50,34 @@ export async function POST(req: NextRequest) {
         break
       }
       case 'github': {
-        const { repo, token } = conn.config
-        if (!repo) { message = 'Missing repo URL'; break }
+        const { data: cp } = await supabase
+          .from('client_profiles')
+          .select('github_repo, github_token')
+          .eq('id', conn.client_id)
+          .maybeSingle()
+
+        const repo = conn.config?.repo || cp?.github_repo
+        if (!repo) { message = 'No GitHub repo configured. Add one in the Codebase tab.'; break }
+
         const match = repo.match(/github\.com\/([^/]+\/[^/]+)/)
-        if (!match) { message = 'Invalid GitHub repo URL'; break }
+        if (!match) { message = 'Invalid GitHub repo URL format'; break }
+
+        let token: string | null = conn.config?.token || null
+        if (!token && cp?.github_token) {
+          try {
+            const { safeDecrypt } = await import('@/lib/crypto')
+            token = safeDecrypt(cp.github_token) || null
+          } catch { token = null }
+        }
+
         const res = await fetch(`https://api.github.com/repos/${match[1]}`, {
-          headers: token ? { 'Authorization': `token ${token}` } : {},
+          headers: {
+            ...(token ? { 'Authorization': `token ${token}` } : {}),
+            'Accept': 'application/vnd.github.v3+json',
+          },
         })
         ok = res.ok
-        message = ok ? 'GitHub repo is accessible.' : `HTTP ${res.status}`
+        message = ok ? `GitHub repo accessible: ${match[1]}` : `HTTP ${res.status} -- check repo URL and token in Codebase tab`
         break
       }
       default:
