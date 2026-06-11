@@ -17,9 +17,9 @@ const S: Record<string, React.CSSProperties> = {
   td: { padding: '13px 18px', fontSize: 13, borderBottom: '1px solid var(--border)', verticalAlign: 'top' as const },
 }
 
-function pill(active: boolean, color = 'var(--brand-bg)'): React.CSSProperties {
+function pill(active: boolean, color = 'var(--brand)'): React.CSSProperties {
   return {
-    padding: '5px 14px', borderRadius: 99, fontSize: 12, cursor: 'pointer', border: 'none',
+    padding: '5px 14px', borderRadius: 'var(--radius-md)', fontSize: 12, cursor: 'pointer', border: 'none',
     background: active ? color : 'var(--surface-2)',
     color: active ? '#fff' : 'var(--text-2)',
     fontWeight: active ? 600 : 400,
@@ -102,7 +102,7 @@ export default function KeywordsPage() {
           {filter === 'pending' && suggestions.length > 0 && (
             <button onClick={async () => {
               for (const s of pending) await act(s.id, 'approved')
-            }} style={{ fontSize: 12, padding: '5px 14px', borderRadius: 99, background: 'var(--green)', color: '#fff', border: 'none', cursor: 'pointer', fontWeight: 600 }}>
+            }} style={{ fontSize: 11, padding: '4px 10px', borderRadius: 'var(--radius)', background: 'var(--brand)', color: 'var(--brand-accent)', border: 'none', cursor: 'pointer', fontWeight: 700 }}>
               Approve all ({pending.length})
             </button>
           )}
@@ -135,7 +135,15 @@ export default function KeywordsPage() {
                   <td style={{ ...S.td, fontWeight: 600, color: 'var(--text)' }}>{s.keyword}</td>
                   <td style={{ ...S.td, color: 'var(--text-2)' }}>{(s as any).client_profiles?.name || '—'}</td>
                   <td style={S.td}>
-                    {s.intent && <span style={{ fontSize: 11, fontWeight: 600, color: intentColor[s.intent] || 'var(--text-2)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{s.intent}</span>}
+                    {s.intent && (
+                      <span style={{
+                        fontSize: 10, fontWeight: 700,
+                        color: intentColor[s.intent] || 'var(--text-2)',
+                        background: `${intentColor[s.intent] || 'var(--text-2)'}18`,
+                        padding: '2px 7px', borderRadius: 'var(--radius)',
+                        textTransform: 'uppercase', letterSpacing: '0.06em',
+                      }}>{s.intent}</span>
+                    )}
                   </td>
                   <td style={{ ...S.td, color: 'var(--text-2)', fontSize: 11, fontWeight: 600, textTransform: 'uppercase' }}>{s.funnel_stage || '—'}</td>
                   <td style={{ ...S.td, fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--text-2)' }}>{s.monthly_volume_estimate?.toLocaleString() || '—'}</td>
@@ -146,10 +154,10 @@ export default function KeywordsPage() {
                   <td style={{ ...S.td, whiteSpace: 'nowrap' }}>
                     {filter === 'pending' && (
                       <div style={{ display: 'flex', gap: 6 }}>
-                        <button disabled={acting === s.id} onClick={() => act(s.id, 'approved')} style={{ padding: '4px 12px', borderRadius: 99, fontSize: 11, fontWeight: 600, cursor: 'pointer', border: 'none', background: 'var(--green)', color: '#fff' }}>
+                        <button disabled={acting === s.id} onClick={() => act(s.id, 'approved')} style={{ padding: '4px 10px', borderRadius: 'var(--radius)', fontSize: 11, fontWeight: 700, cursor: 'pointer', border: 'none', background: 'var(--brand)', color: 'var(--brand-accent)' }}>
                           Approve
                         </button>
-                        <button disabled={acting === s.id} onClick={() => act(s.id, 'rejected')} style={{ padding: '4px 12px', borderRadius: 99, fontSize: 11, cursor: 'pointer', border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-2)' }}>
+                        <button disabled={acting === s.id} onClick={() => act(s.id, 'rejected')} style={{ padding: '4px 8px', borderRadius: 'var(--radius)', fontSize: 11, cursor: 'pointer', border: 'none', background: 'none', color: 'var(--text-dim)' }}>
                           Reject
                         </button>
                       </div>

@@ -114,12 +114,12 @@ export default function OutputsPage() {
   }
 
   const pill = (label: string, color: string, bg: string) => (
-    <span style={{ fontSize: 11, fontWeight: 600, padding: '3px 10px', borderRadius: 99, color, background: bg, whiteSpace: 'nowrap' }}>{label}</span>
+    <span style={{ fontSize: 10, fontWeight: 700, padding: '3px 8px', borderRadius: 'var(--radius)', color, background: bg, whiteSpace: 'nowrap', textTransform: 'uppercase', letterSpacing: '0.06em' }}>{label}</span>
   )
 
   const actionBtn: React.CSSProperties = {
-    padding: '5px 12px', borderRadius: 'var(--radius)', fontSize: 12, fontWeight: 600, cursor: 'pointer',
-    border: '1px solid var(--border)', background: 'var(--surface-2)', color: 'var(--text-2)', whiteSpace: 'nowrap',
+    padding: '4px 10px', borderRadius: 'var(--radius)', fontSize: 11, fontWeight: 600, cursor: 'pointer',
+    border: 'none', background: 'var(--surface-2)', color: 'var(--text-2)', whiteSpace: 'nowrap',
   }
 
   return (
@@ -132,8 +132,8 @@ export default function OutputsPage() {
       <div style={{ display: 'flex', gap: 6, marginBottom: 20 }}>
         {tabs.map(t => (
           <button key={t.key} onClick={() => setTab(t.key)} style={{
-            padding: '6px 16px', borderRadius: 99, fontSize: 12, cursor: 'pointer', border: 'none',
-            background: tab === t.key ? 'var(--accent)' : 'var(--surface-2)',
+            padding: '6px 16px', borderRadius: 'var(--radius-md)', fontSize: 12, cursor: 'pointer', border: 'none',
+            background: tab === t.key ? 'var(--brand)' : 'var(--surface-2)',
             color: tab === t.key ? '#fff' : 'var(--text-2)',
             fontWeight: tab === t.key ? 600 : 400, letterSpacing: '0.3px',
           }}>{t.label} ({t.count})</button>
@@ -203,16 +203,16 @@ export default function OutputsPage() {
                     {!o.approved && (
                       <>
                         <button onClick={() => approveOutput(o)} title="Approve"
-                          style={{ ...actionBtn, color: 'var(--green)', background: 'var(--green-bg)', border: '1px solid var(--green)' }}>
-                          Approve ✓
+                          style={{ ...actionBtn, color: 'var(--brand-accent)', background: 'var(--brand)', border: 'none' }}>
+                          Approve
                         </button>
-                        <Link href={`/outputs/${o.id}`} style={{ ...actionBtn, textDecoration: 'none', display: 'inline-block' }}>Review →</Link>
+                        <Link href={`/outputs/${o.id}`} style={{ ...actionBtn, textDecoration: 'none', display: 'inline-block' }}>Review</Link>
                       </>
                     )}
                     {o.approved && !o.published_url && (
                       conns.length === 1 ? (
                         <button onClick={() => publishOutput(o)} disabled={publishingId === o.id}
-                          style={{ ...actionBtn, color: '#fff', background: 'var(--accent)', border: '1px solid var(--accent)', opacity: publishingId === o.id ? 0.6 : 1 }}>
+                          style={{ ...actionBtn, color: '#fff', background: 'var(--green)', border: 'none', opacity: publishingId === o.id ? 0.6 : 1 }}>
                           {publishingId === o.id ? 'Publishing...' : 'Publish ↑'}
                         </button>
                       ) : (

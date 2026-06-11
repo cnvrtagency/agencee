@@ -61,7 +61,7 @@ export default function ClientsPage() {
         >Add client</button>
       </div>
 
-      <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)', overflow: 'hidden', boxShadow: '0 1px 3px rgba(0,0,0,0.3)' }}>
+      <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)', overflow: 'hidden', boxShadow: '0 1px 2px rgba(0,0,0,0.05)' }}>
         {clients.length === 0 ? (
           <div style={{ padding: '60px 20px', textAlign: 'center' }}>
             <div style={{ fontSize: 13, color: 'var(--text-2)', marginBottom: 14 }}>No clients yet.</div>
@@ -105,7 +105,7 @@ export default function ClientsPage() {
 
       {open && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50 }} onClick={() => setOpen(false)}>
-          <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)', padding: 32, width: '100%', maxWidth: 560, maxHeight: '85vh', overflowY: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.6)' }} onClick={e => e.stopPropagation()}>
+          <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)', padding: 32, width: '100%', maxWidth: 560, maxHeight: '85vh', overflowY: 'auto', boxShadow: '0 16px 48px rgba(0,0,0,0.18)' }} onClick={e => e.stopPropagation()}>
             <h2 style={{ fontSize: 20, fontWeight: 600, marginBottom: 6, color: 'var(--text)', letterSpacing: '-0.3px' }}>Add client</h2>
             <p style={{ fontSize: 13.5, color: 'var(--text-2)', marginBottom: 24 }}>The more detail you add here, the better every agent performs for this client.</p>
             {[

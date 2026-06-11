@@ -1,73 +1,66 @@
 'use client'
-
 import { useEffect, useState } from 'react'
 import Image from 'next/image'
 
-function PersonIcon({ size = 18 }: { size?: number }) {
+function PersonIcon({ size }: { size: number }) {
   return (
-    <svg width={size} height={Math.round(size * 1.18)} viewBox="0 0 22 26" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+    <svg width={size} height={Math.round(size * 1.18)} viewBox="0 0 22 26" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
       <circle cx="11" cy="7" r="5" />
       <path d="M1 25c0-5.523 4.477-10 10-10s10 4.477 10 10" />
     </svg>
   )
 }
 
-interface AgenceeLogoProps {
-  variant?: 'splash' | 'sidebar' | 'header'
-  animate?: boolean
-}
-
 const SIZES = {
-  splash:  { width: 260, icon: 19, centerIcon: 23, gap: 9 },
-  sidebar: { width: 128, icon: 9,  centerIcon: 11, gap: 4 },
+  splash:  { width: 240, icon: 18, center: 22, gap: 8 },
+  sidebar: { width: 118, icon: 8,  center: 10, gap: 3 },
 }
 
-export default function AgenceeLogo({ variant = 'splash', animate = true }: AgenceeLogoProps) {
-  const [wordmarkVisible, setWordmarkVisible] = useState(!animate)
-  const [iconsVisible, setIconsVisible] = useState<number[]>(animate ? [] : [0,1,2,3,4])
+export default function AgenceeLogo({ variant = 'splash', animate = true }: { variant?: 'splash' | 'sidebar'; animate?: boolean }) {
+  const [phase, setPhase] = useState(animate ? 0 : 6)
+  const s = SIZES[variant] ?? SIZES.sidebar
 
   useEffect(() => {
     if (!animate) return
-    const t1 = setTimeout(() => setWordmarkVisible(true), 200)
-    const timers = [650, 850, 1050, 1250, 1450].map((delay, i) =>
-      setTimeout(() => setIconsVisible(prev => [...prev, i]), delay)
-    )
-    return () => { clearTimeout(t1); timers.forEach(clearTimeout) }
+    const t0 = setTimeout(() => setPhase(1), 80)
+    const t1 = setTimeout(() => setPhase(2), 400)
+    const t2 = setTimeout(() => setPhase(3), 520)
+    const t3 = setTimeout(() => setPhase(4), 640)
+    const t4 = setTimeout(() => setPhase(5), 760)
+    const t5 = setTimeout(() => setPhase(6), 880)
+    return () => [t0, t1, t2, t3, t4, t5].forEach(clearTimeout)
   }, [animate])
 
-  const s = SIZES[variant as keyof typeof SIZES] ?? SIZES.sidebar
-
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: variant === 'splash' ? 10 : 4, userSelect: 'none' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: variant === 'splash' ? 8 : 3, userSelect: 'none' }}>
       <div style={{ display: 'flex', alignItems: 'flex-end', gap: s.gap }}>
-        {[0,1,2,3,4].map(i => {
+        {[0, 1, 2, 3, 4].map(i => {
           const isCenter = i === 2
-          const visible = iconsVisible.includes(i)
+          const visible = phase >= i + 2
           return (
-            <div key={i} style={{
-              color: isCenter ? 'rgba(200,240,208,0.72)' : 'rgba(200,240,208,0.35)',
-              opacity: visible ? 1 : 0,
-              transform: visible
-                ? `translateY(0) scale(${isCenter ? 1.15 : 1})`
-                : `translateY(6px) scale(${isCenter ? 1.15 : 1})`,
-              transition: 'opacity 0.28s ease, transform 0.28s ease',
-            }}>
-              <PersonIcon size={isCenter ? s.centerIcon : s.icon} />
+            <div
+              key={i}
+              className={`logo-icon${visible ? ' visible' : ''}`}
+              style={{
+                color: isCenter ? 'rgba(200,240,208,0.75)' : 'rgba(200,240,208,0.38)',
+                transform: visible
+                  ? `scale(${isCenter ? 1.18 : 1})`
+                  : `translateY(5px) scale(${isCenter ? 1.18 : 1})`,
+              }}
+            >
+              <PersonIcon size={isCenter ? s.center : s.icon} />
             </div>
           )
         })}
       </div>
-      <div style={{
-        opacity: wordmarkVisible ? 1 : 0,
-        transform: wordmarkVisible ? 'translateY(0)' : 'translateY(10px)',
-        transition: 'opacity 0.5s ease, transform 0.5s ease',
-      }}>
+      <div className={`logo-wordmark${phase >= 1 ? ' visible' : ''}`}>
         <Image
           src="/agencee-logo.png"
           alt="Agencee"
           width={s.width}
           height={Math.round(s.width * (370 / 1176))}
           priority
+          fetchPriority="high"
         />
       </div>
     </div>

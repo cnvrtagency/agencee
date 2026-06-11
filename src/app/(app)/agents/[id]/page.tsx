@@ -1458,14 +1458,14 @@ export default function AgentPage() {
   if (!agent) return <div style={{ color: 'var(--text-2)', fontSize: 14, padding: 40 }}>Loading...</div>
 
   return (
-    <div style={{ height: 'calc(100vh - 72px)', display: 'flex', flexDirection: 'column' }}>
+    <div style={{ height: 'calc(100dvh - 72px)', display: 'flex', flexDirection: 'column' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 24, flexShrink: 0 }}>
-        <div style={{ width: 48, height: 48, borderRadius: 11, background: 'var(--surface-3)', border: '1px solid var(--border-bright)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, fontWeight: 600, color: 'var(--accent)', fontFamily: 'var(--font-mono)', flexShrink: 0 }}>
+        <div style={{ width: 48, height: 48, borderRadius: 12, background: 'var(--brand)', border: '1px solid rgba(200,240,208,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, fontWeight: 600, color: 'var(--brand-accent)', fontFamily: 'var(--font-mono)', flexShrink: 0 }}>
           {agent.avatar_initials || agent.name.slice(0, 2).toUpperCase()}
         </div>
         <div style={{ flex: 1 }}>
-          <div style={{ fontSize: 20, fontWeight: 600, color: 'var(--text)', letterSpacing: '-0.3px' }}>{agent.name}</div>
-          <div style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.8px' }}>{agent.role}</div>
+          <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--text)', letterSpacing: '-0.3px' }}>{agent.name}</div>
+          <div style={{ fontSize: 10, color: 'var(--brand-dim)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em' }}>{agent.role}</div>
         </div>
         <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
           {Object.keys(sitePages).length > 0 && (
@@ -1474,7 +1474,7 @@ export default function AgentPage() {
             </span>
           )}
           {(['chat', 'settings'] as const).map(t => (
-            <button key={t} onClick={() => setTab(t)} style={{ ...S.btnSm, background: tab === t ? 'var(--accent)' : 'var(--surface-2)', color: tab === t ? '#fff' : 'var(--text-2)', border: tab === t ? 'none' : '1px solid var(--border)', textTransform: 'capitalize', borderRadius: 99, letterSpacing: '0.3px' }}>{t}</button>
+            <button key={t} onClick={() => setTab(t)} style={{ ...S.btnSm, background: tab === t ? 'var(--brand)' : 'var(--surface-2)', color: tab === t ? '#fff' : 'var(--text-2)', border: tab === t ? 'none' : '1px solid var(--border)', textTransform: 'capitalize', borderRadius: 'var(--radius-md)', letterSpacing: '0.3px' }}>{t}</button>
           ))}
         </div>
       </div>
@@ -1482,14 +1482,14 @@ export default function AgentPage() {
       {tab === 'chat' && (
         <div style={{ display: 'flex', gap: 16, flex: 1, minHeight: 0 }}>
           <div style={{ width: 224, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
-            <button style={{ ...S.btn, width: '100%', marginBottom: 4 }} onClick={newConversation}>+ New chat</button>
+            <button style={{ background: 'var(--brand)', color: '#fff', border: 'none', borderRadius: 'var(--radius-md)', padding: '9px 14px', fontSize: 13, fontWeight: 500, cursor: 'pointer', width: '100%', marginBottom: 4 }} onClick={newConversation}>+ New chat</button>
 
             {/* Live activity queue */}
             {(sending || taskLog.length > 0) && (
-              <div style={{ marginBottom: 8, background: 'var(--bg)', border: `1px solid ${sending ? 'rgba(79,127,255,0.3)' : 'var(--border)'}`, borderRadius: 'var(--radius)', overflow: 'hidden' }}>
-                <div style={{ padding: '7px 10px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 6 }}>
-                  {sending && <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--accent)', display: 'inline-block', animation: 'pulse 1.5s ease-in-out infinite' }} />}
-                  <span style={{ fontSize: 10, color: sending ? 'var(--accent)' : 'var(--text-2)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.8px' }}>
+              <div style={{ marginBottom: 8, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', overflow: 'hidden' }}>
+                <div style={{ padding: '6px 10px', background: 'var(--brand)', borderBottom: '1px solid rgba(200,240,208,0.1)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                  {sending && <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--brand-accent)', display: 'inline-block', animation: 'pulse-dot 1.6s ease-in-out infinite' }} />}
+                  <span style={{ fontSize: 10, color: 'var(--brand-accent)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em' }}>
                     {sending ? 'Active' : 'Last session'}
                   </span>
                 </div>
@@ -1530,7 +1530,7 @@ export default function AgentPage() {
                   onMouseLeave={e => { const btn = e.currentTarget.querySelector('.del-btn') as HTMLElement; if (btn) btn.style.opacity = '0' }}>
                   <button onClick={() => loadMessages(c.id)} style={{ width: '100%', textAlign: 'left', padding: '10px 12px', paddingRight: 28, borderRadius: 'var(--radius)', background: activeConv === c.id ? 'var(--surface-2)' : 'transparent', border: activeConv === c.id ? '1px solid var(--border)' : '1px solid transparent', cursor: 'pointer' }}>
                     <div style={{ fontSize: 13, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.title || 'Conversation'}</div>
-                    <div style={{ fontSize: 11, color: 'var(--text-2)', marginTop: 2, fontFamily: 'var(--font-mono)' }}>{fmt(c.created_at)}</div>
+                    <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 2, fontFamily: 'var(--font-mono)' }}>{fmt(c.created_at)}</div>
                   </button>
                   <button className="del-btn" onClick={(e) => deleteConversation(c.id, e)}
                     style={{ position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-2)', fontSize: 14, padding: '2px 4px', borderRadius: 4, opacity: 0, transition: 'opacity 0.15s' }}
@@ -1584,7 +1584,7 @@ export default function AgentPage() {
                           )}
                         </div>
                       )}
-                      <div style={{ padding: '12px 16px', borderRadius: 12, background: m.role === 'user' ? 'var(--accent)' : 'var(--surface-2)', color: m.role === 'user' ? '#fff' : 'var(--text)', borderBottomRightRadius: m.role === 'user' ? 3 : 12, borderBottomLeftRadius: m.role === 'assistant' ? 3 : 12, borderLeft: m.role === 'assistant' ? '2px solid var(--accent)' : 'none' }}>
+                      <div style={{ padding: '12px 16px', borderRadius: m.role === 'user' ? '12px 12px 3px 12px' : '3px 12px 12px 12px', background: m.role === 'user' ? 'var(--brand)' : 'var(--surface)', color: m.role === 'user' ? '#fff' : 'var(--text)', border: m.role === 'assistant' ? '1px solid var(--border)' : 'none', borderLeft: m.role === 'assistant' ? '2px solid var(--brand)' : 'none' }}>
                         {m.role === 'assistant' && m.content
                           ? <div className="ada-message-content" dangerouslySetInnerHTML={{ __html: marked.parse(m.content) as string }} />
                           : m.content
@@ -1593,7 +1593,7 @@ export default function AgentPage() {
                         }
                       </div>
                       {m.role === 'assistant' && m._draftCard && (
-                        <div style={{ background: 'var(--surface-2)', borderLeft: '3px solid var(--green)', borderRadius: 'var(--radius-md)', padding: '12px 16px', marginTop: 6, alignSelf: 'stretch' }}>
+                        <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderLeft: '3px solid var(--green)', borderRadius: 'var(--radius-md)', padding: '12px 16px', marginTop: 6, alignSelf: 'stretch' }}>
                           <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>✓ Draft saved · &quot;{m._draftCard.title}&quot;</div>
                           <div style={{ fontSize: 12, color: 'var(--text-2)', fontFamily: 'var(--font-mono)', marginTop: 4 }}>{m._draftCard.word_count} words · {m._draftCard.image_count} image{m._draftCard.image_count === 1 ? '' : 's'}</div>
                           <a href={m._draftCard.review_url} style={{ display: 'inline-block', fontSize: 13, color: 'var(--accent)', marginTop: 6, textDecoration: 'none', fontWeight: 500 }}>Review draft →</a>
@@ -1618,7 +1618,7 @@ export default function AgentPage() {
                           { label: '📈 Keyword gaps', msg: `Look at the keyword bank and content history for ${clients[0]?.name || 'the client'}. Identify the most valuable keyword gaps — high intent queries we haven't targeted yet — and recommend the top 5 to write next with a brief angle for each.` },
                         ].map(({ label, msg }) => (
                           <button key={label} onClick={() => { setDraft(msg) }} style={{ background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 99, padding: '5px 12px', fontSize: 12, color: 'var(--text-2)', cursor: 'pointer', transition: 'all 0.12s', whiteSpace: 'nowrap' as const }}
-                            onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.color = 'var(--text)' }}
+                            onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--brand)'; e.currentTarget.style.color = 'var(--text)' }}
                             onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = 'var(--text-2)' }}>
                             {label}
                           </button>
@@ -1626,9 +1626,9 @@ export default function AgentPage() {
                       </div>
                     </div>
                   )}
-                  <div style={{ display: 'flex', gap: 10, paddingTop: 12, borderTop: '1px solid var(--border)', alignItems: 'flex-end' }}>
-                    <textarea value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() } }} placeholder={`Message ${agent.name}...`} rows={2} style={{ flex: 1, resize: 'none', fontFamily: 'inherit' }} />
-                    <button onClick={send} disabled={!draft.trim() || sending} style={{ ...S.btn, flexShrink: 0, opacity: (!draft.trim() || sending) ? 0.4 : 1 }}>{sending ? '...' : 'Send'}</button>
+                  <div style={{ marginTop: 12, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)', padding: '10px 10px 10px 14px', display: 'flex', alignItems: 'flex-end', gap: 8 }}>
+                    <textarea value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() } }} placeholder={`Message ${agent.name}...`} rows={2} style={{ flex: 1, resize: 'none', fontFamily: 'inherit', background: 'transparent', border: 'none', outline: 'none', boxShadow: 'none', padding: 0 }} />
+                    <button onClick={send} disabled={!draft.trim() || sending} style={{ ...S.btn, flexShrink: 0, background: 'var(--brand)', borderRadius: 'var(--radius-md)', padding: '8px 14px', opacity: (!draft.trim() || sending) ? 0.4 : 1 }}>{sending ? '...' : 'Send'}</button>
                   </div>
                 </div>
               </>

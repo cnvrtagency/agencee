@@ -38,9 +38,9 @@ function NavItem({ href, label, icon, exact }: { href: string; label: string; ic
     <Link href={href} style={{
       display: 'flex', alignItems: 'center', gap: 9,
       padding: '7px 10px',
-      borderRadius: 'var(--radius)',
+      borderRadius: '0 var(--radius) var(--radius) 0',
       fontSize: 13, fontWeight: active ? 500 : 400,
-      color: active ? '#ffffff' : 'rgba(255,255,255,0.68)',
+      color: active ? '#ffffff' : 'rgba(255,255,255,0.62)',
       background: active ? 'rgba(200,240,208,0.1)' : 'transparent',
       borderLeft: active ? '2px solid var(--brand-accent)' : '2px solid transparent',
       textDecoration: 'none',
@@ -56,11 +56,11 @@ function NavItem({ href, label, icon, exact }: { href: string; label: string; ic
     onMouseLeave={e => {
       if (!active) {
         (e.currentTarget as HTMLElement).style.background = 'transparent'
-        ;(e.currentTarget as HTMLElement).style.color = 'rgba(255,255,255,0.68)'
+        ;(e.currentTarget as HTMLElement).style.color = 'rgba(255,255,255,0.62)'
       }
     }}
     >
-      {icon && <span style={{ opacity: active ? 1 : 0.5, color: 'currentColor', flexShrink: 0, display: 'flex' }}>{icon}</span>}
+      {icon && <span style={{ opacity: active ? 1 : 0.45, color: active ? 'var(--brand-accent)' : 'currentColor', flexShrink: 0, display: 'flex' }}>{icon}</span>}
       {label}
     </Link>
   )
@@ -73,11 +73,11 @@ function SubNavItem({ href, label, icon }: { href: string; label: string; icon?:
     <Link href={href} style={{
       display: 'flex', alignItems: 'center', gap: 8,
       padding: '5px 10px 5px 26px',
-      borderRadius: 'var(--radius)',
+      borderRadius: '0 var(--radius) var(--radius) 0',
       fontSize: 12.5, fontWeight: active ? 500 : 400,
-      color: active ? '#ffffff' : 'rgba(255,255,255,0.55)',
-      background: active ? 'rgba(200,240,208,0.1)' : 'transparent',
-      borderLeft: active ? '2px solid var(--brand-accent)' : '2px solid transparent',
+      color: active ? '#ffffff' : 'rgba(255,255,255,0.52)',
+      background: active ? 'rgba(200,240,208,0.08)' : 'transparent',
+      borderLeft: active ? '2px solid rgba(200,240,208,0.5)' : '2px solid transparent',
       textDecoration: 'none',
       transition: 'background 0.12s, color 0.12s',
       cursor: 'pointer',
@@ -91,7 +91,7 @@ function SubNavItem({ href, label, icon }: { href: string; label: string; icon?:
     onMouseLeave={e => {
       if (!active) {
         (e.currentTarget as HTMLElement).style.background = 'transparent'
-        ;(e.currentTarget as HTMLElement).style.color = 'rgba(255,255,255,0.55)'
+        ;(e.currentTarget as HTMLElement).style.color = 'rgba(255,255,255,0.52)'
       }
     }}
     >
@@ -102,10 +102,10 @@ function SubNavItem({ href, label, icon }: { href: string; label: string; icon?:
 }
 
 function Divider() {
-  return <div style={{ height: 1, background: 'rgba(200,240,208,0.1)', margin: '8px 10px' }} />
+  return <div style={{ height: 1, background: 'rgba(200,240,208,0.09)', margin: '8px 10px' }} />
 }
 
-export default function Sidebar() {
+export default function Sidebar({ onClose }: { onClose?: () => void }) {
   const [agents, setAgents] = useState<Agent[]>([])
   const [usage, setUsage] = useState<Usage>(null)
   const [workspaceName, setWorkspaceName] = useState<string>('')
@@ -140,50 +140,46 @@ export default function Sidebar() {
   return (
     <aside style={{
       width: 220,
+      height: '100dvh',
       flexShrink: 0,
-      background: 'var(--brand-bg)',
-      borderRight: '1px solid rgba(200,240,208,0.1)',
+      background: 'var(--brand)',
+      borderRight: '1px solid rgba(200,240,208,0.08)',
       display: 'flex',
       flexDirection: 'column',
-      position: 'fixed',
-      top: 0, left: 0, bottom: 0,
     }}>
       {/* Logo */}
-      <div style={{ padding: '20px 20px 16px', display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
+      <div style={{ padding: '20px 18px 14px', borderBottom: '1px solid rgba(200,240,208,0.1)', display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
         <AgenceeLogo variant="sidebar" animate={false} />
         {workspaceName && (
-          <div style={{ fontSize: 10, color: 'rgba(200,240,208,0.45)', marginTop: 6, letterSpacing: '0.4px', paddingLeft: 2 }}>
+          <div style={{ fontSize: 10, color: 'rgba(200,240,208,0.4)', marginTop: 5, letterSpacing: '0.3px', paddingLeft: 1 }}>
             {workspaceName}
           </div>
         )}
       </div>
-      <div style={{ height: 1, background: 'rgba(200,240,208,0.12)', flexShrink: 0 }} />
 
       {/* Nav */}
       <nav style={{ flex: 1, padding: '8px 8px', display: 'flex', flexDirection: 'column', gap: 1, overflowY: 'auto' }}>
-        {/* Global */}
         <NavItem href="/" label="Dashboard" icon={ICONS.dashboard} exact />
         <NavItem href="/clients" label="Clients" icon={ICONS.clients} />
         <NavItem href="/outputs" label="Outputs" icon={ICONS.file} />
         <NavItem href="/reports" label="Reports" icon={ICONS.reports} />
         <NavItem href="/marketplace" label="Marketplace" icon={ICONS.marketplace} />
 
-        {/* Agent sections */}
         {agents.map(agent => {
           const navItems = agent.nav_items || []
           return (
             <div key={agent.id}>
               <Divider />
-              {/* Agent header — links to chat */}
               <Link href={`/agents/${agent.id}`} style={{ textDecoration: 'none' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 9, padding: '6px 10px', cursor: 'pointer' }}
-                  onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'rgba(200,240,208,0.07)'}
+                <div
+                  style={{ display: 'flex', alignItems: 'center', gap: 9, padding: '6px 10px', cursor: 'pointer', borderRadius: '0 var(--radius) var(--radius) 0' }}
+                  onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'rgba(200,240,208,0.06)'}
                   onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'transparent'}
                 >
                   <div style={{
                     width: 26, height: 26, borderRadius: 7,
                     background: 'rgba(200,240,208,0.1)',
-                    border: '1px solid rgba(200,240,208,0.2)',
+                    border: '1px solid rgba(200,240,208,0.18)',
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
                     fontSize: 10, fontWeight: 700, color: 'var(--brand-accent)',
                     fontFamily: 'var(--font-mono)', flexShrink: 0,
@@ -194,12 +190,11 @@ export default function Sidebar() {
                   </div>
                   <div>
                     <div style={{ fontSize: 12.5, fontWeight: 600, color: '#ffffff', lineHeight: 1.2 }}>{agent.name}</div>
-                    <div style={{ fontSize: 10, color: 'rgba(200,240,208,0.55)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{agent.role}</div>
+                    <div style={{ fontSize: 10, color: 'rgba(200,240,208,0.5)', textTransform: 'uppercase', letterSpacing: '0.55px' }}>{agent.role}</div>
                   </div>
                 </div>
               </Link>
 
-              {/* Agent sub-nav */}
               {navItems.map((item: { label: string; path: string; icon: string }) => {
                 const resolvedPath = item.path.replace('[id]', agent.id)
                 return (
@@ -215,21 +210,20 @@ export default function Sidebar() {
           )
         })}
 
-        {/* Bottom global */}
         <Divider />
       </nav>
 
       {/* Bottom panel */}
-      <div style={{ padding: '12px 12px 18px', borderTop: '1px solid rgba(200,240,208,0.1)', display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div style={{ padding: '12px 12px 18px', borderTop: '1px solid rgba(200,240,208,0.09)', display: 'flex', flexDirection: 'column', gap: 10 }}>
         {usage && (
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 }}>
-              <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.55)' }}>Tokens</span>
-              <span style={{ fontSize: 11, color: usagePct >= 70 ? usageColour : 'rgba(255,255,255,0.55)', fontFamily: 'var(--font-mono)' }}>
+              <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.45)' }}>Tokens</span>
+              <span style={{ fontSize: 11, color: usagePct >= 70 ? usageColour : 'rgba(255,255,255,0.45)', fontFamily: 'var(--font-mono)' }}>
                 {usagePct}%
               </span>
             </div>
-            <div style={{ height: 2, background: 'rgba(255,255,255,0.1)', borderRadius: 99, overflow: 'hidden' }}>
+            <div style={{ height: 2, background: 'rgba(255,255,255,0.08)', borderRadius: 99, overflow: 'hidden' }}>
               <div style={{ height: '100%', width: `${usagePct}%`, background: usageColour, borderRadius: 99, transition: 'width 0.6s' }} />
             </div>
           </div>
@@ -238,7 +232,7 @@ export default function Sidebar() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <div style={{ flex: 1, height: 2, borderRadius: 99, background: 'var(--brand-accent)',
             animation: hasRunning ? 'breathe-fast 0.9s ease-in-out infinite' : 'breathe 2.8s ease-in-out infinite' }} />
-          <span style={{ fontSize: 10, color: 'rgba(200,240,208,0.5)', whiteSpace: 'nowrap', fontFamily: 'var(--font-mono)' }}>
+          <span style={{ fontSize: 10, color: 'rgba(200,240,208,0.45)', whiteSpace: 'nowrap', fontFamily: 'var(--font-mono)' }}>
             {hasRunning ? 'running' : 'ready'}
           </span>
         </div>

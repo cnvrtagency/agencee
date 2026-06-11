@@ -15,16 +15,16 @@ function toTitleCase(str: string) {
 const S: Record<string, React.CSSProperties> = {
   statCard: {
     background: 'var(--surface)', border: '1px solid var(--border)',
-    borderRadius: 'var(--radius-lg)', padding: '22px 24px',
-    display: 'flex', flexDirection: 'column', gap: 8,
+    borderRadius: 'var(--radius-lg)', padding: '20px 22px',
+    display: 'flex', flexDirection: 'column',
     cursor: 'pointer', textDecoration: 'none', color: 'inherit',
     transition: 'border-color 0.15s, box-shadow 0.15s',
-    boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
+    boxShadow: '0 1px 2px rgba(0,0,0,0.04)',
     position: 'relative', overflow: 'hidden',
   },
-  panel: { background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)', overflow: 'hidden', boxShadow: '0 1px 3px rgba(0,0,0,0.06)' },
-  panelHead: { padding: '14px 20px', borderBottom: '1px solid var(--border)', fontSize: 11, fontWeight: 600, color: 'var(--text-2)', textTransform: 'uppercase' as const, letterSpacing: '1.2px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' },
-  row: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '13px 20px', borderBottom: '1px solid var(--border)' },
+  panel: { background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)', overflow: 'hidden', boxShadow: '0 1px 2px rgba(0,0,0,0.04)' },
+  panelHead: { padding: '10px 16px', background: 'var(--surface-2)', borderBottom: '1px solid var(--border)', fontSize: 11, fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase' as const, letterSpacing: '0.09em', display: 'flex', justifyContent: 'space-between', alignItems: 'center' },
+  row: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 18px', borderBottom: '1px solid var(--border)' },
   empty: { padding: '40px 20px', fontSize: 13, color: 'var(--text-2)', textAlign: 'center' as const },
 }
 
@@ -48,7 +48,7 @@ type BriefingItem = {
 }
 
 const BADGE_COLORS: Record<string, { bg: string; color: string }> = {
-  opportunity: { bg: 'rgba(79,127,255,0.15)', color: 'var(--accent)' },
+  opportunity: { bg: 'var(--accent-bg)', color: 'var(--accent)' },
   decay: { bg: 'rgba(245,158,11,0.15)', color: 'var(--amber)' },
   gap: { bg: 'rgba(139,92,246,0.15)', color: 'var(--purple, #8b5cf6)' },
   suggestion: { bg: 'rgba(34,197,94,0.15)', color: 'var(--green)' },
@@ -91,10 +91,10 @@ function PendingOutputRow({ output: o, fmt, onRemove, onApprove }: { output: any
       <div style={{ display: 'flex', gap: 5, alignItems: 'center', flexShrink: 0 }}>
         <button
           onClick={approve} disabled={approving}
-          style={{ fontSize: 11, padding: '3px 9px', borderRadius: 99, border: 'none', background: 'rgba(45,212,160,0.15)', color: 'var(--green)', fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap' as const }}>
-          {approving ? '…' : 'Approve ✓'}
+          style={{ fontSize: 11, padding: '4px 10px', borderRadius: 'var(--radius)', border: 'none', background: 'var(--brand)', color: 'var(--brand-accent)', fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap' as const }}>
+          {approving ? '…' : 'Approve'}
         </button>
-        <Link href={`/outputs/${o.id}`} style={{ fontSize: 11, padding: '3px 9px', borderRadius: 99, background: 'var(--surface-3)', color: 'var(--text-2)', fontWeight: 500, textDecoration: 'none', whiteSpace: 'nowrap' as const }}>Review →</Link>
+        <Link href={`/outputs/${o.id}`} style={{ fontSize: 11, padding: '4px 10px', borderRadius: 'var(--radius)', background: 'var(--surface-2)', color: 'var(--text-2)', fontWeight: 500, textDecoration: 'none', whiteSpace: 'nowrap' as const }}>Review</Link>
         {confirmDelete ? (
           <>
             <button onClick={doDelete} disabled={deleting} style={{ fontSize: 11, padding: '3px 9px', borderRadius: 99, border: 'none', background: 'rgba(242,107,107,0.15)', color: 'var(--red)', fontWeight: 600, cursor: 'pointer' }}>{deleting ? '…' : 'Confirm'}</button>
@@ -191,23 +191,24 @@ export default function Dashboard() {
   const maxCal = Math.max(1, ...Object.values(calData))
 
   const statItems = [
-    { label: 'Clients',      value: stats.clients, href: '/clients', hi: false,              c: 'var(--text)' },
-    { label: 'Queued',       value: stats.queued,  href: '/queue?filter=queued',  hi: stats.queued > 0,   c: 'var(--text)' },
-    { label: 'Running',      value: stats.running, href: '/queue?filter=running', hi: stats.running > 0,  c: 'var(--amber)' },
-    { label: 'Needs review', value: stats.review,  href: '/outputs',              hi: stats.review > 0,   c: 'var(--accent)', glow: stats.review > 0 },
+    { label: 'Clients',      value: stats.clients, href: '/clients',              hi: false,               c: 'var(--text)' },
+    { label: 'Queued',       value: stats.queued,  href: '/queue?filter=queued',  hi: stats.queued > 0,    c: 'var(--text)' },
+    { label: 'Running',      value: stats.running, href: '/queue?filter=running', hi: stats.running > 0,   c: 'var(--amber)' },
+    { label: 'Needs review', value: stats.review,  href: '/outputs',              hi: stats.review > 0,    c: 'var(--accent)' },
   ]
 
   return (
     <div>
       <div style={{ marginBottom: 36 }}>
-        <h1 style={{ fontSize: 28, fontWeight: 600, color: 'var(--text)', marginBottom: 6, letterSpacing: '-0.5px', fontFamily: 'var(--font-sans)' }}>Dashboard</h1>
+        <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 6 }}>Overview</div>
+        <h1 style={{ fontSize: 26, fontWeight: 700, color: 'var(--text)', letterSpacing: '-0.6px', fontFamily: 'var(--font-sans)' }}>Dashboard</h1>
       </div>
 
       {/* Briefing Room */}
-      <div style={{ marginBottom: 24, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)', overflow: 'hidden', boxShadow: '0 1px 3px rgba(0,0,0,0.3)' }}>
-        <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+      <div style={{ marginBottom: 24, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)', overflow: 'hidden', boxShadow: '0 1px 2px rgba(0,0,0,0.04)' }}>
+        <div style={{ padding: '10px 16px', background: 'var(--surface-2)', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-2)', textTransform: 'uppercase', letterSpacing: '1.2px' }}>Briefing Room</span>
+            <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.09em' }}>Briefing Room</span>
             {briefingTotal > 0 && (
               <span style={{ fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--text-dim)', background: 'var(--surface-3)', padding: '1px 7px', borderRadius: 99 }}>{briefingTotal} opportunities</span>
             )}
@@ -237,7 +238,7 @@ export default function Dashboard() {
                     const displayTitle = kwMatch ? `"${kwMatch[1]}"` : item.title
                     return (
                       <div key={item.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 16px', borderBottom: i < visible.length - 1 || (!briefingExpanded && hidden > 0) ? '1px solid var(--border)' : 'none' }}>
-                        <span style={{ fontSize: 10, fontWeight: 700, color: colors.color, background: colors.bg, padding: '2px 7px', borderRadius: 99, textTransform: 'uppercase', letterSpacing: '0.5px', flexShrink: 0 }}>{item.type}</span>
+                        <span style={{ fontSize: 10, fontWeight: 700, color: colors.color, background: colors.bg, padding: '2px 7px', borderRadius: 'var(--radius)', textTransform: 'uppercase', letterSpacing: '0.06em', flexShrink: 0 }}>{item.type}</span>
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--text)' }}>{displayTitle}</span>
                           <div style={{ fontSize: 12, color: 'var(--text-2)', marginTop: 1 }}>{dataLine}</div>
@@ -270,8 +271,8 @@ export default function Dashboard() {
 
       {/* Morning digest */}
       {(stats.review > 0 || stats.running > 0 || stats.queued > 0) && (
-        <div style={{ marginBottom: 24, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)', padding: '18px 24px', boxShadow: '0 1px 3px rgba(0,0,0,0.3)' }}>
-          <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-2)', textTransform: 'uppercase', letterSpacing: '1.2px', marginBottom: 12 }}>What needs your attention</div>
+        <div style={{ marginBottom: 24, background: 'var(--surface)', border: '1px solid var(--border)', borderLeft: '3px solid var(--brand)', borderRadius: 'var(--radius-lg)', padding: '16px 20px', boxShadow: '0 1px 2px rgba(0,0,0,0.04)' }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.09em', marginBottom: 12 }}>What needs your attention</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
             {stats.review > 0 && (
               <Link href="/outputs" style={{ display: 'flex', alignItems: 'center', gap: 10, textDecoration: 'none' }}
@@ -312,27 +313,25 @@ export default function Dashboard() {
 
       {/* Stat cards */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 14, marginBottom: 28 }} className="stat-grid">
-        {statItems.map(({ label, value, href, hi, c, glow }) => (
+        {statItems.map(({ label, value, href, hi, c }) => (
           <Link key={label} href={href} style={{
             ...S.statCard,
             borderColor: hi ? `${c}30` : 'var(--border)',
-            boxShadow: glow ? `0 0 20px ${c}22, 0 1px 3px rgba(0,0,0,0.3)` : S.statCard.boxShadow,
+            borderLeft: hi ? `3px solid ${c}` : undefined,
           }}
           onMouseEnter={e => {
             const el = e.currentTarget as HTMLElement
-            el.style.borderColor = hi ? `${c}55` : 'var(--border-bright)'
-            el.style.boxShadow = `0 4px 16px rgba(0,0,0,0.4)${glow ? `, 0 0 24px ${c}33` : ''}`
+            el.style.borderColor = 'var(--border-bright)'
+            el.style.boxShadow = '0 2px 8px rgba(0,0,0,0.06)'
           }}
           onMouseLeave={e => {
             const el = e.currentTarget as HTMLElement
             el.style.borderColor = hi ? `${c}30` : 'var(--border)'
-            el.style.boxShadow = glow ? `0 0 20px ${c}22, 0 1px 3px rgba(0,0,0,0.3)` : '0 1px 3px rgba(0,0,0,0.3)'
+            el.style.boxShadow = '0 1px 2px rgba(0,0,0,0.04)'
           }}
           >
-            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 36, fontWeight: 500, color: hi ? c : 'var(--text)', lineHeight: 1, letterSpacing: '-1.5px' }}>{value}</div>
-            <div style={{ fontSize: 11, color: 'var(--text-2)', textTransform: 'uppercase', letterSpacing: '1px' }}>{label}</div>
-            {/* Subtle arrow on hover hint */}
-            <div style={{ position: 'absolute', right: 14, bottom: 14, fontSize: 11, color: 'var(--border-bright)', opacity: 0.6 }}>→</div>
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 40, fontWeight: 600, color: hi ? c : 'var(--text)', lineHeight: 1, letterSpacing: '-2px' }}>{value}</div>
+            <div style={{ fontSize: 11, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.08em', marginTop: 8 }}>{label}</div>
           </Link>
         ))}
       </div>
@@ -366,7 +365,7 @@ export default function Dashboard() {
                   <div key={a.name} style={{ marginBottom: 10 }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
                       <span style={{ fontSize: 13, color: 'var(--text)', display: 'flex', alignItems: 'center', gap: 7 }}>
-                        <span style={{ width: 7, height: 7, borderRadius: '50%', background: a.color, display: 'inline-block' }} />
+                        <span style={{ width: 8, height: 8, borderRadius: 2, background: a.color, display: 'inline-block', flexShrink: 0 }} />
                         {a.name}
                       </span>
                       <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--text-2)' }}>
@@ -397,8 +396,8 @@ export default function Dashboard() {
                         onMouseLeave={() => setCalHover(null)}
                         title={`${date}: ${count} conversation${count !== 1 ? 's' : ''}`}
                         style={{ width: 14, height: 14, borderRadius: 3,
-                          background: count === 0 ? 'var(--surface-3)' : `rgba(79,127,255,${intensity})`,
-                          border: isToday ? '1px solid var(--accent)' : '1px solid transparent',
+                          background: count === 0 ? 'var(--surface-3)' : `rgba(6,50,39,${intensity})`,
+                          border: isToday ? '1px solid rgba(6,50,39,0.5)' : '1px solid transparent',
                           transition: 'opacity 0.1s', opacity: calHover && calHover !== date ? 0.5 : 1,
                         }} />
                     )
