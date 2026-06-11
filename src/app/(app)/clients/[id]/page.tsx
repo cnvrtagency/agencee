@@ -92,6 +92,7 @@ export default function ClientDetail() {
 
   // GSC state
   const [gscConn, setGscConn] = useState<GscConnection | null>(null)
+  const [gscConnecting, setGscConnecting] = useState(false)
   const [gscSyncing, setGscSyncing] = useState(false)
   const [gscMsg, setGscMsg] = useState('')
   const [searchRows, setSearchRows] = useState<SearchRow[]>([])
@@ -266,6 +267,23 @@ export default function ClientDetail() {
     if (data.error) setGscMsg(`Error: ${data.error}`)
     else { setGscMsg(`Synced — 7d: ${data.synced?.['7d'] ?? data.synced}, 28d: ${data.synced?.['28d'] ?? ''}, 90d: ${data.synced?.['90d'] ?? ''} rows`); loadGscConnection(); loadSearchPerformance() }
     setGscSyncing(false); setTimeout(() => setGscMsg(''), 4000)
+  }
+
+  async function connectGsc() {
+    setGscConnecting(true); setGscMsg('')
+    try {
+      const res = await fetch(`/api/auth/google?client_id=${id}`)
+      const data = await res.json()
+      if (!res.ok || !data.url) {
+        setGscMsg(`Error: ${data.error || 'Could not start Google OAuth'}`)
+        setGscConnecting(false)
+        return
+      }
+      window.location.href = data.url
+    } catch (err: any) {
+      setGscMsg(`Error: ${err.message || 'Could not start Google OAuth'}`)
+      setGscConnecting(false)
+    }
   }
 
   async function disconnectGsc() {
@@ -1090,7 +1108,10 @@ export default function ClientDetail() {
             {!gscConn ? (
               <div>
                 <p style={{ fontSize: 13, color: 'var(--text-2)', marginBottom: 16, lineHeight: 1.6 }}>Connect Google Search Console to import real ranking data for this client's keywords and pages.</p>
-                <a href={`/api/auth/google?client_id=${id}`} style={{ ...S.btn, display: 'inline-block', textDecoration: 'none', padding: '8px 16px' }}>Connect Search Console</a>
+                {gscMsg && <div style={{ fontSize: 12, color: gscMsg.startsWith('Error') ? 'var(--red)' : 'var(--green)', marginBottom: 12 }}>{gscMsg}</div>}
+                <button style={{ ...S.btn, padding: '8px 16px' }} onClick={connectGsc} disabled={gscConnecting}>
+                  {gscConnecting ? 'Connecting...' : 'Connect Search Console'}
+                </button>
               </div>
             ) : (
               <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { forbiddenResponse, requireUserOrInternal, userCanAccessClient } from '@/lib/server/auth'
+import { readJsonWithLimit } from '@/lib/server/request-body'
 import { checkUserBudget, recordTokenUsage } from '@/lib/server/token-usage'
 
 const supabase = createClient(
@@ -14,7 +15,9 @@ export async function POST(req: NextRequest) {
   const authResult = await requireUserOrInternal(req)
   if (!authResult.ok) return authResult.response
 
-  const { client_id, period_start, period_end } = await req.json().catch(() => ({}))
+  const bodyResult = await readJsonWithLimit<any>(req, 16_000)
+  if (!bodyResult.ok) return bodyResult.response
+  const { client_id, period_start, period_end } = bodyResult.data
   if (!client_id || !period_start || !period_end) {
     return NextResponse.json({ error: 'client_id, period_start, period_end required' }, { status: 400 })
   }

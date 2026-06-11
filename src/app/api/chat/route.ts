@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { safeDecrypt } from '@/lib/crypto'
 import { getSupabaseAdmin, requireUser } from '@/lib/server/auth'
 import { checkRateLimit, getRateLimitIdentity } from '@/lib/server/rate-limit'
+import { readJsonWithLimit } from '@/lib/server/request-body'
 import { checkUserBudget, recordTokenUsage, SESSION_TOKEN_LIMIT } from '@/lib/server/token-usage'
 
 export async function POST(req: NextRequest) {
@@ -17,12 +18,9 @@ export async function POST(req: NextRequest) {
   })
   if (!rate.ok) return rate.response
 
-  let body: any
-  try {
-    body = await req.json()
-  } catch {
-    return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 })
-  }
+  const bodyResult = await readJsonWithLimit(req, 2_000_000)
+  if (!bodyResult.ok) return bodyResult.response
+  const body = bodyResult.data as any
 
   const supabase = getSupabaseAdmin()
   const { client_id, agent_id, session_tokens: sessionTokens, ...anthropicBody } = body

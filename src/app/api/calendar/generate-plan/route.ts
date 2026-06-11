@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { forbiddenResponse, requireUser, userCanAccessClient } from '@/lib/server/auth'
 import { checkRateLimit, getRateLimitIdentity } from '@/lib/server/rate-limit'
+import { readJsonWithLimit } from '@/lib/server/request-body'
 import { checkUserBudget, recordTokenUsage } from '@/lib/server/token-usage'
 
 const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_KEY!)
@@ -20,7 +21,9 @@ export async function POST(req: NextRequest) {
   if (!rate.ok) return rate.response
 
   try {
-    const { client_id, weeks, posts_per_week, focus, agent_id } = await req.json()
+    const bodyResult = await readJsonWithLimit<any>(req, 64_000)
+    if (!bodyResult.ok) return bodyResult.response
+    const { client_id, weeks, posts_per_week, focus, agent_id } = bodyResult.data
     if (!client_id || !weeks || !posts_per_week) {
       return NextResponse.json({ error: 'client_id, weeks, posts_per_week required' }, { status: 400 })
     }

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { forbiddenResponse, requireUser, userCanAccessClient } from '@/lib/server/auth'
 import { checkRateLimit, getRateLimitIdentity } from '@/lib/server/rate-limit'
+import { readJsonWithLimit } from '@/lib/server/request-body'
 import { checkUserBudget, recordTokenUsage } from '@/lib/server/token-usage'
 
 const supabase = createClient(
@@ -167,8 +168,9 @@ export async function POST(req: NextRequest) {
   const budgetCheck = await checkUserBudget(supabase, authResult.auth.user.id)
   if (!budgetCheck.ok && budgetCheck.response) return budgetCheck.response
 
-  let body: any
-  try { body = await req.json() } catch { return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 }) }
+  const bodyResult = await readJsonWithLimit<any>(req, 20_000)
+  if (!bodyResult.ok) return bodyResult.response
+  const body = bodyResult.data
   const { client_id, website, competitor_id } = body
 
   if (!competitor_id && !client_id) {

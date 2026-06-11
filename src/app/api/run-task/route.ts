@@ -4,6 +4,7 @@ import { cleanContent } from '@/lib/content-clean'
 import { safeDecrypt } from '@/lib/crypto'
 import { forbiddenResponse, requireUserOrInternal, userCanAccessClient } from '@/lib/server/auth'
 import { checkRateLimit, getRateLimitIdentity } from '@/lib/server/rate-limit'
+import { readJsonWithLimit } from '@/lib/server/request-body'
 import { checkUserBudget, recordTokenUsage } from '@/lib/server/token-usage'
 
 const supabase = createClient(
@@ -26,7 +27,9 @@ export async function POST(req: NextRequest) {
 
   let queue_item_id: string | null = null
   try {
-    const body = await req.json()
+    const bodyResult = await readJsonWithLimit<any>(req, 8_000)
+    if (!bodyResult.ok) return bodyResult.response
+    const body = bodyResult.data
     queue_item_id = body.queue_item_id
     if (!queue_item_id) return NextResponse.json({ error: 'queue_item_id required' }, { status: 400 })
 

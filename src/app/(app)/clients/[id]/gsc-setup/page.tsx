@@ -13,24 +13,19 @@ export default function GscSetupPage() {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
-  // Tokens passed in URL from OAuth callback (multi-property flow)
-  const propertiesParam = searchParams.get('properties')
-  const accessTokenParam = searchParams.get('access_token')
-  const refreshTokenParam = searchParams.get('refresh_token')
-  const expiresInParam = searchParams.get('expires_in')
-  const emailParam = searchParams.get('email')
-  const fromCallback = !!propertiesParam && !!accessTokenParam
+  const sessionId = searchParams.get('session_id')
+  const fromCallback = !!sessionId
 
   useEffect(() => {
     async function load() {
       if (fromCallback) {
-        // Tokens came from OAuth callback — decode the properties list
-        try {
-          const decoded = JSON.parse(atob(propertiesParam!))
-          setProperties(decoded)
-          if (decoded.length === 1) setSelected(decoded[0])
-        } catch {
-          setError('Could not parse property list from OAuth callback.')
+        const res = await fetch(`/api/auth/google/select-property?session_id=${encodeURIComponent(sessionId!)}`)
+        const data = await res.json()
+        if (data.error) setError(data.error)
+        else {
+          const nextProperties = data.properties || []
+          setProperties(nextProperties)
+          if (nextProperties.length === 1) setSelected(nextProperties[0])
         }
         setLoading(false)
         return
@@ -52,34 +47,19 @@ export default function GscSetupPage() {
       setLoading(false)
     }
     load()
-  }, [id, fromCallback]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [id, fromCallback, sessionId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   async function save() {
     if (!selected) return
     setSaving(true)
 
     if (fromCallback) {
-      // Save the full connection to DB for the first time
-      const { data: { user } } = await supabase.auth.getUser()
-      const { data: clientProfile } = await supabase
-        .from('client_profiles')
-        .select('workspace_id')
-        .eq('id', id)
-        .single()
-
-      const expiresAt = new Date(Date.now() + (parseInt(expiresInParam || '3600')) * 1000).toISOString()
-
       const res = await fetch('/api/auth/google/select-property', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          client_id: id,
-          workspace_id: clientProfile?.workspace_id || null,
+          session_id: sessionId,
           site_url: selected,
-          access_token: atob(accessTokenParam!),
-          refresh_token: refreshTokenParam ? atob(refreshTokenParam) : null,
-          expires_at: expiresAt,
-          email: emailParam || null,
         }),
       })
       const data = await res.json()

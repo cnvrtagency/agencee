@@ -7,7 +7,7 @@ const AUTH_ENABLED = process.env.NEXT_PUBLIC_AUTH_ENABLED === 'true'
 
 const publicPaths = ['/login', '/signup', '/onboarding']
 
-export async function middleware(req: NextRequest) {
+export async function proxy(req: NextRequest) {
   if (!AUTH_ENABLED) return NextResponse.next()
 
   const { pathname } = req.nextUrl

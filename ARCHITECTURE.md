@@ -659,6 +659,11 @@ GET /api/schedule/check
 - Scoped run-task, jobs, automations, notifications, and sidebar usage to the owning workspace/client where possible.
 - Added shared pricing constants and replaced old blended `$4/M` estimates in visible dashboards/activity pages.
 - Closed remaining AI route budget gaps for crawl, image generation, and user-triggered knowledge digest; crawl Haiku summary calls now record actual token usage.
+- Fixed image generation against current Gemini image models using the official `@google/genai` SDK. Default model order is `gemini-3.1-flash-image`, `gemini-3-pro-image`, `gemini-2.5-flash-image`, then preview fallbacks.
+- Reworked Google OAuth: authenticated app fetch starts OAuth, callback verifies signed expiring state, multi-property selection uses server-side `google_oauth_sessions` and no longer places Google tokens in browser URLs.
+- Migrated `src/middleware.ts` to `src/proxy.ts` for Next 16.
+- Added bounded JSON request parsing to high-cost/high-payload routes.
+- Added `AUDIT_ROUTE_MATRIX.md` and `20260611_audit_hardening.sql`.
 - Built `/usage` with workspace usage totals, budget progress, action breakdown, route protection status, and recent activity.
 - Added `20260611_queue_runtime_columns.sql` for queue runtime columns and indexes discovered missing from live Supabase.
 
@@ -671,7 +676,7 @@ GET /api/schedule/check
 
 **Still open/manual:**
 - Supabase MCP/schema/RLS/index dump requires `SUPABASE_ACCESS_TOKEN` or a DB password/psql/Docker path.
-- Google OAuth state should be signed.
+- Apply `20260611_audit_hardening.sql`, then verify GSC OAuth end-to-end.
 - Queue runtime migration was applied manually and verified live from the app service client.
 
 ### 11 June 2026 (session 2)

@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
+import { GoogleGenAI } from '@google/genai'
 import { forbiddenResponse, requireUser, userCanAccessClient } from '@/lib/server/auth'
 import { checkRateLimit, getRateLimitIdentity } from '@/lib/server/rate-limit'
+import { readJsonWithLimit } from '@/lib/server/request-body'
 import { checkUserBudget } from '@/lib/server/token-usage'
 
 const supabase = createClient(
@@ -10,6 +12,55 @@ const supabase = createClient(
 )
 
 export const maxDuration = 60
+
+const GEMINI_IMAGE_MODELS = [
+  'gemini-3.1-flash-image',
+  'gemini-3-pro-image',
+  'gemini-2.5-flash-image',
+  'gemini-3.1-flash-image-preview',
+  'gemini-3-pro-image-preview',
+  'gemini-2.5-flash-image-preview',
+]
+
+function normaliseImageSize(size: unknown): '512' | '1K' | '2K' | '4K' {
+  const value = String(size || '1K').toUpperCase()
+  if (value === '512' || value === '1K' || value === '2K' || value === '4K') return value
+  return '1K'
+}
+
+function normaliseAspectRatio(value: unknown): string {
+  const ratio = String(value || '16:9')
+  const allowed = new Set(['1:1', '1:4', '1:8', '2:3', '3:2', '3:4', '4:1', '4:3', '4:5', '5:4', '8:1', '9:16', '16:9', '21:9'])
+  return allowed.has(ratio) ? ratio : '16:9'
+}
+
+function buildGenerationConfig(model: string, aspectRatio: string, imageSize: string) {
+  const imageConfig: Record<string, string> = { aspectRatio }
+  if (model.includes('3.1-flash') || model.includes('3-pro')) {
+    imageConfig.imageSize = imageSize === '512' && !model.includes('3.1-flash') ? '1K' : imageSize
+  }
+
+  return {
+    responseModalities: ['IMAGE'],
+    responseFormat: {
+      image: imageConfig,
+    },
+  }
+}
+
+function findInlineImage(data: any): { data: string; mimeType: string } | null {
+  const parts = data?.candidates?.[0]?.content?.parts || data?.candidates?.[0]?.parts || []
+  for (const part of parts) {
+    const inline = part.inlineData || part.inline_data
+    if (inline?.data) {
+      return {
+        data: inline.data,
+        mimeType: inline.mimeType || inline.mime_type || 'image/jpeg',
+      }
+    }
+  }
+  return null
+}
 
 export async function POST(req: NextRequest) {
   const authResult = await requireUser(req)
@@ -25,7 +76,10 @@ export async function POST(req: NextRequest) {
   const budgetCheck = await checkUserBudget(supabase, authResult.auth.user.id)
   if (!budgetCheck.ok && budgetCheck.response) return budgetCheck.response
 
-  const { prompt, filename, client_id, resolution = '1K' } = await req.json()
+  const bodyResult = await readJsonWithLimit<any>(req, 20_000)
+  if (!bodyResult.ok) return bodyResult.response
+
+  const { prompt, filename, client_id, resolution = '1K', aspect_ratio, aspectRatio } = bodyResult.data
   if (!prompt) return NextResponse.json({ error: 'prompt required' }, { status: 400 })
   if (String(prompt).length > 4000) return NextResponse.json({ error: 'prompt must be 4000 characters or fewer' }, { status: 400 })
 
@@ -40,12 +94,8 @@ export async function POST(req: NextRequest) {
     workspaceId = workspace?.id || null
   }
 
-  const resolutionMap: Record<string, string> = {
-    '1K': '1024x1024',
-    '2K': '2048x2048',
-    '4K': '4096x4096',
-  }
-  const outputSize = resolutionMap[resolution] || '1024x1024'
+  const imageSize = normaliseImageSize(resolution)
+  const requestedAspectRatio = normaliseAspectRatio(aspect_ratio || aspectRatio)
 
   const apiKey = process.env.GEMINI_API_KEY
   if (!apiKey) {
@@ -59,47 +109,33 @@ export async function POST(req: NextRequest) {
   let imageBase64: string = ''
   let imageMimeType: string = 'image/jpeg'
   let lastError = ''
+  const attemptedModels: string[] = []
+  const ai = new GoogleGenAI({ apiKey })
 
-  const models = ['gemini-3-pro-image', 'gemini-2.0-flash-preview-image-generation', 'imagen-3.0-generate-002']
-  for (const model of models) {
+  for (const model of GEMINI_IMAGE_MODELS) {
+    attemptedModels.push(model)
     try {
-      const geminiRes = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: prompt }] }],
-            generationConfig: {
-              responseModalities: ['IMAGE', 'TEXT'],
-              imageGenerationConfig: {
-                outputOptions: { mimeType: 'image/jpeg', compressionQuality: 85 },
-                numberOfImages: 1,
-              },
-            },
-          }),
-        },
-      )
+      const geminiData = await ai.models.generateContent({
+        model,
+        contents: String(prompt),
+        config: buildGenerationConfig(model, requestedAspectRatio, imageSize),
+      })
 
-      const geminiData = await geminiRes.json()
-
-      if (!geminiRes.ok) {
-        lastError = `${model}: ${geminiData.error?.message || `HTTP ${geminiRes.status}`}`
-        console.warn('[generate-image] Model failed:', lastError)
-        continue
-      }
-
-      const parts = geminiData.candidates?.[0]?.content?.parts || []
-      const imagePart = parts.find((p: any) => p.inlineData)
-
-      if (!imagePart?.inlineData?.data) {
-        lastError = `${model}: no image data in response`
+      const imagePart = findInlineImage(geminiData)
+      if (!imagePart) {
+        const responseParts = (geminiData as any).candidates?.[0]?.content?.parts || (geminiData as any).parts || []
+        const text = responseParts
+          .map((p: any) => p.text)
+          .filter(Boolean)
+          .join(' ')
+          .slice(0, 180)
+        lastError = `${model}: no image data in response${text ? ` (${text})` : ''}`
         console.warn('[generate-image] No image part:', JSON.stringify(geminiData).slice(0, 200))
         continue
       }
 
-      imageBase64 = imagePart.inlineData.data
-      imageMimeType = imagePart.inlineData.mimeType || 'image/jpeg'
+      imageBase64 = imagePart.data
+      imageMimeType = imagePart.mimeType
       break
     } catch (err: any) {
       lastError = `${model}: ${err.message}`
@@ -110,7 +146,7 @@ export async function POST(req: NextRequest) {
 
   if (!imageBase64) {
     console.error('[generate-image] All models failed. Last error:', lastError)
-    return NextResponse.json({ error: lastError || 'All image models failed', skipped: true }, { status: 200 })
+    return NextResponse.json({ error: lastError || 'All image models failed', attempted_models: attemptedModels, skipped: true }, { status: 200 })
   }
 
   // Upload to Supabase Storage (bucket: blog-images, public)
@@ -137,5 +173,7 @@ export async function POST(req: NextRequest) {
     filename: storageFilename,
     storage_path: storagePath,
     mime_type: imageMimeType,
+    aspect_ratio: requestedAspectRatio,
+    resolution: imageSize,
   })
 }
