@@ -658,6 +658,7 @@ GET /api/schedule/check
 - Fixed `/api/schedule/check` early return so the full cron pipeline still runs when no client schedules are due.
 - Scoped run-task, jobs, automations, notifications, and sidebar usage to the owning workspace/client where possible.
 - Added shared pricing constants and replaced old blended `$4/M` estimates in visible dashboards/activity pages.
+- Closed remaining AI route budget gaps for crawl, image generation, and user-triggered knowledge digest; crawl Haiku summary calls now record actual token usage.
 - Built `/usage` with workspace usage totals, budget progress, action breakdown, route protection status, and recent activity.
 - Added `20260611_queue_runtime_columns.sql` for queue runtime columns and indexes discovered missing from live Supabase.
 
@@ -671,7 +672,7 @@ GET /api/schedule/check
 **Still open/manual:**
 - Supabase MCP/schema/RLS/index dump requires `SUPABASE_ACCESS_TOKEN` or a DB password/psql/Docker path.
 - Google OAuth state should be signed.
-- Apply the queue migration remotely if it has not already been applied.
+- Queue runtime migration was applied manually and verified live from the app service client.
 
 ### 11 June 2026 (session 2)
 **Fixed:**

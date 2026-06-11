@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { forbiddenResponse, requireUser, userCanAccessClient } from '@/lib/server/auth'
 import { checkRateLimit, getRateLimitIdentity } from '@/lib/server/rate-limit'
+import { checkUserBudget, recordTokenUsage } from '@/lib/server/token-usage'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -163,6 +164,9 @@ export async function POST(req: NextRequest) {
   })
   if (!rate.ok) return rate.response
 
+  const budgetCheck = await checkUserBudget(supabase, authResult.auth.user.id)
+  if (!budgetCheck.ok && budgetCheck.response) return budgetCheck.response
+
   let body: any
   try { body = await req.json() } catch { return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 }) }
   const { client_id, website, competitor_id } = body
@@ -257,6 +261,7 @@ export async function POST(req: NextRequest) {
     const apiKey = process.env.ANTHROPIC_API_KEY
     if (apiKey && pages.length > 0) {
       const pagesToSummarise = pages.slice(0, 20)
+      let totalTokensUsed = 0
       const summaries = await Promise.all(
         pagesToSummarise.map(async (page) => {
           if (!page.content || page.content.length < 100) return { url: page.url, summary: null }
@@ -279,6 +284,7 @@ export async function POST(req: NextRequest) {
             })
             const data = await res.json()
             const summary = data.content?.[0]?.text?.trim() || null
+            totalTokensUsed += (data.usage?.input_tokens || 0) + (data.usage?.output_tokens || 0)
             return { url: page.url, summary }
           } catch {
             return { url: page.url, summary: null }
@@ -294,6 +300,15 @@ export async function POST(req: NextRequest) {
             .eq('url', url)
         }
       }
+      await recordTokenUsage({
+        supabase,
+        userId: authResult.auth.user.id,
+        workspaceId: compWorkspaceId,
+        clientId: competitorClientId,
+        action: 'competitor_crawl_summary',
+        tokensUsed: totalTokensUsed,
+        detail: { model: 'claude-haiku-4-5-20251001', pages_summarised: pagesToSummarise.length, source: 'crawl' },
+      })
     }
 
     return NextResponse.json({ success: true, pages_crawled: pages.length, competitor: comp.name })
@@ -470,6 +485,7 @@ Summarise: what topics are covered, what is the overall content depth, and what 
 
     if (aiRes.ok) {
       const aiData = await aiRes.json()
+      const tokensUsed = (aiData.usage?.input_tokens || 0) + (aiData.usage?.output_tokens || 0)
       const contentSummary = aiData.content?.[0]?.text?.trim()
       if (contentSummary) {
         await supabase.from('client_knowledge').upsert({
@@ -480,6 +496,15 @@ Summarise: what topics are covered, what is the overall content depth, and what 
           updated_at: new Date().toISOString(),
         }, { onConflict: 'client_id' })
       }
+      await recordTokenUsage({
+        supabase,
+        userId: authResult.auth.user.id,
+        workspaceId,
+        clientId: client_id,
+        action: 'crawl_content_summary',
+        tokensUsed,
+        detail: { model: 'claude-haiku-4-5-20251001', source: 'crawl' },
+      })
     }
   } catch { /* non-critical — don't block crawl response */ }
 

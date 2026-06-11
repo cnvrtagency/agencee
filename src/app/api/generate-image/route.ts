@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { forbiddenResponse, requireUser, userCanAccessClient } from '@/lib/server/auth'
 import { checkRateLimit, getRateLimitIdentity } from '@/lib/server/rate-limit'
+import { checkUserBudget } from '@/lib/server/token-usage'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -20,6 +21,9 @@ export async function POST(req: NextRequest) {
     windowMs: 10 * 60 * 1000,
   })
   if (!rate.ok) return rate.response
+
+  const budgetCheck = await checkUserBudget(supabase, authResult.auth.user.id)
+  if (!budgetCheck.ok && budgetCheck.response) return budgetCheck.response
 
   const { prompt, filename, client_id, resolution = '1K' } = await req.json()
   if (!prompt) return NextResponse.json({ error: 'prompt required' }, { status: 400 })

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { requireUserOrInternal } from '@/lib/server/auth'
 import { checkRateLimit, getRateLimitIdentity } from '@/lib/server/rate-limit'
-import { recordTokenUsage } from '@/lib/server/token-usage'
+import { checkUserBudget, recordTokenUsage } from '@/lib/server/token-usage'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -21,6 +21,11 @@ export async function POST(req: NextRequest) {
     windowMs: 60 * 60 * 1000,
   })
   if (!rate.ok) return rate.response
+
+  if (authResult.auth.user?.id) {
+    const budgetCheck = await checkUserBudget(supabase, authResult.auth.user.id)
+    if (!budgetCheck.ok && budgetCheck.response) return budgetCheck.response
+  }
 
   const apiKey = process.env.ANTHROPIC_API_KEY
   if (!apiKey) return NextResponse.json({ error: 'ANTHROPIC_API_KEY is not configured in Vercel environment variables.' }, { status: 500 })
