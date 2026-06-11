@@ -822,6 +822,7 @@ export default function AgentPage() {
   // Holds the card data for a draft saved by write_content during the current
   // agentic loop — attached to the assistant message when the reply is saved.
   const pendingDraftCardRef = useRef<DraftCard | null>(null)
+  const tokenAccumRef = useRef(0)
 
   async function handleToolCall(toolName: string, toolInput: any, convId: string): Promise<string> {
     // ── write_content: save a markdown draft to content_outputs (Ada) ──────────
@@ -858,7 +859,7 @@ export default function AgentPage() {
         fetch('/api/agent-activity', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ agent_id: id, client_id: client.id, action: 'content_created', detail: { output_id: output.id, title: toolInput.title, slug: toolInput.slug, primary_keyword: toolInput.primary_keyword }, tokens_used: 0 }),
+          body: JSON.stringify({ agent_id: id, client_id: client.id, action: 'content_created', detail: { output_id: output.id, title: toolInput.title, slug: toolInput.slug, primary_keyword: toolInput.primary_keyword }, tokens_used: tokenAccumRef.current }),
         }).catch((err: any) => console.error('[write_content] agent-activity log failed:', err?.message))
 
         if (workspaceId) {
@@ -1451,6 +1452,8 @@ export default function AgentPage() {
       let loopCount = 0
       let savedReply = false
       let prevStopReason: string | null = null
+      let totalTokensUsed = 0
+      tokenAccumRef.current = 0
       while (loopCount < 12) {
         loopCount++
         setAgentStatus(loopCount === 1 ? 'Thinking…' : 'Working…')
@@ -1467,6 +1470,9 @@ export default function AgentPage() {
           body: JSON.stringify({ model, max_tokens: maxTokens, system: systemPrompt, tools: getToolsForAgent(agent.agent_type), messages: apiMessages }),
         })
         const data: any = await res.json()
+        const turnTokens = (data.usage?.input_tokens || 0) + (data.usage?.output_tokens || 0)
+        totalTokensUsed += turnTokens
+        tokenAccumRef.current = totalTokensUsed
         prevStopReason = data.stop_reason ?? null
         if (data.error || !data.content) {
           const errMsg = typeof data.error === 'string' ? data.error : (data.error?.message || 'Something went wrong — try again.')
@@ -1557,6 +1563,13 @@ export default function AgentPage() {
       // Loop hit max iterations without saving — save what we have
       if (!savedReply) {
         await saveReply('Working... loop limit reached. Reply to continue.')
+      }
+      // Increment workspace token usage counter
+      if (totalTokensUsed > 0) {
+        const { data: { user } } = await supabase.auth.getUser()
+        if (user) {
+          void supabase.rpc('increment_token_usage', { p_user_id: user.id, p_tokens: totalTokensUsed })
+        }
       }
     } catch (e: any) {
       const errReply = `⚠️ ${e.message || 'Something went wrong'}`

@@ -44,8 +44,9 @@ export async function POST(req: NextRequest) {
     opportunity_score,
   }
 
-  if (meta?.impressions !== undefined) insertObj.monthly_volume = meta.impressions
-  if (position !== null) insertObj.current_position = position
+  if (meta?.impressions !== undefined) insertObj.monthly_volume = Math.round(meta.impressions)
+  if (position !== null) insertObj.current_position = Math.round(position)
+  if (meta?.difficulty !== undefined) insertObj.difficulty = Math.round(meta.difficulty)
 
   const { data: banked, error: bankError } = await supabase
     .from('keyword_banks')

@@ -62,8 +62,8 @@ export default function KeywordsPage() {
           cluster: s.cluster || null,
           intent: s.intent || 'informational',
           funnel_stage: s.funnel_stage || 'tofu',
-          monthly_volume: s.monthly_volume_estimate || null,
-          difficulty: s.difficulty_estimate || null,
+          monthly_volume: s.monthly_volume_estimate != null ? Math.round(s.monthly_volume_estimate) : null,
+          difficulty: s.difficulty_estimate != null ? Math.round(s.difficulty_estimate) : null,
           priority: 5,
         })
       }
