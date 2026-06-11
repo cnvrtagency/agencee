@@ -1,7 +1,7 @@
 # Agencee — Master Architecture Document
 
 **Living document. Update at the end of every build session.**
-Last updated: 11 June 2026. Session: Web search tool, knowledge docs UI, weekly SEO digest, GitHub 500 fix, GSC OAuth redirect fix.
+Last updated: 11 June 2026. Session: Agent overview page, real-time session cost tracking, today's cost in sidebar, crawl 403 fix, GSC sync 400 fix, automations sidebar page.
 
 ---
 
@@ -211,7 +211,9 @@ Exist as cards in `/marketplace` only. No agent_type, tools, or system prompt.
 | `/marketplace` | Agent cards. Ada + Theo installed. 5 others not installed. |
 | `/settings` | Workspace name, Anthropic key, Gemini key, token budget + usage bar, notification prefs (email toggle, Slack webhook + test button, per-type toggles). |
 | `/agents` | Agent list |
-| `/agents/[id]` | Main agent interface. Chat + Automations + Settings tabs. Left panel: New chat, task log (Active/Last session), planned tasks, conversation list with delete. Right panel: agent header with avatar/name/role, message thread, quick action chips (empty state), suggested reply chips (after ambiguous responses), textarea + Send. Automations tab: toggleable background tasks with cadence, last run status, run now button. |
+| `/agents/[id]` | Main agent interface. Chat + Settings tabs. Left panel: New chat, task log (Active/Last session), planned tasks, conversation list with delete. Right panel: agent header with avatar/name/role + live session cost (tokens + est. $, resets per conversation), message thread, quick action chips (empty state), suggested reply chips (after ambiguous responses), textarea + Send. |
+| `/agents/[id]/overview` | Agent profile dashboard. Avatar, name, role, description, "Chat with" CTA. Stats row (conversations, drafts, keywords, tokens this week/month, total cost est.). Client knowledge panel (page count, GSC data, docs, agent notes per client, link to edit). Current SEO intelligence digest (latest week). Automations status (dot + last run time per automation). Recent activity feed (last 8 actions). All figures marked (est.) for cost. |
+| `/agents/[id]/automations` | Standalone automations page. Moved from tab on agent page. Toggle on/off, cadence display, last/next run time, run now button. Seeds 6 defaults on first load. |
 | `/agents/[id]/calendar` | Per-agent calendar. Generator panel (client, 2w/4w/8w, 1-4 posts/week, optional focus, "Generate plan" button). Month grid view (chips on dates, drawer on click). List view toggle. Status flow bar. Unscheduled strip. Bulk approve/schedule bar. |
 | `/agents/[id]/keywords` | Per-agent keyword suggestions with importance scoring |
 | `/agents/[id]/outputs` | Per-agent outputs — Needs review / Approved |
@@ -650,6 +652,22 @@ CREATE TABLE IF NOT EXISTS agent_knowledge (
   UNIQUE(agent_type, week_of)
 );
 ```
+
+### 11 June 2026 (session 7)
+**Built:**
+- Agent overview page — `/agents/[id]/overview` with stats row (conversations, drafts, keywords, tokens, cost est.), client knowledge status panel, current SEO digest, automations status, recent activity feed. "Chat with" CTA. Cost figures marked (est.).
+- Automations sidebar page — moved from tab on main agent page to `/agents/[id]/automations`. Removed automations tab from `agents/[id]/page.tsx`. Added `automations` icon (repeat arrows SVG) to `Sidebar.tsx` ICONS map.
+- Session cost tracking — `sessionTokens` + `sessionCost` state + `sessionTokensRef` ref in agent page. Accumulates per turn: input tokens × $3/M + output tokens × $15/M (Sonnet pricing). Displayed in chat header (tokens + $ (est.)), coloured amber above $0.10. Resets on new conversation and at start of send().
+- Today's cost in sidebar — `todaySpend` state loads on mount + refreshes every 30s via `setInterval`. Queries `agent_activity` for today's tokens × $4/M blended. Shown in sidebar bottom panel above token budget bar. Marked (est.). Amber above $1.
+- Crawl 403 fix — workspace_id lookup now uses fallback chain: google_connections → client_profiles → first workspace. Applied to both normal crawl and competitor crawl sections. Competitor pages now include workspace_id.
+- GSC sync 400 — confirmed already fixed in previous session (gsc_review case correctly passes connection_id).
+
+**Token tracking note:** Session cost uses per-call Sonnet pricing ($3 input / $15 output per million tokens). Sidebar and overview use blended $4/M. All figures are estimates — cache discounts not applied.
+
+**SQL still required (run in Supabase dashboard):**
+- `agent_automations` table (from session 6)
+- `agent_knowledge` table (from session 6)
+- Update Ada's nav_items to add Overview as first item (see session notes)
 
 ### 11 June 2026 (session 4)
 **Built:**

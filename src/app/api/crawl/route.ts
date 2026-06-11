@@ -158,6 +158,21 @@ export async function POST(req: NextRequest) {
     const { data: comp } = await supabase.from('competitor_sites').select('url, name').eq('id', competitor_id).single()
     if (!comp?.url) return NextResponse.json({ error: 'Competitor site not found or has no URL' }, { status: 400 })
 
+    // Resolve workspace_id for competitor pages — same fallback chain as normal crawl
+    let compWorkspaceId: string | null = null
+    if (client_id) {
+      const { data: gcRow2 } = await supabase.from('google_connections').select('workspace_id').eq('client_id', client_id).maybeSingle()
+      compWorkspaceId = gcRow2?.workspace_id ?? null
+      if (!compWorkspaceId) {
+        const { data: cpRow2 } = await supabase.from('client_profiles').select('workspace_id').eq('id', client_id).maybeSingle()
+        compWorkspaceId = cpRow2?.workspace_id ?? null
+      }
+    }
+    if (!compWorkspaceId) {
+      const { data: wsRow2 } = await supabase.from('workspaces').select('id').limit(1).maybeSingle()
+      compWorkspaceId = wsRow2?.id ?? null
+    }
+
     const baseUrl = comp.url.replace(/\/$/, '')
     const visited = new Set<string>()
     const pages: any[] = []
@@ -193,7 +208,7 @@ export async function POST(req: NextRequest) {
       const metaDesc = extractMeta(html, 'description')
       const wordCount = countWords(html)
       const content = extractContent(html)
-      pages.push({ competitor_id, client_id, url: finalUrl, title, h1, meta_description: metaDesc, word_count: wordCount, content, crawled_at: new Date().toISOString() })
+      pages.push({ workspace_id: compWorkspaceId, competitor_id, client_id, url: finalUrl, title, h1, meta_description: metaDesc, word_count: wordCount, content, crawled_at: new Date().toISOString() })
       if (!usingSitemap) {
         for (const link of extractLinks(html, finalUrl)) {
           if (!visited.has(link) && !queue.includes(link)) queue.push(link)
@@ -261,9 +276,18 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'client_id and website required' }, { status: 400 })
   }
 
-  // Resolve workspace_id — look up via google_connections for this client, fall back to first workspace
+  // Resolve workspace_id — fallback chain: google_connections → client_profiles → first workspace
+  let workspaceId: string | null = null
   const { data: gcRow } = await supabase.from('google_connections').select('workspace_id').eq('client_id', client_id).maybeSingle()
-  const workspaceId: string | null = gcRow?.workspace_id ?? null
+  workspaceId = gcRow?.workspace_id ?? null
+  if (!workspaceId) {
+    const { data: cpRow } = await supabase.from('client_profiles').select('workspace_id').eq('id', client_id).maybeSingle()
+    workspaceId = cpRow?.workspace_id ?? null
+  }
+  if (!workspaceId) {
+    const { data: wsRow } = await supabase.from('workspaces').select('id').limit(1).maybeSingle()
+    workspaceId = wsRow?.id ?? null
+  }
 
   const baseUrl = website.replace(/\/$/, '')
   const visited = new Set<string>()

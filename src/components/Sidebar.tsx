@@ -17,6 +17,7 @@ const ICONS: Record<string, React.ReactNode> = {
   tag: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>,
   file: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>,
   activity: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>,
+  automations: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>,
   settings: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>,
 }
 
@@ -110,6 +111,17 @@ export default function Sidebar({ onClose }: { onClose?: () => void }) {
   const [usage, setUsage] = useState<Usage>(null)
   const [workspaceName, setWorkspaceName] = useState<string>('')
   const [hasRunning, setHasRunning] = useState(false)
+  const [todaySpend, setTodaySpend] = useState<number | null>(null)
+
+  async function refreshTodaySpend() {
+    const today = new Date().toISOString().split('T')[0]
+    const { data } = await supabase
+      .from('agent_activity')
+      .select('tokens_used')
+      .gte('created_at', today + 'T00:00:00Z')
+    const tokens = (data || []).reduce((a: number, r: any) => a + (r.tokens_used || 0), 0)
+    setTodaySpend(tokens * (4 / 1_000_000))
+  }
 
   useEffect(() => {
     async function load() {
@@ -130,8 +142,13 @@ export default function Sidebar({ onClose }: { onClose?: () => void }) {
       if (usageRes.data) setUsage(usageRes.data)
       if (wsRes.data) setWorkspaceName(wsRes.data.name || '')
       setHasRunning((runRes.count || 0) > 0)
+
+      await refreshTodaySpend()
     }
     load()
+
+    const interval = setInterval(refreshTodaySpend, 30000)
+    return () => clearInterval(interval)
   }, [])
 
   const usagePct = usage ? Math.min(100, Math.round((usage.tokens_used_this_month / usage.monthly_token_budget) * 100)) : 0
@@ -215,6 +232,14 @@ export default function Sidebar({ onClose }: { onClose?: () => void }) {
 
       {/* Bottom panel */}
       <div style={{ padding: '12px 12px 18px', borderTop: '1px solid rgba(200,240,208,0.09)', display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {todaySpend !== null && (
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.45)' }}>Today (est.)</span>
+            <span style={{ fontSize: 11, fontFamily: 'var(--font-mono)', color: todaySpend > 1 ? 'var(--amber)' : 'rgba(255,255,255,0.45)' }}>
+              ${todaySpend.toFixed(4)}
+            </span>
+          </div>
+        )}
         {usage && (
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 }}>
