@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
+import { forbiddenResponse, requireUserOrInternal } from '@/lib/server/auth'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -7,6 +8,7 @@ const supabase = createClient(
 )
 
 const BASE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000'
+export const maxDuration = 60
 
 function calculateNextRun(cadence: string, runDay: string | null, runHour: number): Date {
   const now = new Date()
@@ -30,6 +32,9 @@ function calculateNextRun(cadence: string, runDay: string | null, runHour: numbe
 }
 
 export async function POST(req: NextRequest) {
+  const authResult = await requireUserOrInternal(req)
+  if (!authResult.ok) return authResult.response
+
   try {
     const { job_id } = await req.json()
     if (!job_id) return NextResponse.json({ error: 'job_id required' }, { status: 400 })
@@ -42,26 +47,25 @@ export async function POST(req: NextRequest) {
       .single()
     if (jobErr || !job) return NextResponse.json({ error: 'Job not found' }, { status: 404 })
 
-    // Workspace isolation: user-triggered calls must own the job's workspace
-    const authHeader = req.headers.get('authorization')
-    if (authHeader) {
-      const { createClient: createAnonClient } = await import('@supabase/supabase-js')
-      const userSupabase = createAnonClient(
-        process.env.NEXT_PUBLIC_SUPABASE_URL!,
-        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-        { global: { headers: { authorization: authHeader } } }
-      )
-      const { data: { user } } = await userSupabase.auth.getUser()
-      if (user) {
-        const { data: workspace } = await supabase
-          .from('workspaces')
-          .select('id')
-          .eq('owner_id', user.id)
-          .single()
-        if (!workspace || workspace.id !== job.workspace_id) {
-          return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
-        }
-      }
+    if (authResult.auth.user) {
+      const { data: workspace } = await supabase
+        .from('workspaces')
+        .select('id')
+        .eq('owner_id', authResult.auth.user.id)
+        .maybeSingle()
+      if (!workspace || workspace.id !== job.workspace_id) return forbiddenResponse()
+    }
+
+    if (job.last_run_status === 'running') {
+      const startedAt = job.last_run_at ? new Date(job.last_run_at).getTime() : 0
+      const stale = startedAt > 0 && startedAt < Date.now() - 10 * 60 * 1000
+      if (!stale) return NextResponse.json({ error: 'Job already running' }, { status: 409 })
+    }
+
+    const forwardedAuth = req.headers.get('authorization') || (process.env.CRON_SECRET ? `Bearer ${process.env.CRON_SECRET}` : '')
+    const internalHeaders = {
+      'Content-Type': 'application/json',
+      ...(forwardedAuth ? { Authorization: forwardedAuth } : {}),
     }
 
     // Create job_runs row
@@ -85,7 +89,7 @@ export async function POST(req: NextRequest) {
         // 1. GSC sync
         const syncRes = await fetch(`${BASE_URL}/api/gsc/sync`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: internalHeaders,
           body: JSON.stringify({ client_id: job.client_id }),
         })
         const syncData = await syncRes.json()
@@ -95,7 +99,7 @@ export async function POST(req: NextRequest) {
         // 2. Decay detection
         const decayRes = await fetch(`${BASE_URL}/api/intelligence/decay`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: internalHeaders,
           body: JSON.stringify({ client_id: job.client_id, workspace_id: job.workspace_id }),
         }).catch((err) => { console.error('[jobs/run] decay error:', err.message); return null })
         if (decayRes) {
@@ -106,7 +110,7 @@ export async function POST(req: NextRequest) {
         // 3. Opportunity scoring
         const scoreRes = await fetch(`${BASE_URL}/api/intelligence/score-keywords`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: internalHeaders,
           body: JSON.stringify({ client_id: job.client_id }),
         }).catch((err) => { console.error('[jobs/run] score-keywords error:', err.message); return null })
         if (scoreRes) {
@@ -115,11 +119,11 @@ export async function POST(req: NextRequest) {
         }
 
         // 4. Refresh AI overview (cheap — cached 24h)
-        fetch(`${BASE_URL}/api/clients/${job.client_id}/overview`, {
+        await fetch(`${BASE_URL}/api/clients/${job.client_id}/overview`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: internalHeaders,
         }).catch((err) => console.error('[jobs/run] overview refresh error:', err.message))
-        results.push('AI overview queued for refresh')
+        results.push('AI overview refreshed')
 
         summary = results.join('. ') || 'GSC intelligence run complete'
 
@@ -168,7 +172,7 @@ export async function POST(req: NextRequest) {
         if (clientSched) {
           const runRes = await fetch(`${BASE_URL}/api/schedule/run`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: internalHeaders,
             body: JSON.stringify({ schedule_id: clientSched.id }),
           })
           const runData = await runRes.json()
@@ -193,7 +197,7 @@ export async function POST(req: NextRequest) {
               if (autonomy === 'full_autopilot') {
                 await fetch(`${BASE_URL}/api/vercel/promote`, {
                   method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
+                  headers: internalHeaders,
                   body: JSON.stringify({ output_id: latestOutput.id }),
                 }).catch((err) => console.error('[jobs/run] vercel promote error:', err.message))
                 summary += ' · Submitted for production promotion'
@@ -209,7 +213,7 @@ export async function POST(req: NextRequest) {
         if (clientRow?.website) {
           const crawlRes = await fetch(`${BASE_URL}/api/crawl`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: internalHeaders,
             body: JSON.stringify({ client_id: job.client_id, website: clientRow.website }),
           })
           const crawlData = await crawlRes.json()
@@ -247,6 +251,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ success, summary })
   } catch (e: any) {
+    console.error('[jobs/run] error:', e.message)
     return NextResponse.json({ error: e.message }, { status: 500 })
   }
 }

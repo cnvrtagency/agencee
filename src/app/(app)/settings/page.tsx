@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
+import Link from 'next/link'
 
 const S: Record<string, React.CSSProperties> = {
   section: { background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: '28px 32px', marginBottom: 20 },
@@ -210,6 +211,9 @@ export default function Settings() {
           {usagePct >= 90 && (
             <p style={{ fontSize: 12, color: 'var(--red)', marginTop: 8 }}>You are near your monthly limit. Increase your budget or agents will stop responding.</p>
           )}
+          <Link href="/usage" style={{ display: 'inline-block', marginTop: 12, fontSize: 13, color: 'var(--accent)', textDecoration: 'none' }}>
+            View detailed usage →
+          </Link>
         </div>
       </div>
 

@@ -1,20 +1,25 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
+import { forbiddenResponse, requireUser, userCanAccessClient } from '@/lib/server/auth'
 
 const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_KEY!)
 
 export async function DELETE(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const authResult = await requireUser(req)
+  if (!authResult.ok) return authResult.response
+
   const { id } = await params
 
   const { data: output, error: loadError } = await supabase
     .from('content_outputs')
-    .select('id, images')
+    .select('id, client_id, images')
     .eq('id', id)
     .single()
 
   if (loadError || !output) {
     return NextResponse.json({ success: false, error: 'Output not found' }, { status: 404 })
   }
+  if (!(await userCanAccessClient(supabase, authResult.auth.user.id, output.client_id))) return forbiddenResponse()
 
   // Remove any stored images from the blog-images bucket (best effort)
   const paths = (Array.isArray(output.images) ? output.images : [])
@@ -23,7 +28,7 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
 
   if (paths.length) {
     const { error: storageError } = await supabase.storage.from('blog-images').remove(paths)
-    if (storageError) console.error('Failed to remove images for output', id, storageError.message)
+    if (storageError) console.error('[outputs/delete] failed to remove images for output', id, storageError.message)
   }
 
   // Delete version history rows, then the output itself

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
+import { forbiddenResponse, requireUserOrInternal, userCanAccessClient } from '@/lib/server/auth'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -47,19 +48,36 @@ function calculateOpportunityScore(kw: any, gscPosition?: number): number {
   return Math.max(0, Math.min(100, Math.round(score)))
 }
 
-export async function POST(_req: NextRequest) {
+export const maxDuration = 60
+
+export async function POST(req: NextRequest) {
+  const authResult = await requireUserOrInternal(req)
+  if (!authResult.ok) return authResult.response
+
+  const { client_id } = await req.json().catch(() => ({}))
+  if (authResult.auth.user && !client_id) {
+    return NextResponse.json({ error: 'client_id required' }, { status: 400 })
+  }
+  if (authResult.auth.user && !(await userCanAccessClient(supabase, authResult.auth.user.id, client_id))) {
+    return forbiddenResponse()
+  }
+
   // Load all keyword_banks
-  const { data: keywords } = await supabase
+  let keywordQuery = supabase
     .from('keyword_banks')
     .select('id, keyword, monthly_volume, difficulty, priority, content_targeting_this, client_id')
+  if (client_id) keywordQuery = keywordQuery.eq('client_id', client_id) as any
+  const { data: keywords } = await keywordQuery
 
   if (!keywords || keywords.length === 0) return NextResponse.json({ updated: 0 })
 
   // Load latest GSC positions per keyword
-  const { data: gscRows } = await supabase
+  let gscQuery = supabase
     .from('search_performance')
     .select('query, position, client_id')
     .order('impressions', { ascending: false })
+  if (client_id) gscQuery = gscQuery.eq('client_id', client_id) as any
+  const { data: gscRows } = await gscQuery
 
   const gscMap: Record<string, Record<string, number>> = {}
   for (const r of gscRows || []) {

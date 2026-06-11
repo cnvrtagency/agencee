@@ -1,15 +1,25 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
+import { forbiddenResponse, requireUserOrInternal, userCanAccessClient } from '@/lib/server/auth'
+import { checkUserBudget, recordTokenUsage } from '@/lib/server/token-usage'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_KEY!
 )
 
+export const maxDuration = 60
+
 export async function POST(req: NextRequest) {
+  const authResult = await requireUserOrInternal(req)
+  if (!authResult.ok) return authResult.response
+
   const { client_id, period_start, period_end } = await req.json().catch(() => ({}))
   if (!client_id || !period_start || !period_end) {
     return NextResponse.json({ error: 'client_id, period_start, period_end required' }, { status: 400 })
+  }
+  if (authResult.auth.user && !(await userCanAccessClient(supabase, authResult.auth.user.id, client_id))) {
+    return forbiddenResponse()
   }
 
   // Load all data in parallel
@@ -28,6 +38,14 @@ export async function POST(req: NextRequest) {
     supabase.from('agent_activity').select('id', { count: 'exact', head: true }).eq('client_id', client_id).gte('created_at', period_start).lte('created_at', period_end + 'T23:59:59Z'),
     supabase.from('content_history').select('*').eq('client_id', client_id).gte('published_at', period_start).lte('published_at', period_end + 'T23:59:59Z').order('published_at', { ascending: false }),
   ])
+
+  if (!clientProfile) return NextResponse.json({ error: 'Client not found' }, { status: 404 })
+
+  const ownerUserId = clientProfile.user_id || authResult.auth.user?.id || null
+  if (ownerUserId) {
+    const budgetCheck = await checkUserBudget(supabase, ownerUserId)
+    if (!budgetCheck.ok && budgetCheck.response) return budgetCheck.response
+  }
 
   // Compute search performance averages
   const gscRows = searchPerf || []
@@ -74,6 +92,19 @@ Write professionally. Focus on results and opportunities.`
       })
       const aiData = await res.json()
       executiveSummary = aiData.content?.[0]?.text || ''
+      if (aiData.usage) {
+        const tokensUsed = (aiData.usage.input_tokens || 0) + (aiData.usage.output_tokens || 0)
+        await recordTokenUsage({
+          supabase,
+          userId: ownerUserId,
+          workspaceId: clientProfile.workspace_id || null,
+          clientId: client_id,
+          agentId: null,
+          action: 'report_summary',
+          tokensUsed,
+          detail: { input_tokens: aiData.usage.input_tokens, output_tokens: aiData.usage.output_tokens, model: 'claude-sonnet-4-6' },
+        })
+      }
     } catch {
       executiveSummary = `During ${period_start} to ${period_end}, ${clientProfile.name} published ${(outputs || []).length} pieces of content. ${gscRows.length > 0 ? `Search performance data shows ${totalClicks.toLocaleString()} clicks and ${totalImpressions.toLocaleString()} impressions.` : ''} ${nearMiss.length > 0 ? `${nearMiss.length} near-miss keyword opportunities identified.` : ''}`
     }

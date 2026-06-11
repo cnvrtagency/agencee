@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
+import { forbiddenResponse, requireUser, userCanAccessClient } from '@/lib/server/auth'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -8,6 +9,9 @@ const supabase = createClient(
 
 // GET /api/agent-activity?agent_id=...&page=0&page_size=50
 export async function GET(req: NextRequest) {
+  const authResult = await requireUser(req)
+  if (!authResult.ok) return authResult.response
+
   const { searchParams } = req.nextUrl
   const agent_id = searchParams.get('agent_id')
   const client_id = searchParams.get('client_id')
@@ -15,17 +19,26 @@ export async function GET(req: NextRequest) {
   const page_size = parseInt(searchParams.get('page_size') || '50', 10)
   const totals_only = searchParams.get('totals_only') === 'true'
 
+  const { data: workspace } = await supabase
+    .from('workspaces')
+    .select('id')
+    .eq('owner_id', authResult.auth.user.id)
+    .maybeSingle()
+  const workspaceId = workspace?.id || null
+
   let q = supabase
     .from('agent_activity')
     .select('*, agents(name), client_profiles(name)')
     .order('created_at', { ascending: false })
 
+  if (workspaceId) q = q.eq('workspace_id', workspaceId) as typeof q
   if (agent_id) q = q.eq('agent_id', agent_id) as typeof q
   if (client_id) q = q.eq('client_id', client_id) as typeof q
 
   if (totals_only) {
     // Return just tokens_used for all matching rows (no pagination)
     let tq = supabase.from('agent_activity').select('tokens_used')
+    if (workspaceId) tq = tq.eq('workspace_id', workspaceId) as typeof tq
     if (agent_id) tq = tq.eq('agent_id', agent_id) as typeof tq
     if (client_id) tq = tq.eq('client_id', client_id) as typeof tq
     const { data, error } = await tq
@@ -42,11 +55,23 @@ export async function GET(req: NextRequest) {
 
 // POST /api/agent-activity  body: { agent_id, client_id, action, detail, tokens_used }
 export async function POST(req: NextRequest) {
+  const authResult = await requireUser(req)
+  if (!authResult.ok) return authResult.response
+
   const body = await req.json()
   const { agent_id, client_id, action, detail, tokens_used } = body
   if (!action) return NextResponse.json({ error: 'action required' }, { status: 400 })
 
+  if (client_id && !(await userCanAccessClient(supabase, authResult.auth.user.id, client_id))) return forbiddenResponse()
+  const { data: workspace } = await supabase
+    .from('workspaces')
+    .select('id')
+    .eq('owner_id', authResult.auth.user.id)
+    .maybeSingle()
+
   const { error } = await supabase.from('agent_activity').insert({
+    workspace_id: workspace?.id || null,
+    user_id: authResult.auth.user.id,
     agent_id,
     client_id,
     action,

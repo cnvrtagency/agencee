@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
+import { forbiddenResponse, requireUser, userCanAccessClient } from '@/lib/server/auth'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -7,6 +8,9 @@ const supabase = createClient(
 )
 
 export async function POST(req: NextRequest) {
+  const authResult = await requireUser(req)
+  if (!authResult.ok) return authResult.response
+
   const { suggestion_id } = await req.json()
 
   const { data: suggestion, error: loadError } = await supabase
@@ -18,6 +22,7 @@ export async function POST(req: NextRequest) {
   if (loadError || !suggestion) {
     return NextResponse.json({ error: 'Suggestion not found' }, { status: 404 })
   }
+  if (!(await userCanAccessClient(supabase, authResult.auth.user.id, suggestion.client_id))) return forbiddenResponse()
 
   const keyword = suggestion.keyword.toLowerCase()
   const isInformational = /^(what|how|why|when|does|is|are|can|should|do)\b/.test(keyword)
@@ -36,6 +41,7 @@ export async function POST(req: NextRequest) {
   // created_at, user_id, workspace_id, opportunity_score
   const insertObj: any = {
     workspace_id: suggestion.workspace_id,
+    user_id: suggestion.user_id || authResult.auth.user.id,
     client_id: suggestion.client_id,
     keyword: suggestion.keyword,
     intent,
@@ -55,7 +61,7 @@ export async function POST(req: NextRequest) {
     .single()
 
   if (bankError) {
-    console.error('keyword_banks insert failed:', bankError)
+    console.error('[keywords/approve] keyword_banks insert failed:', bankError.message)
     return NextResponse.json({ error: bankError.message }, { status: 500 })
   }
 

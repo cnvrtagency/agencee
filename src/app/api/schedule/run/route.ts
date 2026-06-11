@@ -1,13 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { sendNotification } from '@/lib/notifications'
+import { forbiddenResponse, requireUserOrInternal, userCanAccessClient } from '@/lib/server/auth'
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_KEY!
 )
 
+export const maxDuration = 60
+
 // Process the next due schedule — called by cron or manually
 export async function POST(req: NextRequest) {
+  const authResult = await requireUserOrInternal(req)
+  if (!authResult.ok) return authResult.response
+
   const { schedule_id } = await req.json().catch(() => ({}))
 
   // Load schedule (and optionally limit to a specific one)
@@ -31,10 +37,13 @@ export async function POST(req: NextRequest) {
   const schedule = schedules[0]
   const client = (schedule as any).client_profiles
   const agent = (schedule as any).agents
-  const workspaceId = (schedule as any).workspace_id
+  const workspaceId = (schedule as any).workspace_id || client?.workspace_id || null
 
   if (!client || !agent) {
     return NextResponse.json({ error: 'Schedule references missing client or agent' }, { status: 400 })
+  }
+  if (authResult.auth.user && !(await userCanAccessClient(supabase, authResult.auth.user.id, client.id))) {
+    return forbiddenResponse()
   }
 
   // Load the keyword bank and pick a priority keyword that hasn't been written
@@ -57,6 +66,7 @@ export async function POST(req: NextRequest) {
     .from('content_queue')
     .insert({
       workspace_id: workspaceId || null,
+      user_id: client.user_id || null,
       client_id: client.id,
       agent_type: 'ada',
       content_type: contentType,
@@ -65,13 +75,12 @@ export async function POST(req: NextRequest) {
       word_count: schedule.target_word_count || 1500,
       scheduled_for: new Date().toISOString(),
       status: 'queued',
-      notes: `Auto-scheduled by ${agent.name}. Cadence: ${schedule.cadence}.${schedule.notes ? ' ' + schedule.notes : ''}`,
     })
     .select()
     .single()
 
   if (error) {
-    sendNotification({
+    await sendNotification({
       workspaceId: workspaceId || '',
       type: 'schedule_failed',
       subject: `Scheduled run failed — ${client.name}`,
@@ -106,8 +115,7 @@ export async function POST(req: NextRequest) {
     tokens_used: 0,
   })
 
-  // Fire-and-forget notification
-  sendNotification({
+  await sendNotification({
     workspaceId: workspaceId || '',
     type: 'schedule_complete',
     subject: `Scheduled run complete — ${client.name}`,

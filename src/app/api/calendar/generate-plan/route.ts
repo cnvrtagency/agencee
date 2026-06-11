@@ -1,14 +1,32 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
+import { forbiddenResponse, requireUser, userCanAccessClient } from '@/lib/server/auth'
+import { checkRateLimit, getRateLimitIdentity } from '@/lib/server/rate-limit'
+import { checkUserBudget, recordTokenUsage } from '@/lib/server/token-usage'
 
 const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_KEY!)
 
+export const maxDuration = 60
+
 export async function POST(req: NextRequest) {
+  const authResult = await requireUser(req)
+  if (!authResult.ok) return authResult.response
+
+  const rate = checkRateLimit({
+    key: `generate-plan:${getRateLimitIdentity(req, authResult.auth.user.id)}`,
+    limit: 20,
+    windowMs: 10 * 60 * 1000,
+  })
+  if (!rate.ok) return rate.response
+
   try {
     const { client_id, weeks, posts_per_week, focus, agent_id } = await req.json()
     if (!client_id || !weeks || !posts_per_week) {
       return NextResponse.json({ error: 'client_id, weeks, posts_per_week required' }, { status: 400 })
     }
+
+    const budgetCheck = await checkUserBudget(supabase, authResult.auth.user.id)
+    if (!budgetCheck.ok && budgetCheck.response) return budgetCheck.response
 
     const [
       { data: client },
@@ -27,6 +45,12 @@ export async function POST(req: NextRequest) {
     ])
 
     if (!client) return NextResponse.json({ error: 'Client not found' }, { status: 404 })
+    if (!(await userCanAccessClient(supabase, authResult.auth.user.id, client_id))) return forbiddenResponse()
+
+    const apiKey = process.env.ANTHROPIC_API_KEY
+    if (!apiKey) {
+      return NextResponse.json({ error: 'ANTHROPIC_API_KEY is not configured in Vercel environment variables.' }, { status: 500 })
+    }
 
     // Load top competitor pages with summaries
     let competitorContext = ''
@@ -153,7 +177,7 @@ Respond with ONLY a JSON object, no markdown fences, no preamble:
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': process.env.ANTHROPIC_API_KEY!,
+        'x-api-key': apiKey,
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
@@ -169,6 +193,19 @@ Respond with ONLY a JSON object, no markdown fences, no preamble:
     }
 
     const aiData = await aiRes.json()
+    if (aiData.usage) {
+      const tokensUsed = (aiData.usage.input_tokens || 0) + (aiData.usage.output_tokens || 0)
+      await recordTokenUsage({
+        supabase,
+        userId: authResult.auth.user.id,
+        workspaceId: (client as any).workspace_id || null,
+        clientId: client_id,
+        agentId: agent_id || null,
+        action: 'calendar_plan',
+        tokensUsed,
+        detail: { input_tokens: aiData.usage.input_tokens, output_tokens: aiData.usage.output_tokens, model: 'claude-sonnet-4-6' },
+      })
+    }
     const raw = (aiData.content || []).filter((b: any) => b.type === 'text').map((b: any) => b.text).join('').trim()
 
     let parsed: { summary: string; intelligence_notes?: string; entries: any[] }
@@ -214,8 +251,10 @@ Respond with ONLY a JSON object, no markdown fences, no preamble:
       intelligence_notes: parsed.intelligence_notes || '',
       created: created?.length || 0,
       entries: created,
+      usage_warning: budgetCheck.warning,
     })
   } catch (err: any) {
+    console.error('[calendar/generate-plan] error:', err.message)
     return NextResponse.json({ error: err.message }, { status: 500 })
   }
 }

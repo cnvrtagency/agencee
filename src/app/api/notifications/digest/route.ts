@@ -1,13 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { sendNotification } from '@/lib/notifications'
+import { requireInternal } from '@/lib/server/auth'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_KEY!
 )
 
-export async function POST(_req: NextRequest) {
+export async function POST(req: NextRequest) {
+  const authResult = await requireInternal(req)
+  if (!authResult.ok) return authResult.response
+
   const { data: workspaces } = await supabase.from('workspaces').select('id, name')
   if (!workspaces || workspaces.length === 0) return NextResponse.json({ sent: 0 })
 
@@ -27,12 +31,14 @@ export async function POST(_req: NextRequest) {
     const { count: kwCount } = await supabase
       .from('keyword_suggestions')
       .select('id', { count: 'exact', head: true })
+      .eq('workspace_id', ws.id)
       .eq('status', 'pending')
 
     // Get next scheduled run
     const { data: nextSchedule } = await supabase
       .from('client_schedules')
       .select('next_run_at, client_profiles(name)')
+      .eq('workspace_id', ws.id)
       .eq('enabled', true)
       .gte('next_run_at', new Date().toISOString())
       .order('next_run_at')

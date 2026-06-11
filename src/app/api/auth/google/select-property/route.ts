@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { encrypt } from '@/lib/crypto'
+import { forbiddenResponse, requireUser, userCanAccessClient } from '@/lib/server/auth'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -8,6 +9,9 @@ const supabase = createClient(
 )
 
 export async function POST(req: NextRequest) {
+  const authResult = await requireUser(req)
+  if (!authResult.ok) return authResult.response
+
   const body = await req.json()
   const { connection_id, site_url, client_id, workspace_id, access_token, refresh_token, expires_at, email } = body
 
@@ -15,9 +19,11 @@ export async function POST(req: NextRequest) {
 
   // CREATE mode — first-time save from OAuth callback
   if (client_id && access_token) {
+    if (!(await userCanAccessClient(supabase, authResult.auth.user.id, client_id))) return forbiddenResponse()
+    const { data: client } = await supabase.from('client_profiles').select('workspace_id').eq('id', client_id).maybeSingle()
     const { error } = await supabase.from('google_connections').upsert({
       client_id,
-      workspace_id: workspace_id || null,
+      workspace_id: client?.workspace_id || workspace_id || null,
       google_account_email: email || null,
       property_url: site_url,
       access_token: encrypt(access_token),
@@ -33,6 +39,9 @@ export async function POST(req: NextRequest) {
 
   // UPDATE mode — change property on existing connection
   if (!connection_id) return NextResponse.json({ error: 'connection_id or client_id+access_token required' }, { status: 400 })
+  const { data: conn } = await supabase.from('google_connections').select('client_id').eq('id', connection_id).maybeSingle()
+  if (!conn) return NextResponse.json({ error: 'Connection not found' }, { status: 404 })
+  if (!(await userCanAccessClient(supabase, authResult.auth.user.id, conn.client_id))) return forbiddenResponse()
 
   const { error } = await supabase
     .from('google_connections')

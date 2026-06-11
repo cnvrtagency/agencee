@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
+import { forbiddenResponse, requireUser, userCanAccessClient } from '@/lib/server/auth'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -7,11 +8,15 @@ const supabase = createClient(
 )
 
 export async function POST(req: NextRequest) {
+  const authResult = await requireUser(req)
+  if (!authResult.ok) return authResult.response
+
   const { connection_id } = await req.json()
   if (!connection_id) return NextResponse.json({ error: 'Missing connection_id' }, { status: 400 })
 
   const { data: conn } = await supabase.from('site_connections').select('*').eq('id', connection_id).single()
   if (!conn) return NextResponse.json({ error: 'Connection not found' }, { status: 404 })
+  if (!(await userCanAccessClient(supabase, authResult.auth.user.id, conn.client_id))) return forbiddenResponse()
 
   let ok = false
   let message = ''

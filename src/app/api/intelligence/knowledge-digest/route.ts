@@ -1,16 +1,29 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
+import { requireUserOrInternal } from '@/lib/server/auth'
+import { checkRateLimit, getRateLimitIdentity } from '@/lib/server/rate-limit'
+import { recordTokenUsage } from '@/lib/server/token-usage'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_KEY!
 )
 
-export const maxDuration = 120
+export const maxDuration = 60
 
-export async function POST(_req: NextRequest) {
+export async function POST(req: NextRequest) {
+  const authResult = await requireUserOrInternal(req)
+  if (!authResult.ok) return authResult.response
+
+  const rate = checkRateLimit({
+    key: `knowledge-digest:${getRateLimitIdentity(req, authResult.auth.user?.id)}`,
+    limit: 5,
+    windowMs: 60 * 60 * 1000,
+  })
+  if (!rate.ok) return rate.response
+
   const apiKey = process.env.ANTHROPIC_API_KEY
-  if (!apiKey) return NextResponse.json({ error: 'No API key' }, { status: 500 })
+  if (!apiKey) return NextResponse.json({ error: 'ANTHROPIC_API_KEY is not configured in Vercel environment variables.' }, { status: 500 })
 
   // Monday of this week
   const weekOf = new Date()
@@ -55,8 +68,9 @@ After searching, write a structured knowledge digest:
 
 This will be read by an AI SEO agent before every client session to stay current.`
 
-  const makeRequest = (messages: any[]) =>
-    fetch('https://api.anthropic.com/v1/messages', {
+  let tokensUsed = 0
+  const makeRequest = async (messages: any[]) => {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -70,7 +84,12 @@ This will be read by an AI SEO agent before every client session to stay current
         tools: [{ type: 'web_search_20250305', name: 'web_search' }],
         messages,
       }),
-    }).then(r => r.json())
+    })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error?.message || `Anthropic API error (${res.status})`)
+    tokensUsed += (data.usage?.input_tokens || 0) + (data.usage?.output_tokens || 0)
+    return data
+  }
 
   let messages: any[] = [{ role: 'user', content: prompt }]
   let loopData = await makeRequest(messages)
@@ -103,6 +122,17 @@ This will be read by an AI SEO agent before every client session to stay current
   }
 
   if (!finalText) return NextResponse.json({ error: 'No content generated' }, { status: 500 })
+
+  await recordTokenUsage({
+    supabase,
+    userId: authResult.auth.user?.id || null,
+    workspaceId: null,
+    clientId: null,
+    agentId: null,
+    action: 'knowledge_digest',
+    tokensUsed,
+    detail: { model: 'claude-sonnet-4-6', web_search: true },
+  })
 
   const { error } = await supabase.from('agent_knowledge').upsert({
     agent_type: 'seo',

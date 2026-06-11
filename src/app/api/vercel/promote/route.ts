@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
+import { forbiddenResponse, requireUserOrInternal, userCanAccessClient } from '@/lib/server/auth'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -7,7 +8,20 @@ const supabase = createClient(
 )
 
 export async function POST(req: NextRequest) {
+  const authResult = await requireUserOrInternal(req)
+  if (!authResult.ok) return authResult.response
+
   const { output_id } = await req.json()
+  if (!output_id) return NextResponse.json({ error: 'output_id required' }, { status: 400 })
+  if (authResult.auth.user) {
+    const { data: output } = await supabase
+      .from('content_outputs')
+      .select('client_id')
+      .eq('id', output_id)
+      .maybeSingle()
+    if (!output) return NextResponse.json({ error: 'Output not found' }, { status: 404 })
+    if (!(await userCanAccessClient(supabase, authResult.auth.user.id, output.client_id))) return forbiddenResponse()
+  }
 
   const token = process.env.VERCEL_TOKEN
   const projectId = process.env.VERCEL_PROJECT_ID

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
+import { forbiddenResponse, requireUser } from '@/lib/server/auth'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -27,31 +28,22 @@ function calculateNextRun(cadence: string, runDay: string | null, runHour: numbe
   return next
 }
 
-async function validateJobOwnership(req: NextRequest, jobId: string): Promise<boolean> {
-  const authHeader = req.headers.get('authorization')
-  if (!authHeader) return true // server-to-server calls without auth are permitted
-  const { createClient: createAnonClient } = await import('@supabase/supabase-js')
-  const userSupabase = createAnonClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    { global: { headers: { authorization: authHeader } } }
-  )
-  const { data: { user } } = await userSupabase.auth.getUser()
-  if (!user) return false
+async function validateJobOwnership(userId: string, jobId: string): Promise<boolean> {
   const { data: job } = await supabase.from('scheduled_jobs').select('workspace_id').eq('id', jobId).single()
   if (!job) return false
-  const { data: workspace } = await supabase.from('workspaces').select('id').eq('owner_id', user.id).single()
+  const { data: workspace } = await supabase.from('workspaces').select('id').eq('owner_id', userId).single()
   return !!(workspace && workspace.id === job.workspace_id)
 }
 
 // PATCH — update a scheduled_job
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const authResult = await requireUser(req)
+  if (!authResult.ok) return authResult.response
+
   try {
     const { id } = await params
 
-    if (!(await validateJobOwnership(req, id))) {
-      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
-    }
+    if (!(await validateJobOwnership(authResult.auth.user.id, id))) return forbiddenResponse()
 
     const body = await req.json()
     const updates: any = {}
@@ -85,11 +77,12 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
 
 // DELETE
 export async function DELETE(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const authResult = await requireUser(req)
+  if (!authResult.ok) return authResult.response
+
   const { id } = await params
 
-  if (!(await validateJobOwnership(req, id))) {
-    return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
-  }
+  if (!(await validateJobOwnership(authResult.auth.user.id, id))) return forbiddenResponse()
 
   const { error } = await supabase.from('scheduled_jobs').delete().eq('id', id)
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })

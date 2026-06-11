@@ -1,7 +1,7 @@
 # Agencee — Master Architecture Document
 
 **Living document. Update at the end of every build session.**
-Last updated: 11 June 2026. Session: GSC token refresh fix, task log cleanup, progress bar, knowledge panel UI, blog loop fix.
+Last updated: 11 June 2026. Session: full system stabilisation audit, API auth/cost hardening, Usage page, cron/queue safeguards.
 
 ---
 
@@ -206,6 +206,7 @@ Exist as cards in `/marketplace` only. No agent_type, tools, or system prompt.
 | `/keywords` | Global keyword suggestions. Pending/Approved/Rejected tabs. Client filter. Importance stars (scored from GSC position + impressions). Approve all. Per-row approve (→ keyword_banks) / reject with reason input. |
 | `/reports` | Reports list. Generate modal (client + period_start + period_end). |
 | `/queue` | Global content queue |
+| `/usage` | Workspace usage dashboard. Month spend estimate, token budget, route/action breakdown, recent activity, and protection status. Reads authenticated workspace activity and uses shared model pricing estimates. |
 | `/activity` | Global agent activity log |
 | `/calendar` | Global content calendar (separate from per-agent) |
 | `/marketplace` | Agent cards. Ada + Theo installed. 5 others not installed. |
@@ -231,6 +232,18 @@ Exist as cards in `/marketplace` only. No agent_type, tools, or system prompt.
 ---
 
 ## API Routes
+
+### API auth and cost contract
+
+- Browser `/api/*` calls are authenticated by `AuthenticatedFetch`, which attaches the current Supabase access token as `Authorization: Bearer <token>`.
+- Server routes use shared guards from `src/lib/server/auth.ts`:
+  - `requireUser` for normal user actions.
+  - `requireUserOrInternal` for routes callable by either a logged-in user or cron/worker.
+  - `requireInternal` for internal-only maintenance routes.
+- Cron and server-to-server subrequests use `Authorization: Bearer ${CRON_SECRET}`. If `CRON_SECRET` is missing, internal-only routes fail closed.
+- Routes using the service-role client must still verify client/workspace ownership before reading or mutating tenant data.
+- Expensive AI routes use shared rate limiting and budget checks where practical. Token/cost accounting is centralised server-side in `src/lib/server/token-usage.ts`.
+- Google OAuth start/callback are the exception because they are browser navigation and provider callback endpoints. State signing remains an open hardening task.
 
 ### Agents and content
 
@@ -322,7 +335,7 @@ Exist as cards in `/marketplace` only. No agent_type, tools, or system prompt.
 | `conversations` | id, agent_id, title, updated_at, user_id | Chat sessions |
 | `messages` | conversation_id, role, content, user_id | Content has __META__ prefix encoding task log + thoughts |
 | `planned_tasks` | agent_id, client_id, conversation_id, content_type, primary_keyword, supporting_keywords, title_brief, word_count, internal_links, notes, status | Agent-saved planned content |
-| `content_queue` | client_id, agent_type, content_type, primary_keyword, supporting_keywords, word_count, scheduled_for, status, output_id, calendar_id | Job queue |
+| `content_queue` | client_id, user_id, agent_type, content_type, primary_keyword, supporting_keywords, word_count, scheduled_for, status, tokens_used, output_id, error, started_at, completed_at, calendar_id, notes, updated_at | Job queue. Live schema was missing several runtime columns during the 11 Jun 2026 audit; see migration `20260611_queue_runtime_columns.sql`. |
 | `content_outputs` | client_id, title, content, primary_keyword, meta_description, word_count, approved, published_url, images jsonb, platform_output jsonb, format, source, notes, current_version | All drafts/published |
 | `content_history` | client_id, title, url, primary_keyword, summary, published_at, ranking_position, ranking_date, traffic_notes, performance_notes | Published content record |
 | `content_calendar` | client_id, title, primary_keyword, content_type, scheduled_date, status, rationale, priority, agent_id, notes, output_id, queue_item_id | Calendar planning |
@@ -450,9 +463,9 @@ GET /api/schedule/check
      → keyword_banks.content_targeting_this = /outputs/{id}
      → output-ready notification
 
-   Path B (autonomous): /api/run-task picks queued item → simplified Sonnet call (no tools)
+   Path B (autonomous): /api/run-task picks queued item → full-context Sonnet call (no tools)
      → content_outputs (draft)
-     ⚠ KNOWN GAP: simplified prompt, no knowledge panel, lower quality
+     → token usage logged server-side and queue status updated
 
 4. REVIEW
    User reviews at /outputs/{id}
@@ -532,6 +545,13 @@ GET /api/schedule/check
 | Sidebar today spend not updating (agent_activity not inserted when workspaceId null) | High | api/chat/route.ts | **Fixed 11 Jun 2026** — workspaceId guard removed; always inserts with workspace_id: workspaceId \|\| null |
 | GitHub 500 on save | High | api/clients/[id]/github/route.ts | **Fixed 11 Jun 2026** — encrypt() failure now returns a clear 500 error message explaining ENCRYPTION_KEY must be a 32-byte base64 string. ENCRYPTION_KEY env var required in Vercel. |
 | GSC connections tab empty after OAuth redirect | High | clients/[id]/page.tsx | **Fixed 11 Jun 2026** — client page now reads `?tab=` and `?gsc=` URL params on mount. Tab param switches to the correct tab. gsc=connected shows a 4s success message. gsc=error with message=no_properties shows appropriate error. |
+| Service-role API routes callable without user/internal auth | Critical | api/* routes | **Fixed 11 Jun 2026 audit** - shared Supabase bearer auth, CRON_SECRET internal auth, ownership checks, and rate/budget guards added across high-risk routes. |
+| `/api/schedule/check` skipped most cron work when no client_schedules were due | Critical | api/schedule/check/route.ts | **Fixed 11 Jun 2026 audit** - removed early return and now awaits authenticated GSC, job, automation, report, digest, and notification subrequests. |
+| Browser-side and server-side token tracking could double count usage | High | agents/[id]/page.tsx + api/chat/route.ts | **Fixed 11 Jun 2026 audit** - removed browser RPC increment and centralised usage recording in server AI routes. |
+| `content_queue` runtime columns absent in live DB | High | Supabase migration | **Migration added 11 Jun 2026 audit** - `20260611_queue_runtime_columns.sql` adds started/completed/error/calendar/notes/update columns and helpful indexes. Apply manually if MCP/CLI migration access is unavailable. |
+| Theo sidebar nav uses `upload` icon not mapped in Sidebar ICONS | Low | components/Sidebar.tsx | **Fixed 11 Jun 2026 audit** - added `upload` icon mapping. |
+| Google OAuth `state` is plain client_id | Medium | api/auth/google* | Open - replace with signed expiring state or server-side OAuth session. Current callback validates property/client flow but not signed state. |
+| Full live schema/RLS/index dump blocked in local environment | Medium | Supabase access | Manual - provide `SUPABASE_ACCESS_TOKEN` or DB password/psql, or run SQL in Supabase dashboard. |
 
 ---
 
@@ -576,6 +596,7 @@ GET /api/schedule/check
 | NEXT_PUBLIC_SUPABASE_URL | Supabase project URL |
 | NEXT_PUBLIC_SUPABASE_ANON_KEY | Supabase anon key |
 | SUPABASE_SERVICE_KEY | Supabase service role key |
+| SUPABASE_ACCESS_TOKEN | Optional for Supabase MCP/CLI management tasks. Required for automated schema/RLS/index dump and remote migrations from Codex. |
 | ANTHROPIC_API_KEY | Anthropic API key |
 | GEMINI_API_KEY | Gemini / Nano Banana key |
 | CRON_SECRET | Vercel cron auth secret |
@@ -629,6 +650,27 @@ GET /api/schedule/check
 **Known still open:**
 - Em-dashes in responses
 - Verify agent overhaul prompt applied in production (getToolsForAgent, buildSystemPrompt)
+
+### 11 June 2026 (session 12 - stabilisation audit)
+**Fixed:**
+- Added shared API auth helpers, browser authenticated fetch wrapper, internal CRON_SECRET auth, ownership checks, route rate limiting, and server-side token usage recording.
+- Hardened high-risk service-role routes including chat, run-task, crawl, image generation, calendar generation, reports, client overview, GitHub/connections, briefing/activity, outputs, jobs, automations, GSC, keyword actions, notifications, Vercel promotion, and workspace API key storage.
+- Fixed `/api/schedule/check` early return so the full cron pipeline still runs when no client schedules are due.
+- Scoped run-task, jobs, automations, notifications, and sidebar usage to the owning workspace/client where possible.
+- Added shared pricing constants and replaced old blended `$4/M` estimates in visible dashboards/activity pages.
+- Built `/usage` with workspace usage totals, budget progress, action breakdown, route protection status, and recent activity.
+- Added `20260611_queue_runtime_columns.sql` for queue runtime columns and indexes discovered missing from live Supabase.
+
+**Verification:**
+- `npx tsc --noEmit` passes.
+- Local `/usage` smoke passes: `GET /usage 200` in Next dev and no browser console errors.
+- `npm audit --audit-level=moderate` reports only Next bundled PostCSS moderate advisories; npm's proposed fix downgrades Next and was not applied.
+- `npm run lint` still fails on broad pre-existing strict lint debt, especially `no-explicit-any` and unused variables across older routes/components.
+
+**Still open/manual:**
+- Supabase MCP/schema/RLS/index dump requires `SUPABASE_ACCESS_TOKEN` or a DB password/psql/Docker path.
+- Google OAuth state should be signed.
+- Apply the queue migration remotely if it has not already been applied.
 
 ### 11 June 2026 (session 2)
 **Fixed:**

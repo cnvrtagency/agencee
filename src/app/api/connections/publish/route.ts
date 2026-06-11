@@ -3,6 +3,7 @@ import { createClient } from '@supabase/supabase-js'
 import { marked } from 'marked'
 import { safeDecrypt } from '@/lib/crypto'
 import { atomicCommit, parseRepoUrl, type CommitFile } from '@/lib/github-commit'
+import { forbiddenResponse, requireUser, userCanAccessClient } from '@/lib/server/auth'
 
 export const maxDuration = 120
 
@@ -43,6 +44,9 @@ function fail(status: number, error: string, output_id?: string) {
 }
 
 export async function POST(req: NextRequest) {
+  const authResult = await requireUser(req)
+  if (!authResult.ok) return authResult.response
+
   let output_id: string | undefined
   try {
     const body = await req.json()
@@ -59,6 +63,7 @@ export async function POST(req: NextRequest) {
       .eq('id', output_id)
       .single()
     if (!output) return fail(404, 'Output not found')
+    if (!(await userCanAccessClient(supabase, authResult.auth.user.id, output.client_id))) return forbiddenResponse()
 
     // 2. Idempotent: never publish twice
     if (output.published_url) {

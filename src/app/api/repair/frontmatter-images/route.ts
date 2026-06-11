@@ -2,8 +2,9 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { safeDecrypt } from '@/lib/crypto'
 import { atomicCommit, parseRepoUrl } from '@/lib/github-commit'
+import { requireInternal } from '@/lib/server/auth'
 
-export const maxDuration = 120
+export const maxDuration = 60
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -28,6 +29,9 @@ export async function POST(req: NextRequest) {
 }
 
 async function run(req: NextRequest, dryRun: boolean) {
+  const authResult = await requireInternal(req)
+  if (!authResult.ok) return authResult.response
+
   // Fetch all published content_outputs that have images
   const { data: outputs, error } = await supabase
     .from('content_outputs')

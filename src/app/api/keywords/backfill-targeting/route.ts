@@ -1,11 +1,31 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
+import { forbiddenResponse, requireUser, userCanAccessClient } from '@/lib/server/auth'
+import { checkUserBudget, recordTokenUsage } from '@/lib/server/token-usage'
 
 const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_KEY!)
 
+export const maxDuration = 60
+
 export async function POST(req: NextRequest) {
+  const authResult = await requireUser(req)
+  if (!authResult.ok) return authResult.response
+
   const { client_id } = await req.json()
   if (!client_id) return NextResponse.json({ error: 'client_id required' }, { status: 400 })
+  if (!(await userCanAccessClient(supabase, authResult.auth.user.id, client_id))) return forbiddenResponse()
+
+  const { data: client } = await supabase
+    .from('client_profiles')
+    .select('workspace_id,user_id')
+    .eq('id', client_id)
+    .maybeSingle()
+  const ownerUserId = client?.user_id || authResult.auth.user.id
+  const budgetCheck = await checkUserBudget(supabase, ownerUserId)
+  if (!budgetCheck.ok && budgetCheck.response) return budgetCheck.response
+
+  const apiKey = process.env.ANTHROPIC_API_KEY
+  if (!apiKey) return NextResponse.json({ error: 'ANTHROPIC_API_KEY is not configured in Vercel environment variables.' }, { status: 500 })
 
   const [{ data: keywords }, { data: knowledge }] = await Promise.all([
     supabase.from('keyword_banks').select('id,keyword').eq('client_id', client_id).is('content_targeting_this', null),
@@ -36,7 +56,7 @@ Respond with ONLY a JSON object mapping keyword to URL for genuine matches. Omit
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'x-api-key': process.env.ANTHROPIC_API_KEY!,
+      'x-api-key': apiKey,
       'anthropic-version': '2023-06-01',
     },
     body: JSON.stringify({
@@ -48,6 +68,19 @@ Respond with ONLY a JSON object mapping keyword to URL for genuine matches. Omit
 
   if (!aiRes.ok) return NextResponse.json({ error: 'AI call failed' }, { status: 500 })
   const aiData = await aiRes.json()
+  if (aiData.usage) {
+    const tokensUsed = (aiData.usage.input_tokens || 0) + (aiData.usage.output_tokens || 0)
+    await recordTokenUsage({
+      supabase,
+      userId: ownerUserId,
+      workspaceId: client?.workspace_id || null,
+      clientId: client_id,
+      agentId: null,
+      action: 'backfill_targeting',
+      tokensUsed,
+      detail: { input_tokens: aiData.usage.input_tokens, output_tokens: aiData.usage.output_tokens, model: 'claude-haiku-4-5-20251001' },
+    })
+  }
   const raw = (aiData.content?.[0]?.text || '').replace(/```json|```/g, '').trim()
 
   let mapping: Record<string, string>

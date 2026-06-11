@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
+import { forbiddenResponse, requireUser, userCanAccessClient } from '@/lib/server/auth'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -7,13 +8,19 @@ const supabase = createClient(
 )
 
 export async function POST(req: NextRequest) {
+  const authResult = await requireUser(req)
+  if (!authResult.ok) return authResult.response
+
   const { suggestion_id, reason } = await req.json()
 
   const { data: suggestion } = await supabase
     .from('keyword_suggestions')
-    .select('metadata')
+    .select('metadata,client_id')
     .eq('id', suggestion_id)
     .single()
+
+  if (!suggestion) return NextResponse.json({ error: 'Suggestion not found' }, { status: 404 })
+  if (!(await userCanAccessClient(supabase, authResult.auth.user.id, suggestion.client_id))) return forbiddenResponse()
 
   const { error } = await supabase
     .from('keyword_suggestions')
@@ -24,7 +31,7 @@ export async function POST(req: NextRequest) {
     .eq('id', suggestion_id)
 
   if (error) {
-    console.error('keyword reject failed:', error)
+    console.error('[keywords/reject] failed:', error.message)
     return NextResponse.json({ error: error.message }, { status: 500 })
   }
 

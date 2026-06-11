@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { safeDecrypt } from '@/lib/crypto'
 import { atomicCommit, type CommitFile } from '@/lib/github-commit'
+import { forbiddenResponse, requireUser, userCanAccessClient } from '@/lib/server/auth'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -58,9 +59,13 @@ function formatTree(files: any[]): string {
 }
 
 export async function POST(req: NextRequest) {
+  const authResult = await requireUser(req)
+  if (!authResult.ok) return authResult.response
+
   try {
     const { client_id } = await req.json()
     if (!client_id) return NextResponse.json({ error: 'client_id required' }, { status: 400 })
+    if (!(await userCanAccessClient(supabase, authResult.auth.user.id, client_id))) return forbiddenResponse()
 
     const { data: client, error: clientError } = await supabase
       .from('client_profiles')
@@ -88,15 +93,19 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ success: true, total_files: totalFiles, tree: formatted })
   } catch (err: any) {
-    console.error('github route error:', err.message)
+    console.error('[github] POST error:', err.message)
     return NextResponse.json({ error: err.message }, { status: 500 })
   }
 }
 
 export async function PUT(req: NextRequest) {
+  const authResult = await requireUser(req)
+  if (!authResult.ok) return authResult.response
+
   try {
     const { client_id, path, content, message } = await req.json()
     if (!client_id || !path || !content) return NextResponse.json({ error: 'client_id, path and content required' }, { status: 400 })
+    if (!(await userCanAccessClient(supabase, authResult.auth.user.id, client_id))) return forbiddenResponse()
 
     const { data: client } = await supabase
       .from('client_profiles')
@@ -144,13 +153,16 @@ export async function PUT(req: NextRequest) {
     const fileUrl = data.content?.html_url || `https://github.com/${parsed.owner}/${parsed.repo}/blob/${branch}/${path}`
     return NextResponse.json({ success: true, url: fileUrl, sha: data.content?.sha })
   } catch (err: any) {
-    console.error('github PUT error:', err.message)
+    console.error('[github] PUT error:', err.message)
     return NextResponse.json({ error: err.message }, { status: 500 })
   }
 }
 
 // Atomic multi-file commit via Git Trees API
 export async function PATCH(req: NextRequest) {
+  const authResult = await requireUser(req)
+  if (!authResult.ok) return authResult.response
+
   let client_id: string | undefined
   let files: CommitFile[] | undefined
   try {
@@ -161,6 +173,7 @@ export async function PATCH(req: NextRequest) {
     if (!client_id || !Array.isArray(files) || !files.length) {
       return NextResponse.json({ error: 'client_id and files[] required' }, { status: 400 })
     }
+    if (!(await userCanAccessClient(supabase, authResult.auth.user.id, client_id))) return forbiddenResponse()
 
     const { data: client } = await supabase
       .from('client_profiles')
@@ -200,11 +213,15 @@ export async function PATCH(req: NextRequest) {
 }
 
 export async function GET(req: NextRequest) {
+  const authResult = await requireUser(req)
+  if (!authResult.ok) return authResult.response
+
   try {
     const { searchParams } = new URL(req.url)
     const client_id = searchParams.get('client_id')
     const path = searchParams.get('path')
     if (!client_id || !path) return NextResponse.json({ error: 'client_id and path required' }, { status: 400 })
+    if (!(await userCanAccessClient(supabase, authResult.auth.user.id, client_id))) return forbiddenResponse()
 
     const { data: client } = await supabase
       .from('client_profiles')

@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 import { AgentActivity } from '@/lib/types'
 import Link from 'next/link'
+import { estimateBlendedCost } from '@/lib/pricing'
 
 
 function timeAgo(dateStr: string) {
@@ -26,10 +27,8 @@ const ACTION_ICON: Record<string, string> = {
   approve: '✓',
 }
 
-const COST_PER_TOKEN = 4 / 1_000_000
-
 function tokensToCost(t: number) {
-  const c = t * COST_PER_TOKEN
+  const c = estimateBlendedCost(t)
   return c < 0.01 ? '<$0.01' : `$${c.toFixed(2)}`
 }
 

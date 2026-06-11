@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { encrypt } from '@/lib/crypto'
+import { requireUser } from '@/lib/server/auth'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -8,15 +9,24 @@ const supabase = createClient(
 )
 
 export async function POST(req: NextRequest) {
-  const { workspace_id, user_id, anthropic_api_key, gemini_api_key } = await req.json()
-  if (!user_id) return NextResponse.json({ error: 'user_id required' }, { status: 400 })
+  const authResult = await requireUser(req)
+  if (!authResult.ok) return authResult.response
+
+  const { anthropic_api_key, gemini_api_key } = await req.json()
+  const user_id = authResult.auth.user.id
 
   const updates: Record<string, any> = { updated_at: new Date().toISOString() }
-  if (anthropic_api_key !== undefined) {
-    updates.anthropic_api_key = anthropic_api_key ? encrypt(anthropic_api_key) : null
-  }
-  if (gemini_api_key !== undefined) {
-    updates.gemini_api_key = gemini_api_key ? encrypt(gemini_api_key) : null
+  try {
+    if (anthropic_api_key !== undefined) {
+      updates.anthropic_api_key = anthropic_api_key ? encrypt(anthropic_api_key) : null
+    }
+    if (gemini_api_key !== undefined) {
+      updates.gemini_api_key = gemini_api_key ? encrypt(gemini_api_key) : null
+    }
+  } catch (err: any) {
+    return NextResponse.json({
+      error: `Failed to encrypt API key: ${err.message}. ENCRYPTION_KEY must be a 32-byte base64 string.`,
+    }, { status: 500 })
   }
 
   const { error } = await supabase

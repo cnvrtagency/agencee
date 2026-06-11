@@ -1,40 +1,27 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
+import { forbiddenResponse, requireUserOrInternal, userCanAccessClient } from '@/lib/server/auth'
+import { checkUserBudget, recordTokenUsage } from '@/lib/server/token-usage'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_KEY!
 )
 
+export const maxDuration = 60
+
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const authResult = await requireUserOrInternal(req)
+  if (!authResult.ok) return authResult.response
+
   const { id: clientId } = await params
   if (!clientId) return NextResponse.json({ error: 'Client ID required' }, { status: 400 })
-
-  // Workspace isolation: verify the client belongs to the requesting user's workspace
-  const authHeader = req.headers.get('authorization')
-  if (authHeader) {
-    const { createClient: createAnonClient } = await import('@supabase/supabase-js')
-    const userSupabase = createAnonClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-      { global: { headers: { authorization: authHeader } } }
-    )
-    const { data: { user } } = await userSupabase.auth.getUser()
-    if (user) {
-      const [{ data: clientRow }, { data: workspace }] = await Promise.all([
-        supabase.from('client_profiles').select('workspace_id').eq('id', clientId).single(),
-        supabase.from('workspaces').select('id').eq('owner_id', user.id).single(),
-      ])
-      if (!clientRow || !workspace || clientRow.workspace_id !== workspace.id) {
-        return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
-      }
-    }
-  }
+  if (authResult.auth.user && !(await userCanAccessClient(supabase, authResult.auth.user.id, clientId))) return forbiddenResponse()
 
   // 1. Load client profile
   const { data: client, error: clientErr } = await supabase
     .from('client_profiles')
-    .select('id, name, description, ai_overview, ai_overview_updated_at')
+    .select('id, name, description, ai_overview, ai_overview_updated_at, workspace_id, user_id')
     .eq('id', clientId)
     .single()
   if (clientErr || !client) return NextResponse.json({ error: 'Client not found' }, { status: 404 })
@@ -91,6 +78,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // 4. Call Claude Haiku to generate overview
   const apiKey = process.env.ANTHROPIC_API_KEY
   if (!apiKey) return NextResponse.json({ error: 'ANTHROPIC_API_KEY not configured' }, { status: 500 })
+  const ownerUserId = client.user_id || authResult.auth.user?.id || null
+  if (ownerUserId) {
+    const budgetCheck = await checkUserBudget(supabase, ownerUserId)
+    if (!budgetCheck.ok && budgetCheck.response) return budgetCheck.response
+  }
 
   const prompt = `You are an SEO analyst. Based on the following data for ${client.name}, write a 3-4 sentence strategic summary. Be specific and actionable. UK English. No em dashes. No filler.
 
@@ -128,6 +120,19 @@ Write a strategic summary covering: current SEO health, the single biggest oppor
   }
 
   const aiData = await aiRes.json()
+  if (aiData.usage) {
+    const tokensUsed = (aiData.usage.input_tokens || 0) + (aiData.usage.output_tokens || 0)
+    await recordTokenUsage({
+      supabase,
+      userId: ownerUserId,
+      workspaceId: client.workspace_id || null,
+      clientId,
+      agentId: null,
+      action: 'client_overview',
+      tokensUsed,
+      detail: { input_tokens: aiData.usage.input_tokens, output_tokens: aiData.usage.output_tokens, model: 'claude-haiku-4-5-20251001' },
+    })
+  }
   const overview = aiData.content?.[0]?.text?.trim() ?? null
   if (!overview) return NextResponse.json({ error: 'AI returned empty response' }, { status: 500 })
 

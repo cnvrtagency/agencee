@@ -4,9 +4,7 @@ import { supabase } from '@/lib/supabase'
 import StatusBadge from '@/components/StatusBadge'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-
-// Sonnet 4.6 pricing: $3/M input, $15/M output — blended ~$4/M average
-const COST_PER_TOKEN = 4 / 1_000_000
+import { estimateBlendedCost } from '@/lib/pricing'
 
 function toTitleCase(str: string) {
   return str.replace(/\w\S*/g, w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
@@ -39,7 +37,7 @@ function buildCalendar(days = 35) {
 }
 
 function tokensToCost(t: number) {
-  const c = t * COST_PER_TOKEN
+  const c = estimateBlendedCost(t)
   return c < 0.01 ? '<$0.01' : `$${c.toFixed(2)}`
 }
 

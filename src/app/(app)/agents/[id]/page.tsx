@@ -4,6 +4,7 @@ import { useParams } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import { marked } from 'marked'
 import { cleanContent } from '@/lib/content-clean'
+import { estimateHaikuCost, estimateSonnetCost } from '@/lib/pricing'
 
 marked.setOptions({ breaks: true, gfm: true })
 
@@ -1623,6 +1624,9 @@ export default function AgentPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          agent_id: id,
+          client_id: clients.length === 1 ? clients[0].id : null,
+          session_tokens: sessionTokensRef.current,
           model: 'claude-haiku-4-5-20251001',
           max_tokens: 600,
           messages: [{
@@ -1702,6 +1706,9 @@ export default function AgentPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          agent_id: id,
+          client_id: clients.length === 1 ? clients[0].id : null,
+          session_tokens: sessionTokensRef.current,
           model: 'claude-haiku-4-5-20251001',
           max_tokens: 150,
           system: systemPrompt,
@@ -1741,14 +1748,25 @@ export default function AgentPage() {
 
         const res: Response = await fetch('/api/chat', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ model, max_tokens: maxTokens, system: systemPrompt, tools: getToolsForAgent(agent.agent_type), messages: apiMessages }),
+          body: JSON.stringify({
+            agent_id: id,
+            client_id: clients.length === 1 ? clients[0].id : null,
+            session_tokens: sessionTokensRef.current,
+            model,
+            max_tokens: maxTokens,
+            system: systemPrompt,
+            tools: getToolsForAgent(agent.agent_type),
+            messages: apiMessages,
+          }),
         })
         const data: any = await res.json()
         const turnTokens = (data.usage?.input_tokens || 0) + (data.usage?.output_tokens || 0)
         totalTokensUsed += turnTokens
         tokenAccumRef.current = totalTokensUsed
         if (data.usage) {
-          const turnCost = (data.usage.input_tokens || 0) * (3 / 1_000_000) + (data.usage.output_tokens || 0) * (15 / 1_000_000)
+          const turnCost = model.includes('haiku')
+            ? estimateHaikuCost(data.usage.input_tokens || 0, data.usage.output_tokens || 0)
+            : estimateSonnetCost(data.usage.input_tokens || 0, data.usage.output_tokens || 0)
           sessionTokensRef.current += turnTokens
           setSessionTokens(sessionTokensRef.current)
           setSessionCost(prev => prev + turnCost)
@@ -1818,6 +1836,9 @@ export default function AgentPage() {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
+                agent_id: id,
+                client_id: clients.length === 1 ? clients[0].id : null,
+                session_tokens: sessionTokensRef.current,
                 model: 'claude-haiku-4-5-20251001',
                 max_tokens: 500,
                 system: systemPrompt,
@@ -1846,7 +1867,15 @@ export default function AgentPage() {
             apiMessages.push({ role: 'user', content: [{ type: 'text', text: 'Briefly summarise what you just did in 1-3 sentences.' }] })
             const summaryRes = await fetch('/api/chat', {
               method: 'POST', headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 512, system: systemPrompt, messages: apiMessages }),
+              body: JSON.stringify({
+                agent_id: id,
+                client_id: clients.length === 1 ? clients[0].id : null,
+                session_tokens: sessionTokensRef.current,
+                model: 'claude-sonnet-4-6',
+                max_tokens: 512,
+                system: systemPrompt,
+                messages: apiMessages,
+              }),
             })
             const summaryData = await summaryRes.json()
             reply = (summaryData.content || []).filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n').trim() || 'Done — all changes committed.'
@@ -1882,6 +1911,9 @@ export default function AgentPage() {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
+                agent_id: id,
+                client_id: activeClient.id,
+                session_tokens: sessionTokensRef.current,
                 model: 'claude-haiku-4-5-20251001',
                 max_tokens: 400,
                 messages: [{
@@ -1906,13 +1938,6 @@ export default function AgentPage() {
         })()
       }
 
-      // Increment workspace token usage counter
-      if (totalTokensUsed > 0) {
-        const { data: { user } } = await supabase.auth.getUser()
-        if (user) {
-          void supabase.rpc('increment_token_usage', { p_user_id: user.id, p_tokens: totalTokensUsed })
-        }
-      }
     } catch (e: any) {
       const errReply = `⚠️ ${e.message || 'Something went wrong'}`
       try { await saveReply(errReply) } catch { setMessages(prev => prev.map(m => m.id === placeholder.id ? { ...m, content: errReply } : m)) }

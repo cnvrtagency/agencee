@@ -1,14 +1,40 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
+import { forbiddenResponse, requireUser, userCanAccessClient } from '@/lib/server/auth'
+import { checkRateLimit, getRateLimitIdentity } from '@/lib/server/rate-limit'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_KEY!
 )
 
+export const maxDuration = 60
+
 export async function POST(req: NextRequest) {
-  const { prompt, filename, client_id, workspace_id, resolution = '1K' } = await req.json()
+  const authResult = await requireUser(req)
+  if (!authResult.ok) return authResult.response
+
+  const rate = checkRateLimit({
+    key: `generate-image:${getRateLimitIdentity(req, authResult.auth.user.id)}`,
+    limit: 20,
+    windowMs: 10 * 60 * 1000,
+  })
+  if (!rate.ok) return rate.response
+
+  const { prompt, filename, client_id, resolution = '1K' } = await req.json()
   if (!prompt) return NextResponse.json({ error: 'prompt required' }, { status: 400 })
+  if (String(prompt).length > 4000) return NextResponse.json({ error: 'prompt must be 4000 characters or fewer' }, { status: 400 })
+
+  let workspaceId: string | null = null
+  if (client_id) {
+    if (!(await userCanAccessClient(supabase, authResult.auth.user.id, client_id))) return forbiddenResponse()
+    const { data: client } = await supabase.from('client_profiles').select('workspace_id').eq('id', client_id).maybeSingle()
+    workspaceId = client?.workspace_id || null
+  }
+  if (!workspaceId) {
+    const { data: workspace } = await supabase.from('workspaces').select('id').eq('owner_id', authResult.auth.user.id).maybeSingle()
+    workspaceId = workspace?.id || null
+  }
 
   const resolutionMap: Record<string, string> = {
     '1K': '1024x1024',
@@ -87,8 +113,8 @@ export async function POST(req: NextRequest) {
   const slug = (filename || Date.now()).toString().toLowerCase().replace(/[^a-z0-9-]/g, '-')
   const ext = imageMimeType.includes('jpeg') ? 'jpg' : 'webp'
   const storageFilename = `${slug}.${ext}`
-  const storagePath = workspace_id && client_id
-    ? `${workspace_id}/${client_id}/${storageFilename}`
+  const storagePath = workspaceId && client_id
+    ? `${workspaceId}/${client_id}/${storageFilename}`
     : `general/${storageFilename}`
 
   const { error: uploadError } = await supabase.storage

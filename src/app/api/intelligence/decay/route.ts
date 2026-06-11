@@ -1,17 +1,33 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
+import { forbiddenResponse, requireUserOrInternal, userCanAccessClient } from '@/lib/server/auth'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_KEY!
 )
 
-export async function POST(_req: NextRequest) {
+export const maxDuration = 60
+
+export async function POST(req: NextRequest) {
+  const authResult = await requireUserOrInternal(req)
+  if (!authResult.ok) return authResult.response
+
+  const { client_id } = await req.json().catch(() => ({}))
+  if (authResult.auth.user && !client_id) {
+    return NextResponse.json({ error: 'client_id required' }, { status: 400 })
+  }
+  if (authResult.auth.user && !(await userCanAccessClient(supabase, authResult.auth.user.id, client_id))) {
+    return forbiddenResponse()
+  }
+
   // Get all clients with GSC connections
-  const { data: connections } = await supabase
+  let connQuery = supabase
     .from('google_connections')
-    .select('id, client_id')
-    .eq('status', 'active')
+    .select('id, client_id, workspace_id')
+    .in('status', ['active', 'connected'])
+  if (client_id) connQuery = connQuery.eq('client_id', client_id) as any
+  const { data: connections } = await connQuery
 
   if (!connections || connections.length === 0) {
     return NextResponse.json({ flagged: 0 })
@@ -63,6 +79,7 @@ export async function POST(_req: NextRequest) {
 
         await supabase.from('briefing_items').insert({
           client_id: conn.client_id,
+          workspace_id: conn.workspace_id || null,
           type: 'decay',
           title: `Ranking drop: "${r.query}"`,
           body: `"${r.query}" dropped from #${prev.position.toFixed(0)} to #${r.position.toFixed(0)} (${worsened.toFixed(0)} positions). ${r.impressions} impressions at risk. Review and refresh this content.`,
@@ -75,6 +92,7 @@ export async function POST(_req: NextRequest) {
         // Log to agent_activity
         await supabase.from('agent_activity').insert({
           client_id: conn.client_id,
+          workspace_id: conn.workspace_id || null,
           action: 'decay_detected',
           detail: `Ranking decay: "${r.query}" dropped ${worsened.toFixed(0)} positions (${r.impressions} impressions)`,
           tokens_used: 0,

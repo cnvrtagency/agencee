@@ -1,10 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
+import { forbiddenResponse, requireUser, userCanAccessClient } from '@/lib/server/auth'
+import { checkRateLimit, getRateLimitIdentity } from '@/lib/server/rate-limit'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_KEY!
 )
+
+export const maxDuration = 60
 
 function normaliseUrl(href: string, base: string): string | null {
   try {
@@ -95,7 +99,7 @@ async function fetchPage(url: string): Promise<{ html: string; finalUrl: string 
         'Cache-Control': 'no-cache',
       },
       redirect: 'follow',
-      signal: AbortSignal.timeout(8000),
+      signal: AbortSignal.timeout(5000),
     })
     if (!res.ok) return null
     const contentType = res.headers.get('content-type') || ''
@@ -119,7 +123,7 @@ async function fetchSitemapUrls(baseUrl: string): Promise<string[]> {
           'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
           'Accept': 'text/html,application/xml,application/xhtml+xml,text/xml,*/*',
         },
-        signal: AbortSignal.timeout(8000),
+        signal: AbortSignal.timeout(5000),
       })
       if (!res.ok) continue
       const text = await res.text()
@@ -131,7 +135,7 @@ async function fetchSitemapUrls(baseUrl: string): Promise<string[]> {
           try {
             const subRes = await fetch(subUrl, {
               headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' },
-              signal: AbortSignal.timeout(8000),
+              signal: AbortSignal.timeout(5000),
             })
             if (!subRes.ok) continue
             const subText = await subRes.text()
@@ -149,6 +153,16 @@ async function fetchSitemapUrls(baseUrl: string): Promise<string[]> {
 }
 
 export async function POST(req: NextRequest) {
+  const authResult = await requireUser(req)
+  if (!authResult.ok) return authResult.response
+
+  const rate = checkRateLimit({
+    key: `crawl:${getRateLimitIdentity(req, authResult.auth.user.id)}`,
+    limit: 12,
+    windowMs: 10 * 60 * 1000,
+  })
+  if (!rate.ok) return rate.response
+
   let body: any
   try { body = await req.json() } catch { return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 }) }
   const { client_id, website, competitor_id } = body
@@ -159,19 +173,26 @@ export async function POST(req: NextRequest) {
   if (!competitor_id && !website) {
     return NextResponse.json({ error: 'website is required for client crawl' }, { status: 400 })
   }
+  if (client_id && !(await userCanAccessClient(supabase, authResult.auth.user.id, client_id))) {
+    return forbiddenResponse()
+  }
 
   // Competitor crawl mode
   if (competitor_id) {
-    const { data: comp } = await supabase.from('competitor_sites').select('url, name').eq('id', competitor_id).single()
+    const { data: comp } = await supabase.from('competitor_sites').select('url, name, client_id').eq('id', competitor_id).single()
     if (!comp?.url) return NextResponse.json({ error: 'Competitor site not found or has no URL' }, { status: 400 })
+    const competitorClientId = client_id || comp.client_id
+    if (!competitorClientId || !(await userCanAccessClient(supabase, authResult.auth.user.id, competitorClientId))) {
+      return forbiddenResponse()
+    }
 
     // Resolve workspace_id for competitor pages — same fallback chain as normal crawl
     let compWorkspaceId: string | null = null
-    if (client_id) {
-      const { data: gcRow2 } = await supabase.from('google_connections').select('workspace_id').eq('client_id', client_id).maybeSingle()
+    if (competitorClientId) {
+      const { data: gcRow2 } = await supabase.from('google_connections').select('workspace_id').eq('client_id', competitorClientId).maybeSingle()
       compWorkspaceId = gcRow2?.workspace_id ?? null
       if (!compWorkspaceId) {
-        const { data: cpRow2 } = await supabase.from('client_profiles').select('workspace_id').eq('id', client_id).maybeSingle()
+        const { data: cpRow2 } = await supabase.from('client_profiles').select('workspace_id').eq('id', competitorClientId).maybeSingle()
         compWorkspaceId = cpRow2?.workspace_id ?? null
       }
     }
@@ -183,7 +204,7 @@ export async function POST(req: NextRequest) {
     const baseUrl = comp.url.replace(/\/$/, '')
     const visited = new Set<string>()
     const pages: any[] = []
-    const maxPages = 40
+    const maxPages = 20
     // Try sitemap first
     let queue: string[] = []
     let usingSitemap = false
@@ -215,7 +236,7 @@ export async function POST(req: NextRequest) {
       const metaDesc = extractMeta(html, 'description')
       const wordCount = countWords(html)
       const content = extractContent(html)
-      pages.push({ workspace_id: compWorkspaceId, competitor_id, client_id, url: finalUrl, title, h1, meta_description: metaDesc, word_count: wordCount, content, crawled_at: new Date().toISOString() })
+      pages.push({ workspace_id: compWorkspaceId, competitor_id, client_id: competitorClientId, url: finalUrl, title, h1, meta_description: metaDesc, word_count: wordCount, content, crawled_at: new Date().toISOString() })
       if (!usingSitemap) {
         for (const link of extractLinks(html, finalUrl)) {
           if (!visited.has(link) && !queue.includes(link)) queue.push(link)
@@ -299,7 +320,7 @@ export async function POST(req: NextRequest) {
   const baseUrl = website.replace(/\/$/, '')
   const visited = new Set<string>()
   const pages: any[] = []
-  const maxPages = 60
+  const maxPages = 30
   // Try sitemap first — gives a clean URL list without link crawling
   let queue: string[] = []
   let usingSitemap = false
@@ -430,11 +451,14 @@ Keyword bank: ${total} keywords total, ${targeted} have content targeting them.
 
 Summarise: what topics are covered, what is the overall content depth, and what is the most obvious gap.`
 
+    const apiKey = process.env.ANTHROPIC_API_KEY
+    if (!apiKey) return NextResponse.json({ success: true, pages_crawled: pages.length, workspace_id: workspaceId })
+
     const aiRes = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': process.env.ANTHROPIC_API_KEY!,
+        'x-api-key': apiKey,
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({

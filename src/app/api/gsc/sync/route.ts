@@ -2,11 +2,14 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { getValidAccessToken } from '@/lib/gsc'
 import { discoverKeywordsFromGSC } from '@/lib/gsc-keywords'
+import { forbiddenResponse, requireUserOrInternal, userCanAccessClient } from '@/lib/server/auth'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_KEY!
 )
+
+export const maxDuration = 60
 
 async function fetchSitemap(baseUrl: string): Promise<string[]> {
   const base = baseUrl.replace(/\/$/, '')
@@ -59,6 +62,9 @@ async function fetchSitemap(baseUrl: string): Promise<string[]> {
 }
 
 export async function POST(req: NextRequest) {
+  const authResult = await requireUserOrInternal(req)
+  if (!authResult.ok) return authResult.response
+
   try {
   const { connection_id, client_id } = await req.json().catch(() => ({}))
 
@@ -69,6 +75,9 @@ export async function POST(req: NextRequest) {
 
   const { data: conn } = await connQuery.single()
   if (!conn) return NextResponse.json({ error: 'Connection not found' }, { status: 404 })
+  if (authResult.auth.user && !(await userCanAccessClient(supabase, authResult.auth.user.id, conn.client_id))) {
+    return forbiddenResponse()
+  }
 
   let accessToken: string
   try {
@@ -355,7 +364,7 @@ export async function POST(req: NextRequest) {
 
   return NextResponse.json({ synced: { '7d': p7.rows.length, '28d': p28.rows.length, '90d': p90.rows.length }, sitemap_urls: sitemapUrls.length, property: conn.property_url, date_range: `${p90.startDate} → ${endDate}`, page_rows_synced: true, briefing_items: briefingCount ?? 0 })
   } catch (err: any) {
-    console.error('GSC sync error:', err)
+    console.error('[gsc/sync] error:', err.message)
     return NextResponse.json({ error: err.message, stack: err.stack }, { status: 500 })
   }
 }

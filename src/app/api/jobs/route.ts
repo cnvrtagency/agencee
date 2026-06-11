@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
+import { forbiddenResponse, requireUser, userCanAccessClient } from '@/lib/server/auth'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -29,9 +30,13 @@ function calculateNextRun(cadence: string, runDay: string | null, runHour: numbe
 
 // GET — list scheduled_jobs for a client
 export async function GET(req: NextRequest) {
+  const authResult = await requireUser(req)
+  if (!authResult.ok) return authResult.response
+
   const { searchParams } = new URL(req.url)
   const clientId = searchParams.get('client_id')
   if (!clientId) return NextResponse.json({ error: 'client_id required' }, { status: 400 })
+  if (!(await userCanAccessClient(supabase, authResult.auth.user.id, clientId))) return forbiddenResponse()
 
   const { data, error } = await supabase
     .from('scheduled_jobs')
@@ -45,19 +50,29 @@ export async function GET(req: NextRequest) {
 
 // POST — create a new scheduled_job
 export async function POST(req: NextRequest) {
+  const authResult = await requireUser(req)
+  if (!authResult.ok) return authResult.response
+
   try {
     const body = await req.json()
-    const { client_id, workspace_id, agent_id, name, job_type, description, cadence, run_day, run_hour = 8 } = body
+    const { client_id, agent_id, name, job_type, description, cadence, run_day, run_hour = 8 } = body
 
     if (!client_id || !name || !job_type || !cadence) {
       return NextResponse.json({ error: 'client_id, name, job_type, cadence are required' }, { status: 400 })
     }
+    if (!(await userCanAccessClient(supabase, authResult.auth.user.id, client_id))) return forbiddenResponse()
+
+    const { data: client } = await supabase
+      .from('client_profiles')
+      .select('workspace_id')
+      .eq('id', client_id)
+      .maybeSingle()
 
     const next_run_at = calculateNextRun(cadence, run_day || null, run_hour)
 
     const { data, error } = await supabase.from('scheduled_jobs').insert({
       client_id,
-      workspace_id: workspace_id || null,
+      workspace_id: client?.workspace_id || null,
       agent_id: agent_id || null,
       name,
       job_type,

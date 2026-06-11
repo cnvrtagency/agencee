@@ -2,8 +2,7 @@
 import { useEffect, useState } from 'react'
 import { useParams } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
-
-const COST_PER_TOKEN = 4 / 1_000_000
+import { estimateBlendedCost } from '@/lib/pricing'
 
 const S: Record<string, React.CSSProperties> = {
   panel: { background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)', overflow: 'hidden', marginBottom: 20 },
@@ -57,7 +56,7 @@ export default function AgentActivityPage() {
         <h1 style={{ fontSize: 26, fontWeight: 600, color: 'var(--text)', letterSpacing: '-0.5px' }}>Activity</h1>
         {totalTokens > 0 && (
           <p style={{ fontSize: 13, color: 'var(--text-2)', marginTop: 4 }}>
-            {totalTokens.toLocaleString()} tokens used all-time · estimated cost <span style={{ fontFamily: 'var(--font-mono)' }}>${(totalTokens * COST_PER_TOKEN).toFixed(2)}</span>
+            {totalTokens.toLocaleString()} tokens used all-time · estimated cost <span style={{ fontFamily: 'var(--font-mono)' }}>${estimateBlendedCost(totalTokens).toFixed(2)}</span>
           </p>
         )}
       </div>

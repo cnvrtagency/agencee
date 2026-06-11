@@ -1,75 +1,71 @@
-export const maxDuration = 300 // 5 min — needed for long blog + image generation chains
+export const maxDuration = 300 // 5 min, needed for long agent/tool chains.
 
 import { NextRequest, NextResponse } from 'next/server'
-import { createServerClient } from '@supabase/ssr'
-import { cookies } from 'next/headers'
 import { safeDecrypt } from '@/lib/crypto'
-
-async function getSupabase() {
-  const cookieStore = await cookies()
-  return createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_KEY!,
-    { cookies: { getAll: () => cookieStore.getAll(), setAll: () => {} } }
-  )
-}
+import { getSupabaseAdmin, requireUser } from '@/lib/server/auth'
+import { checkRateLimit, getRateLimitIdentity } from '@/lib/server/rate-limit'
+import { checkUserBudget, recordTokenUsage, SESSION_TOKEN_LIMIT } from '@/lib/server/token-usage'
 
 export async function POST(req: NextRequest) {
-  const body = await req.json()
-  const supabase = await getSupabase()
-  const { client_id, agent_id } = body
+  const authResult = await requireUser(req)
+  if (!authResult.ok) return authResult.response
 
-  // Get current user
-  const { data: { user } } = await supabase.auth.getUser()
+  const rate = checkRateLimit({
+    key: `chat:${getRateLimitIdentity(req, authResult.auth.user.id)}`,
+    limit: 120,
+    windowMs: 10 * 60 * 1000,
+  })
+  if (!rate.ok) return rate.response
 
-  // Load workspace settings (API key + budget)
-  let anthropicKey = process.env.ANTHROPIC_API_KEY!
-  let userId: string | null = null
-  let workspaceId: string | null = null
-
-  if (user) {
-    userId = user.id
-    const { data: wsRow } = await supabase.from('workspaces').select('id').eq('owner_id', user.id).maybeSingle()
-    if (wsRow) workspaceId = wsRow.id
-    const { data: ws } = await supabase
-      .from('workspace_settings')
-      .select('anthropic_api_key,monthly_token_budget,tokens_used_this_month,budget_reset_at')
-      .eq('user_id', user.id)
-      .maybeSingle()
-
-    if (ws) {
-      if (ws.anthropic_api_key) {
-        const decrypted = safeDecrypt(ws.anthropic_api_key)
-        anthropicKey = decrypted || ws.anthropic_api_key
-      }
-
-      // Check if budget reset is needed
-      if (ws.budget_reset_at && new Date(ws.budget_reset_at) <= new Date()) {
-        await supabase.from('workspace_settings').update({
-          tokens_used_this_month: 0,
-          budget_reset_at: new Date(new Date().getFullYear(), new Date().getMonth() + 1, 1).toISOString(),
-        }).eq('user_id', user.id)
-      } else {
-        // Enforce budget
-        if (ws.tokens_used_this_month >= ws.monthly_token_budget) {
-          return NextResponse.json({
-            error: 'Monthly token budget reached. Increase your limit in Settings to continue.',
-            budget_exceeded: true,
-          }, { status: 402 })
-        }
-      }
-    }
+  let body: any
+  try {
+    body = await req.json()
+  } catch {
+    return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 })
   }
 
-  // Wrap system prompt with cache_control
-  let system = body.system
+  const supabase = getSupabaseAdmin()
+  const { client_id, agent_id, session_tokens: sessionTokens, ...anthropicBody } = body
+  const userId = authResult.auth.user.id
+
+  if (Number(sessionTokens || 0) >= SESSION_TOKEN_LIMIT) {
+    return NextResponse.json({
+      error: 'This conversation has reached the 150k token safety limit. Start a new conversation to continue.',
+      session_limit_exceeded: true,
+    }, { status: 402 })
+  }
+
+  const budgetCheck = await checkUserBudget(supabase, userId)
+  if (!budgetCheck.ok && budgetCheck.response) return budgetCheck.response
+
+  let anthropicKey = process.env.ANTHROPIC_API_KEY
+  let workspaceId: string | null = null
+
+  const [{ data: wsRow }, { data: settings }] = await Promise.all([
+    supabase.from('workspaces').select('id').eq('owner_id', userId).maybeSingle(),
+    supabase.from('workspace_settings').select('anthropic_api_key').eq('user_id', userId).maybeSingle(),
+  ])
+
+  if (wsRow) workspaceId = wsRow.id
+  if (settings?.anthropic_api_key) {
+    const decrypted = safeDecrypt(settings.anthropic_api_key)
+    anthropicKey = decrypted || settings.anthropic_api_key
+  }
+
+  if (!anthropicKey) {
+    return NextResponse.json({
+      error: 'ANTHROPIC_API_KEY is not configured. Add it in Settings or Vercel environment variables.',
+    }, { status: 500 })
+  }
+
+  let system = anthropicBody.system
   if (typeof system === 'string' && system.length > 0) {
     system = [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }]
   }
 
   const betaHeaders = ['prompt-caching-2024-07-31']
-  if (body.thinking) betaHeaders.push('interleaved-thinking-2025-05-14')
-  const hasWebSearch = (body.tools || []).some((t: any) => t.type === 'web_search_20250305')
+  if (anthropicBody.thinking) betaHeaders.push('interleaved-thinking-2025-05-14')
+  const hasWebSearch = (anthropicBody.tools || []).some((t: any) => t.type === 'web_search_20250305')
   if (hasWebSearch) betaHeaders.push('web-search-2025-03-05')
 
   const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -80,28 +76,26 @@ export async function POST(req: NextRequest) {
       'anthropic-version': '2023-06-01',
       'anthropic-beta': betaHeaders.join(','),
     },
-    body: JSON.stringify({ ...body, system }),
+    body: JSON.stringify({ ...anthropicBody, system }),
   })
 
   const data = await response.json()
+  if (!response.ok) return NextResponse.json(data, { status: response.status })
 
-  // Track token usage
-  if (userId && data.usage) {
+  if (data.usage) {
     const tokensUsed = (data.usage.input_tokens || 0) + (data.usage.output_tokens || 0)
-    if (tokensUsed > 0) {
-      const { error: rpcErr } = await supabase.rpc('increment_tokens', { p_user_id: userId, p_tokens: tokensUsed })
-      if (rpcErr) console.error('increment_tokens RPC error:', rpcErr.message, { userId, tokensUsed })
-      // Log to agent_activity for per-client token tracking
-      await supabase.from('agent_activity').insert({
-        workspace_id: workspaceId || null,
-        user_id: userId,
-        client_id: client_id || null,
-        agent_id: agent_id || null,
-        action: 'chat',
-        tokens_used: tokensUsed,
-      }).then(({ error }) => { if (error) console.error('agent_activity insert error:', error.message) })
-    }
+    await recordTokenUsage({
+      supabase,
+      userId,
+      workspaceId,
+      clientId: client_id || null,
+      agentId: agent_id || null,
+      action: 'chat',
+      tokensUsed,
+    })
   }
+
+  if (budgetCheck.warning) data.usage_warning = budgetCheck.warning
 
   return NextResponse.json(data)
 }

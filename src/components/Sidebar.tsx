@@ -1,9 +1,10 @@
 'use client'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 import AgenceeLogo from '@/components/AgenceeLogo'
+import { estimateBlendedCost } from '@/lib/pricing'
 
 // SVG icons keyed by name
 const ICONS: Record<string, React.ReactNode> = {
@@ -16,6 +17,7 @@ const ICONS: Record<string, React.ReactNode> = {
   calendar: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>,
   tag: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>,
   file: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>,
+  upload: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>,
   activity: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>,
   automations: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>,
   settings: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>,
@@ -110,17 +112,20 @@ export default function Sidebar({ onClose }: { onClose?: () => void }) {
   const [agents, setAgents] = useState<Agent[]>([])
   const [usage, setUsage] = useState<Usage>(null)
   const [workspaceName, setWorkspaceName] = useState<string>('')
+  const workspaceIdRef = useRef('')
   const [hasRunning, setHasRunning] = useState(false)
   const [todaySpend, setTodaySpend] = useState<number | null>(null)
 
-  async function refreshTodaySpend() {
+  async function refreshTodaySpend(wsId = workspaceIdRef.current) {
+    if (!wsId) return
     const today = new Date().toISOString().split('T')[0]
     const { data } = await supabase
       .from('agent_activity')
       .select('tokens_used')
+      .eq('workspace_id', wsId)
       .gte('created_at', today + 'T00:00:00Z')
     const tokens = (data || []).reduce((a: number, r: any) => a + (r.tokens_used || 0), 0)
-    setTodaySpend(tokens * (4 / 1_000_000))
+    setTodaySpend(estimateBlendedCost(tokens))
   }
 
   useEffect(() => {
@@ -131,7 +136,7 @@ export default function Sidebar({ onClose }: { onClose?: () => void }) {
       const [agentRes, usageRes, wsRes, runRes] = await Promise.all([
         supabase.from('agents').select('id,name,role,avatar_initials,active,nav_items').eq('active', true).order('created_at'),
         supabase.from('workspace_settings').select('tokens_used_this_month,monthly_token_budget').eq('user_id', user.id).maybeSingle(),
-        supabase.from('workspaces').select('name').eq('owner_id', user.id).maybeSingle(),
+        supabase.from('workspaces').select('id,name').eq('owner_id', user.id).maybeSingle(),
         supabase.from('content_queue').select('id', { count: 'exact', head: true }).eq('status', 'running'),
       ])
 
@@ -140,10 +145,13 @@ export default function Sidebar({ onClose }: { onClose?: () => void }) {
         nav_items: Array.isArray(a.nav_items) ? a.nav_items : [],
       })))
       if (usageRes.data) setUsage(usageRes.data)
-      if (wsRes.data) setWorkspaceName(wsRes.data.name || '')
+      if (wsRes.data) {
+        workspaceIdRef.current = wsRes.data.id
+        setWorkspaceName(wsRes.data.name || '')
+      }
       setHasRunning((runRes.count || 0) > 0)
 
-      await refreshTodaySpend()
+      await refreshTodaySpend(wsRes.data?.id || '')
     }
     load()
 
@@ -262,6 +270,7 @@ export default function Sidebar({ onClose }: { onClose?: () => void }) {
           </span>
         </div>
 
+        <NavItem href="/usage" label="Usage" icon={ICONS.activity} exact />
         <NavItem href="/settings" label="Settings" icon={ICONS.settings} exact />
       </div>
     </aside>

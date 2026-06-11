@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
+import { forbiddenResponse, requireUser, userCanAccessClient } from '@/lib/server/auth'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -10,10 +11,14 @@ const supabase = createClient(
 // Called when Ada wants to create proactive briefing items after analysis.
 // Body: { client_id: string, agent_id?: string, items: [{ type, title, body, priority }] }
 export async function POST(req: NextRequest) {
+  const authResult = await requireUser(req)
+  if (!authResult.ok) return authResult.response
+
   const { client_id, agent_id, items } = await req.json()
 
   if (!client_id) return NextResponse.json({ error: 'client_id is required' }, { status: 400 })
   if (!Array.isArray(items) || items.length === 0) return NextResponse.json({ error: 'items array is required' }, { status: 400 })
+  if (!(await userCanAccessClient(supabase, authResult.auth.user.id, client_id))) return forbiddenResponse()
 
   const { data: client } = await supabase
     .from('client_profiles')
@@ -25,17 +30,19 @@ export async function POST(req: NextRequest) {
 
   const workspace_id = client.workspace_id || null
 
-  const rows = items.map((item: any) => ({
+  const rows = items.slice(0, 20).map((item: any) => ({
     client_id,
     workspace_id,
     type: item.type || 'opportunity',
-    title: item.title,
-    body: item.body || '',
+    title: String(item.title || '').slice(0, 200),
+    body: String(item.body || '').slice(0, 2000),
     priority: item.priority ?? 50,
     dismissed: false,
-    action_url: item.action_url || null,
-    action_label: item.action_label || null,
-  }))
+    action_url: item.action_url ? String(item.action_url).slice(0, 500) : null,
+    action_label: item.action_label ? String(item.action_label).slice(0, 80) : null,
+  })).filter((item: any) => item.title)
+
+  if (rows.length === 0) return NextResponse.json({ error: 'items must include at least one title' }, { status: 400 })
 
   const { data: inserted, error } = await supabase
     .from('briefing_items')

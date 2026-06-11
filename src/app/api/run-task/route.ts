@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { cleanContent } from '@/lib/content-clean'
+import { safeDecrypt } from '@/lib/crypto'
+import { forbiddenResponse, requireUserOrInternal, userCanAccessClient } from '@/lib/server/auth'
+import { checkRateLimit, getRateLimitIdentity } from '@/lib/server/rate-limit'
+import { checkUserBudget, recordTokenUsage } from '@/lib/server/token-usage'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -10,6 +14,16 @@ const supabase = createClient(
 export const maxDuration = 300
 
 export async function POST(req: NextRequest) {
+  const authResult = await requireUserOrInternal(req)
+  if (!authResult.ok) return authResult.response
+
+  const rate = checkRateLimit({
+    key: `run-task:${getRateLimitIdentity(req, authResult.auth.user?.id)}`,
+    limit: 30,
+    windowMs: 10 * 60 * 1000,
+  })
+  if (!rate.ok) return rate.response
+
   let queue_item_id: string | null = null
   try {
     const body = await req.json()
@@ -24,23 +38,48 @@ export async function POST(req: NextRequest) {
       .single()
 
     if (itemError || !item) return NextResponse.json({ error: 'Queue item not found' }, { status: 404 })
-    if (item.status === 'running') return NextResponse.json({ error: 'Task already running' }, { status: 409 })
+    const client = item.client_profiles as any
+
+    if (authResult.auth.user && !(await userCanAccessClient(supabase, authResult.auth.user.id, item.client_id))) {
+      return forbiddenResponse()
+    }
+
+    if (item.status === 'running') {
+      const startedAt = item.started_at
+        ? new Date(item.started_at).getTime()
+        : item.created_at
+          ? new Date(item.created_at).getTime()
+          : 0
+      const stale = startedAt > 0 && startedAt < Date.now() - 10 * 60 * 1000
+      if (!stale) return NextResponse.json({ error: 'Task already running' }, { status: 409 })
+      await supabase.from('content_queue').update({ status: 'failed' }).eq('id', queue_item_id)
+    }
     if (item.status === 'done' || item.status === 'review') {
       return NextResponse.json({ error: 'Task already completed' }, { status: 409 })
     }
 
-    // Mark as running
-    await supabase.from('content_queue').update({ status: 'running', started_at: new Date().toISOString() }).eq('id', queue_item_id)
+    const ownerUserId = client?.user_id || authResult.auth.user?.id || null
+    const budgetCheck = ownerUserId ? await checkUserBudget(supabase, ownerUserId) : { ok: true, warning: null }
+    if (!budgetCheck.ok && budgetCheck.response) {
+      await supabase.from('content_queue').update({ status: 'failed' }).eq('id', queue_item_id)
+      return budgetCheck.response
+    }
 
-    // Get Anthropic API key from workspace_settings (fallback to env)
-    const { data: wsSettings } = await supabase.from('workspace_settings').select('anthropic_api_key').limit(1).maybeSingle()
-    const apiKey = wsSettings?.anthropic_api_key || process.env.ANTHROPIC_API_KEY
+    // Get Anthropic API key from the owning workspace settings (fallback to env)
+    let apiKey = process.env.ANTHROPIC_API_KEY
+    const { data: wsSettings } = ownerUserId
+      ? await supabase.from('workspace_settings').select('anthropic_api_key').eq('user_id', ownerUserId).maybeSingle()
+      : await supabase.from('workspace_settings').select('anthropic_api_key').eq('workspace_id', client?.workspace_id).maybeSingle()
+    if (wsSettings?.anthropic_api_key) {
+      apiKey = safeDecrypt(wsSettings.anthropic_api_key) || wsSettings.anthropic_api_key
+    }
     if (!apiKey) {
       await supabase.from('content_queue').update({ status: 'failed' }).eq('id', queue_item_id)
       return NextResponse.json({ error: 'No Anthropic API key configured' }, { status: 500 })
     }
 
-    const client = item.client_profiles as any
+    // Mark as running only after auth, budget and API key checks pass.
+    await supabase.from('content_queue').update({ status: 'running' }).eq('id', queue_item_id)
 
     // Load context in parallel: knowledge panel, content history, site pages, keyword bank
     const [{ data: knowledge }, { data: history }, { data: sitePages }, { data: keywords }] = await Promise.all([
@@ -152,15 +191,18 @@ export async function POST(req: NextRequest) {
 
     // Track token usage against workspace budget
     const usage = anthropicData.usage
-    if (usage && client?.workspace_id) {
+    if (usage) {
       const tokensUsed = (usage.input_tokens || 0) + (usage.output_tokens || 0)
-      supabase.from('agent_activity').insert({
-        workspace_id: client.workspace_id,
-        client_id: item.client_id,
+      await recordTokenUsage({
+        supabase,
+        userId: ownerUserId,
+        workspaceId: client?.workspace_id || null,
+        clientId: item.client_id,
         action: 'queue_task_api_call',
-        tokens_used: tokensUsed,
-        detail: JSON.stringify({ input_tokens: usage.input_tokens, output_tokens: usage.output_tokens, model: 'claude-sonnet-4-6', source: 'run-task' }),
-      }).then(({ error }) => { if (error) console.error('[run-task] token tracking failed:', error.message) })
+        tokensUsed,
+        detail: { input_tokens: usage.input_tokens, output_tokens: usage.output_tokens, model: 'claude-sonnet-4-6', source: 'run-task' },
+      })
+      await supabase.from('content_queue').update({ tokens_used: tokensUsed }).eq('id', queue_item_id)
     }
 
     const content = (anthropicData.content || [])
@@ -204,12 +246,11 @@ export async function POST(req: NextRequest) {
     // Mark queue item as review
     await supabase.from('content_queue').update({
       status: 'review',
-      completed_at: new Date().toISOString(),
     }).eq('id', queue_item_id)
 
     return NextResponse.json({ success: true, output_id: outputRow.id, title })
   } catch (err: any) {
-    console.error('run-task error:', err.message)
+    console.error('[run-task] error:', err.message)
     if (queue_item_id) {
       try { await supabase.from('content_queue').update({ status: 'failed' }).eq('id', queue_item_id) } catch {}
     }

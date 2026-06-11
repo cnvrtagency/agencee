@@ -3,8 +3,7 @@ import { useEffect, useState } from 'react'
 import { useParams } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import Link from 'next/link'
-
-const COST_BLENDED = 4 / 1_000_000
+import { estimateBlendedCost } from '@/lib/pricing'
 
 export default function AgentOverviewPage() {
   const { id: agentId } = useParams<{ id: string }>()
@@ -71,7 +70,7 @@ export default function AgentOverviewPage() {
 
     setStats({
       totalTokens,
-      totalCost: totalTokens * COST_BLENDED,
+      totalCost: estimateBlendedCost(totalTokens),
       totalConversations: (convData as any)?.count || 0,
       totalContent: (outputData as any)?.count || 0,
       totalKeywords: (kwData as any)?.count || 0,

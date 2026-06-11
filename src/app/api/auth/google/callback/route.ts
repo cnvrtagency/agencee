@@ -18,21 +18,28 @@ export async function GET(req: NextRequest) {
   if (error || !code) {
     return NextResponse.redirect(`${BASE_URL}/clients/${state}?tab=connections&gsc=error`)
   }
+  if (!state) {
+    return NextResponse.redirect(`${BASE_URL}/clients?gsc=error&message=missing_client`)
+  }
+  if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
+    console.error('[auth/google/callback] GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET not set')
+    return NextResponse.redirect(`${BASE_URL}/clients/${state}?tab=connections&gsc=error&message=missing_env`)
+  }
 
   const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
       code,
-      client_id: process.env.GOOGLE_CLIENT_ID || '',
-      client_secret: process.env.GOOGLE_CLIENT_SECRET || '',
+      client_id: process.env.GOOGLE_CLIENT_ID,
+      client_secret: process.env.GOOGLE_CLIENT_SECRET,
       redirect_uri: `${BASE_URL}/api/auth/google/callback`,
       grant_type: 'authorization_code',
     }),
   })
   const tokens = await tokenRes.json()
   if (tokens.error) {
-    console.error('Token exchange error:', tokens.error)
+    console.error('[auth/google/callback] token exchange error:', tokens.error)
     return NextResponse.redirect(`${BASE_URL}/clients/${state}?tab=connections&gsc=error`)
   }
 
@@ -45,12 +52,12 @@ export async function GET(req: NextRequest) {
     headers: { Authorization: `Bearer ${tokens.access_token}` },
   })
   const sitesData = await sitesRes.json()
-  console.log('GSC sites response:', JSON.stringify(sitesData))
+  console.log('[auth/google/callback] GSC sites response:', JSON.stringify(sitesData))
 
   const validProperties = (sitesData.siteEntry || []).filter((s: any) =>
     ['siteOwner', 'siteFullUser', 'siteRestrictedUser'].includes(s.permissionLevel)
   )
-  console.log('Valid properties:', validProperties.length, validProperties.map((p: any) => p.siteUrl))
+  console.log('[auth/google/callback] valid properties:', validProperties.length, validProperties.map((p: any) => p.siteUrl))
 
   const { data: clientProfile } = await supabase
     .from('client_profiles')
@@ -72,7 +79,7 @@ export async function GET(req: NextRequest) {
       token_expires_at: expiresAt,
       status: 'active',
     }, { onConflict: 'client_id' })
-    if (upsertError) console.error('Upsert error:', upsertError)
+    if (upsertError) console.error('[auth/google/callback] upsert error:', upsertError.message)
   }
 
   if (validProperties.length === 1) {

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
+import { forbiddenResponse, requireUser, userCanAccessClient } from '@/lib/server/auth'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -7,6 +8,9 @@ const supabase = createClient(
 )
 
 export async function GET(req: NextRequest) {
+  const authResult = await requireUser(req)
+  if (!authResult.ok) return authResult.response
+
   const { searchParams } = new URL(req.url)
   const connection_id = searchParams.get('connection_id')
   const resource = searchParams.get('resource') || 'posts' // 'posts' | 'pages' | 'products'
@@ -14,6 +18,7 @@ export async function GET(req: NextRequest) {
 
   const { data: conn } = await supabase.from('site_connections').select('*').eq('id', connection_id).single()
   if (!conn) return NextResponse.json({ error: 'Connection not found' }, { status: 404 })
+  if (!(await userCanAccessClient(supabase, authResult.auth.user.id, conn.client_id))) return forbiddenResponse()
 
   try {
     switch (conn.platform) {

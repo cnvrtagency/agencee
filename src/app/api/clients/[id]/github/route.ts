@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { encrypt } from '@/lib/crypto'
+import { forbiddenResponse, requireUser, userCanAccessClient } from '@/lib/server/auth'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -9,7 +10,12 @@ const supabase = createClient(
 
 // PATCH — save GitHub config, encrypting the token server-side
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const authResult = await requireUser(req)
+  if (!authResult.ok) return authResult.response
+
   const { id: clientId } = await params
+  if (!(await userCanAccessClient(supabase, authResult.auth.user.id, clientId))) return forbiddenResponse()
+
   const { github_repo, github_branch, github_token } = await req.json()
 
   const updates: Record<string, string> = {

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { encrypt, safeDecrypt } from '@/lib/crypto'
+import { forbiddenResponse, requireUserOrInternal, userCanAccessClient } from '@/lib/server/auth'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -8,6 +9,9 @@ const supabase = createClient(
 )
 
 export async function POST(req: NextRequest) {
+  const authResult = await requireUserOrInternal(req)
+  if (!authResult.ok) return authResult.response
+
   const { connection_id } = await req.json().catch(() => ({}))
   if (!connection_id) return NextResponse.json({ error: 'connection_id required' }, { status: 400 })
 
@@ -17,9 +21,13 @@ export async function POST(req: NextRequest) {
     .eq('id', connection_id)
     .single()
   if (error || !conn) return NextResponse.json({ error: 'Connection not found' }, { status: 404 })
+  if (authResult.auth.user && !(await userCanAccessClient(supabase, authResult.auth.user.id, conn.client_id))) return forbiddenResponse()
 
   const refreshToken = conn.refresh_token ? safeDecrypt(conn.refresh_token) : null
   if (!refreshToken) return NextResponse.json({ error: 'No refresh token available' }, { status: 400 })
+  if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
+    return NextResponse.json({ error: 'GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET not set in environment variables' }, { status: 500 })
+  }
 
   const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
     method: 'POST',
@@ -41,5 +49,5 @@ export async function POST(req: NextRequest) {
     updated_at: new Date().toISOString(),
   }).eq('id', connection_id)
 
-  return NextResponse.json({ access_token: tokens.access_token })
+  return NextResponse.json({ ok: true, token_expires_at: expiresAt })
 }

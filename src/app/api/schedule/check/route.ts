@@ -6,6 +6,8 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_KEY!
 )
 
+export const maxDuration = 60
+
 // Called by Vercel cron — triggers any schedules that are due
 export async function GET(req: NextRequest) {
   // Verify cron secret — fail closed: reject if CRON_SECRET not set or secret doesn't match.
@@ -27,6 +29,16 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'Unauthorised' }, { status: 401 })
   }
 
+  if (!cronSecret) {
+    return NextResponse.json({ error: 'CRON_SECRET not set. Cron entry can authenticate, but internal subrequests cannot run safely.' }, { status: 500 })
+  }
+
+  const baseUrl = process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000'
+  const internalHeaders = {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${cronSecret}`,
+  }
+
   // Find due schedules
   const { data: schedules } = await supabase
     .from('client_schedules')
@@ -34,24 +46,18 @@ export async function GET(req: NextRequest) {
     .eq('enabled', true)
     .lte('next_run_at', new Date().toISOString())
 
-  if (!schedules || schedules.length === 0) {
-    return NextResponse.json({ triggered: 0 })
-  }
-
   // Trigger each due schedule
   const results = await Promise.allSettled(
-    schedules.map(s =>
+    (schedules ?? []).map(s =>
       fetch(`${process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000'}/api/schedule/run`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: internalHeaders,
         body: JSON.stringify({ schedule_id: s.id }),
       }).then(r => r.json())
     )
   )
 
   const succeeded = results.filter(r => r.status === 'fulfilled').length
-
-  const baseUrl = process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000'
 
   // Sync GSC connections not synced in last 23h
   const { data: connections } = await supabase
@@ -63,7 +69,7 @@ export async function GET(req: NextRequest) {
   for (const conn of connections ?? []) {
     await fetch(`${baseUrl}/api/gsc/sync`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: internalHeaders,
       body: JSON.stringify({ connection_id: conn.id }),
     }).catch((err) => console.error('[schedule/check] Sub-request failed:', err.message))
   }
@@ -73,10 +79,10 @@ export async function GET(req: NextRequest) {
 
   // Weekly SEO knowledge digest — runs on Mondays
   if (now.getDay() === 1) {
-    fetch(`${baseUrl}/api/intelligence/knowledge-digest`, {
+    await fetch(`${baseUrl}/api/intelligence/knowledge-digest`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-    }).catch(() => {})
+      headers: internalHeaders,
+    }).catch((err) => console.error('[schedule/check] Knowledge digest failed:', err.message))
   }
 
   if (now.getDate() === 1) {
@@ -91,7 +97,7 @@ export async function GET(req: NextRequest) {
     for (const cid of uniqueClientIds) {
       await fetch(`${baseUrl}/api/reports/generate`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: internalHeaders,
         body: JSON.stringify({ client_id: cid, period_start: prevMonthStart, period_end: prevMonthEnd }),
       }).catch((err) => console.error('[schedule/check] Sub-request failed:', err.message))
     }
@@ -103,28 +109,37 @@ export async function GET(req: NextRequest) {
     .select('*')
     .eq('enabled', true)
     .lte('next_run_at', new Date().toISOString())
-    .neq('last_run_status', 'running')
+  const staleCutoff = Date.now() - 10 * 60 * 1000
+  const runnableJobs = (dueJobs ?? []).filter((job: any) =>
+    job.last_run_status !== 'running' ||
+    !job.last_run_at ||
+    new Date(job.last_run_at).getTime() < staleCutoff
+  )
 
-  for (const job of dueJobs ?? []) {
+  await Promise.allSettled(runnableJobs.map((job: any) =>
     fetch(`${baseUrl}/api/jobs/run`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: internalHeaders,
       body: JSON.stringify({ job_id: job.id }),
-    }).catch(console.error)
-  }
+    }).catch((err) => console.error('[schedule/check] Job run failed:', err.message))
+  ))
 
   // Trigger due agent automations
   const { data: dueAutomations } = await supabase
     .from('agent_automations')
-    .select('id, agent_id')
+    .select('id, agent_id, last_run_at, last_run_status')
     .eq('enabled', true)
     .lte('next_run_at', new Date().toISOString())
-    .neq('last_run_status', 'running')
+  const runnableAutomations = (dueAutomations ?? []).filter((automation: any) =>
+    automation.last_run_status !== 'running' ||
+    !automation.last_run_at ||
+    new Date(automation.last_run_at).getTime() < staleCutoff
+  )
 
-  for (const automation of dueAutomations ?? []) {
+  await Promise.allSettled(runnableAutomations.map((automation: any) =>
     fetch(`${baseUrl}/api/intelligence/run-automation`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: internalHeaders,
       body: JSON.stringify({ automation_id: automation.id, agent_id: automation.agent_id }),
     }).then(async (r) => {
       const status = r.ok ? 'success' : 'error'
@@ -134,14 +149,19 @@ export async function GET(req: NextRequest) {
         last_run_status: status,
         last_run_summary: (data.summary || data.error || '').slice(0, 500),
       }).eq('id', automation.id)
-    }).catch(console.error)
-  }
+    }).catch((err) => console.error('[schedule/check] Automation failed:', err.message))
+  ))
 
   // Send daily digest
   await fetch(`${baseUrl}/api/notifications/digest`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: internalHeaders,
   }).catch((err) => console.error('[schedule/check] Sub-request failed:', err.message))
 
-  return NextResponse.json({ triggered: schedules.length, succeeded, jobs_triggered: (dueJobs ?? []).length })
+  return NextResponse.json({
+    triggered: (schedules ?? []).length,
+    succeeded,
+    jobs_triggered: runnableJobs.length,
+    automations_triggered: runnableAutomations.length,
+  })
 }
