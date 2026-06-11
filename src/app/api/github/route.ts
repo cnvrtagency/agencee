@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
+import { safeDecrypt } from '@/lib/crypto'
+import { atomicCommit, type CommitFile } from '@/lib/github-commit'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -74,7 +76,8 @@ export async function POST(req: NextRequest) {
     if (!parsed) return NextResponse.json({ error: 'Invalid GitHub repo URL.' }, { status: 400 })
 
     const branch = client.github_branch || 'main'
-    const tree = await fetchTree(parsed.owner, parsed.repo, branch, client.github_token)
+    const token = safeDecrypt(client.github_token) || client.github_token
+    const tree = await fetchTree(parsed.owner, parsed.repo, branch, token)
     const formatted = formatTree(tree)
     const totalFiles = tree.filter(f => f.type === 'blob').length
 
@@ -107,7 +110,8 @@ export async function PUT(req: NextRequest) {
     if (!parsed) return NextResponse.json({ error: 'Invalid repo URL' }, { status: 400 })
 
     const branch = client.github_branch || 'main'
-    const token = client.github_token
+    const token = safeDecrypt(client.github_token) || client.github_token
+
     const apiUrl = `https://api.github.com/repos/${parsed.owner}/${parsed.repo}/contents/${path}`
 
     // Check if file already exists (need its SHA to update)
@@ -145,6 +149,56 @@ export async function PUT(req: NextRequest) {
   }
 }
 
+// Atomic multi-file commit via Git Trees API
+export async function PATCH(req: NextRequest) {
+  let client_id: string | undefined
+  let files: CommitFile[] | undefined
+  try {
+    const body = await req.json()
+    client_id = body.client_id
+    files = body.files
+    const message: string | undefined = body.message
+    if (!client_id || !Array.isArray(files) || !files.length) {
+      return NextResponse.json({ error: 'client_id and files[] required' }, { status: 400 })
+    }
+
+    const { data: client } = await supabase
+      .from('client_profiles')
+      .select('github_repo, github_branch, github_token')
+      .eq('id', client_id)
+      .single()
+
+    if (!client?.github_repo || !client?.github_token) {
+      return NextResponse.json({ error: 'GitHub not configured' }, { status: 400 })
+    }
+
+    const parsed = parseRepoUrl(client.github_repo)
+    if (!parsed) return NextResponse.json({ error: 'Invalid repo URL' }, { status: 400 })
+
+    const branch = client.github_branch || 'main'
+    const token = safeDecrypt(client.github_token) || client.github_token
+
+    const commitMsg = message || `Update ${files.map((f) => f.path.split('/').pop()).join(', ')}`
+    const { commit_sha } = await atomicCommit({
+      owner: parsed.owner,
+      repo: parsed.repo,
+      branch,
+      token,
+      files,
+      message: commitMsg,
+    })
+
+    return NextResponse.json({ success: true, commit_sha, files_committed: files.length })
+  } catch (err: any) {
+    console.error('[github PATCH] Failed:', {
+      error: err.message,
+      client_id,
+      fileCount: files?.length ?? 0,
+    })
+    return NextResponse.json({ error: err.message }, { status: 500 })
+  }
+}
+
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url)
@@ -164,9 +218,10 @@ export async function GET(req: NextRequest) {
     if (!parsed) return NextResponse.json({ error: 'Invalid repo URL' }, { status: 400 })
 
     const branch = client.github_branch || 'main'
+    const token = safeDecrypt(client.github_token) || client.github_token
     const res = await fetch(
       `https://api.github.com/repos/${parsed.owner}/${parsed.repo}/contents/${path}?ref=${branch}`,
-      { headers: { Authorization: `Bearer ${client.github_token}`, Accept: 'application/vnd.github.v3+json' } }
+      { headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github.v3+json' } }
     )
     if (!res.ok) return NextResponse.json({ error: `File not found: ${path}` }, { status: 404 })
     const data = await res.json()

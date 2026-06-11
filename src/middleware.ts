@@ -1,16 +1,22 @@
-import { createServerClient } from '@supabase/ssr'
 import { NextRequest, NextResponse } from 'next/server'
+
+// Auth enforcement is disabled until the Supabase migration has been run.
+// To enable: run supabase/migration_saas.sql in the Supabase SQL Editor,
+// then set NEXT_PUBLIC_AUTH_ENABLED=true in .env.local.
+const AUTH_ENABLED = process.env.NEXT_PUBLIC_AUTH_ENABLED === 'true'
 
 const publicPaths = ['/login', '/signup', '/onboarding']
 
 export async function middleware(req: NextRequest) {
-  const { pathname } = req.nextUrl
+  if (!AUTH_ENABLED) return NextResponse.next()
 
-  // Always allow public paths and API routes
+  const { pathname } = req.nextUrl
   if (publicPaths.some(p => pathname.startsWith(p)) || pathname.startsWith('/api')) {
     return NextResponse.next()
   }
 
+  // Dynamically import to avoid edge runtime issues when auth is disabled
+  const { createServerClient } = await import('@supabase/ssr')
   const res = NextResponse.next()
 
   const supabase = createServerClient(
@@ -25,17 +31,11 @@ export async function middleware(req: NextRequest) {
   )
 
   const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return NextResponse.redirect(new URL('/login', req.url))
 
-  if (!user) {
-    return NextResponse.redirect(new URL('/login', req.url))
-  }
-
-  // Redirect to onboarding if not yet set up
   if (pathname !== '/onboarding') {
-    const { data: ws } = await supabase.from('workspace_settings').select('onboarded').eq('user_id', user.id).maybeSingle()
-    if (!ws?.onboarded) {
-      return NextResponse.redirect(new URL('/onboarding', req.url))
-    }
+    const { data: ws } = await supabase.from('workspace_settings').select('onboarding_completed').eq('user_id', user.id).maybeSingle()
+    if (!ws?.onboarding_completed) return NextResponse.redirect(new URL('/onboarding', req.url))
   }
 
   return res

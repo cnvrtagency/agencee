@@ -1,91 +1,241 @@
 'use client'
 import { useEffect, useState } from 'react'
-import { supabase } from '@/lib/supabase'
-import { Output } from '@/lib/types'
+import { useRouter } from 'next/navigation'
 import Link from 'next/link'
+import { supabase } from '@/lib/supabase'
+import { Output, SiteConnection } from '@/lib/types'
 
-const S = {
-  h1: { fontSize: 26, fontWeight: 600, color: '#E2E4EE', marginBottom: 4 } as React.CSSProperties,
-  sub: { fontSize: 14, color: '#8B91A8', marginBottom: 32 } as React.CSSProperties,
-  panel: { background: '#141720', border: '1px solid #252836', borderRadius: 10, overflow: 'hidden' } as React.CSSProperties,
-  table: { width: '100%', borderCollapse: 'collapse' as const },
-  th: { textAlign: 'left' as const, fontSize: 11, fontWeight: 600, color: '#8B91A8', textTransform: 'uppercase' as const, letterSpacing: '1px', padding: '12px 16px', borderBottom: '1px solid #252836' },
-  td: { padding: '14px 16px', fontSize: 14, borderBottom: '1px solid #1C1F2A', verticalAlign: 'middle' as const },
+type Tab = 'drafts' | 'approved' | 'published'
+
+function DocGlyph() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--text-dim)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+      <polyline points="14 2 14 8 20 8" />
+      <line x1="9" y1="13" x2="15" y2="13" />
+      <line x1="9" y1="17" x2="15" y2="17" />
+    </svg>
+  )
 }
 
 export default function OutputsPage() {
-  const [outputs, setOutputs] = useState<Output[]>([])
-  const [filter, setFilter] = useState<'pending' | 'approved'>('pending')
+  const router = useRouter()
+  const [outputs, setOutputs] = useState<(Output & { [key: string]: any })[]>([])
+  const [connectionsByClient, setConnectionsByClient] = useState<Record<string, SiteConnection[]>>({})
+  const [tab, setTab] = useState<Tab>('drafts')
+  const [userId, setUserId] = useState<string | null>(null)
+  const [fadingIds, setFadingIds] = useState<Set<string>>(new Set())
+  const [publishingId, setPublishingId] = useState<string | null>(null)
+  const [publishErrors, setPublishErrors] = useState<Record<string, string>>({})
+  const [brokenThumbs, setBrokenThumbs] = useState<Set<string>>(new Set())
 
-  useEffect(() => { load() }, [filter])
+  useEffect(() => {
+    supabase.auth.getUser().then(({ data }) => setUserId(data.user?.id ?? null))
+    load()
+  }, [])
 
   async function load() {
     const { data } = await supabase
       .from('content_outputs')
       .select('*, client_profiles(name)')
-      .eq('approved', filter === 'approved')
       .order('created_at', { ascending: false })
-      .limit(50)
+      .limit(100)
     setOutputs(data || [])
+    const clientIds = Array.from(new Set((data || []).map(o => o.client_id).filter(Boolean)))
+    if (clientIds.length) {
+      const { data: conns } = await supabase.from('site_connections').select('*').in('client_id', clientIds)
+      const grouped: Record<string, SiteConnection[]> = {}
+      for (const c of conns || []) {
+        grouped[c.client_id] = grouped[c.client_id] || []
+        grouped[c.client_id].push(c)
+      }
+      setConnectionsByClient(grouped)
+    }
   }
 
-  const fmt = (d: string) => new Date(d).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
+  const drafts = outputs.filter(o => !o.approved)
+  const approved = outputs.filter(o => o.approved && !o.published_url)
+  const published = outputs.filter(o => !!o.published_url)
+  const visible = tab === 'drafts' ? drafts : tab === 'approved' ? approved : published
+
+  async function approveOutput(o: Output & { [key: string]: any }) {
+    await supabase.from('content_outputs').update({ approved: true }).eq('id', o.id)
+    await supabase.from('content_history').insert({
+      client_id: o.client_id,
+      user_id: userId,
+      title: o.title || o.primary_keyword || 'Untitled',
+      url: null,
+      primary_keyword: o.primary_keyword,
+      summary: o.meta_description || o.title || '',
+      published_at: new Date().toISOString(),
+    })
+    setFadingIds(prev => new Set(prev).add(o.id))
+    setTimeout(() => {
+      setOutputs(prev => prev.map(x => x.id === o.id ? { ...x, approved: true } : x))
+      setFadingIds(prev => { const n = new Set(prev); n.delete(o.id); return n })
+    }, 350)
+  }
+
+  async function publishOutput(o: Output & { [key: string]: any }) {
+    const conns = connectionsByClient[o.client_id] || []
+    if (conns.length !== 1) return
+    setPublishingId(o.id)
+    setPublishErrors(prev => { const n = { ...prev }; delete n[o.id]; return n })
+    try {
+      const res = await fetch('/api/connections/publish', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ output_id: o.id, connection_id: conns[0].id }),
+      })
+      const data = await res.json().catch(() => ({ success: false, error: 'Unexpected response from the publish service' }))
+      if (!res.ok || !data.success) {
+        setPublishErrors(prev => ({ ...prev, [o.id]: data.error || 'Publishing failed' }))
+      } else {
+        setOutputs(prev => prev.map(x => x.id === o.id ? { ...x, published_url: data.published_url, platform_output: { platform: data.platform } } : x))
+      }
+    } catch (e: any) {
+      setPublishErrors(prev => ({ ...prev, [o.id]: e.message || 'Something went wrong' }))
+    }
+    setPublishingId(null)
+  }
+
+  const fmt = (d: string) => new Date(d).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
+
+  const tabs: { key: Tab; label: string; count: number }[] = [
+    { key: 'drafts', label: 'Drafts', count: drafts.length },
+    { key: 'approved', label: 'Approved', count: approved.length },
+    { key: 'published', label: 'Published', count: published.length },
+  ]
+
+  const emptyCopy: Record<Tab, string> = {
+    drafts: 'No drafts waiting. Ask Ada to write something.',
+    approved: 'Nothing approved yet. Review your drafts first.',
+    published: 'Nothing published yet. Approve a draft, then publish it.',
+  }
+
+  const pill = (label: string, color: string, bg: string) => (
+    <span style={{ fontSize: 11, fontWeight: 600, padding: '3px 10px', borderRadius: 99, color, background: bg, whiteSpace: 'nowrap' }}>{label}</span>
+  )
+
+  const actionBtn: React.CSSProperties = {
+    padding: '5px 12px', borderRadius: 'var(--radius)', fontSize: 12, fontWeight: 600, cursor: 'pointer',
+    border: '1px solid var(--border)', background: 'var(--surface-2)', color: 'var(--text-2)', whiteSpace: 'nowrap',
+  }
 
   return (
     <div>
-      <h1 style={S.h1}>Outputs</h1>
-      <p style={S.sub}>Drafts your agents have produced. Review and approve before publishing.</p>
+      <div style={{ marginBottom: 32 }}>
+        <h1 style={{ fontSize: 28, fontWeight: 600, color: 'var(--text)', marginBottom: 6, letterSpacing: '-0.5px' }}>Outputs</h1>
+        <p style={{ fontSize: 13.5, color: 'var(--text-2)' }}>Drafts your agents have produced. Review, approve and publish.</p>
+      </div>
 
-      <div style={{ display: 'flex', gap: 8, marginBottom: 20 }}>
-        {(['pending', 'approved'] as const).map(f => (
-          <button key={f} onClick={() => setFilter(f)} style={{
-            padding: '6px 16px', borderRadius: 6, fontSize: 13, cursor: 'pointer', border: 'none',
-            background: filter === f ? '#6366F1' : '#1C1F2A',
-            color: filter === f ? '#fff' : '#8B91A8',
-            fontWeight: filter === f ? 500 : 400,
-            textTransform: 'capitalize',
-          }}>{f === 'pending' ? 'Needs review' : 'Approved'}</button>
+      <div style={{ display: 'flex', gap: 6, marginBottom: 20 }}>
+        {tabs.map(t => (
+          <button key={t.key} onClick={() => setTab(t.key)} style={{
+            padding: '6px 16px', borderRadius: 99, fontSize: 12, cursor: 'pointer', border: 'none',
+            background: tab === t.key ? 'var(--accent)' : 'var(--surface-2)',
+            color: tab === t.key ? '#fff' : 'var(--text-2)',
+            fontWeight: tab === t.key ? 600 : 400, letterSpacing: '0.3px',
+          }}>{t.label} ({t.count})</button>
         ))}
       </div>
 
-      <div style={S.panel}>
-        <table style={S.table}>
-          <thead>
-            <tr>
-              <th style={S.th}>Title</th>
-              <th style={S.th}>Client</th>
-              <th style={S.th}>Keyword</th>
-              <th style={{ ...S.th, textAlign: 'right' as const }}>Words</th>
-              <th style={S.th}>Date</th>
-              <th style={S.th}></th>
-            </tr>
-          </thead>
-          <tbody>
-            {outputs.map(o => (
-              <tr key={o.id}>
-                <td style={{ ...S.td, color: '#E2E4EE', fontWeight: 500, maxWidth: 280 }}>
-                  <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {o.title || o.primary_keyword || 'Untitled'}
+      <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)', overflow: 'hidden' }}>
+        {visible.length === 0 ? (
+          <div style={{ padding: 48, textAlign: 'center', fontSize: 14, color: 'var(--text-2)' }}>
+            {emptyCopy[tab]}
+          </div>
+        ) : (
+          visible.map((o, i) => {
+            const thumb = o.images?.[0]?.url
+            const conns = connectionsByClient[o.client_id] || []
+            const fading = fadingIds.has(o.id)
+            const imgCount = o.images?.length || 0
+            return (
+              <div key={o.id}>
+                <div
+                  onClick={() => router.push(`/outputs/${o.id}`)}
+                  onMouseEnter={e => { e.currentTarget.style.background = 'var(--surface-2)' }}
+                  onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 16, padding: '14px 18px', cursor: 'pointer',
+                    borderBottom: i < visible.length - 1 ? '1px solid var(--border)' : 'none',
+                    opacity: fading ? 0 : 1, transition: 'opacity 0.35s ease, background 0.15s',
+                  }}>
+                  {/* Thumb */}
+                  {thumb && !brokenThumbs.has(o.id) ? (
+                    <img src={thumb} alt="" onError={() => setBrokenThumbs(prev => new Set(prev).add(o.id))}
+                      style={{ width: 48, height: 48, borderRadius: 8, objectFit: 'cover', flexShrink: 0 }} />
+                  ) : (
+                    <div style={{ width: 48, height: 48, borderRadius: 8, background: 'var(--surface-3)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                      <DocGlyph />
+                    </div>
+                  )}
+                  {/* Title + client */}
+                  <div style={{ flex: '1 1 220px', minWidth: 0 }}>
+                    <div style={{ fontSize: 14, fontWeight: 500, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {o.title || o.primary_keyword || 'Untitled'}
+                    </div>
+                    <div style={{ fontSize: 12, color: 'var(--text-2)', marginTop: 2 }}>{(o.client_profiles as any)?.name || '—'}</div>
                   </div>
-                </td>
-                <td style={{ ...S.td, color: '#8B91A8' }}>{(o.client_profiles as any)?.name || '—'}</td>
-                <td style={{ ...S.td, color: '#8B91A8', fontSize: 13 }}>{o.primary_keyword || '—'}</td>
-                <td style={{ ...S.td, color: '#8B91A8', textAlign: 'right', fontFamily: '"JetBrains Mono",monospace', fontSize: 12 }}>{o.word_count?.toLocaleString() || '—'}</td>
-                <td style={{ ...S.td, color: '#8B91A8', fontFamily: '"JetBrains Mono",monospace', fontSize: 12 }}>{fmt(o.created_at)}</td>
-                <td style={S.td}>
-                  <Link href={`/outputs/${o.id}`} style={{ color: '#6366F1', fontSize: 13, fontWeight: 500, textDecoration: 'none' }}>
-                    {filter === 'pending' ? 'Review →' : 'View →'}
-                  </Link>
-                </td>
-              </tr>
-            ))}
-            {outputs.length === 0 && (
-              <tr><td colSpan={6} style={{ ...S.td, color: '#8B91A8', textAlign: 'center', padding: '40px 16px' }}>
-                {filter === 'pending' ? 'Nothing waiting for review.' : 'No approved outputs yet.'}
-              </td></tr>
-            )}
-          </tbody>
-        </table>
+                  {/* Keyword */}
+                  <div style={{ flex: '0 1 180px', fontSize: 13, color: 'var(--text-2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {o.primary_keyword || ''}
+                  </div>
+                  {/* Agent */}
+                  <div style={{ fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--text-dim)', whiteSpace: 'nowrap', flexShrink: 0 }}>
+                    {o.agent_type === 'seo' ? 'Ada' : o.agent_type === 'technical' ? 'Theo' : o.agent_type || '—'}
+                  </div>
+                  {/* Counts */}
+                  <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--text-2)', whiteSpace: 'nowrap' }}>
+                    {(o.word_count || 0).toLocaleString()} words{imgCount > 0 ? ` · ${imgCount} image${imgCount === 1 ? '' : 's'}` : ''}
+                  </div>
+                  {/* Date */}
+                  <div style={{ fontSize: 12, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>{fmt(o.created_at)}</div>
+                  {/* Status pill */}
+                  {o.published_url
+                    ? pill('Published', 'var(--green)', 'var(--green-bg)')
+                    : o.approved
+                      ? pill('Approved', 'var(--accent)', 'var(--accent-bg)')
+                      : pill('Draft', 'var(--amber)', 'var(--amber-bg)')}
+                  {/* Actions */}
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }} onClick={e => e.stopPropagation()}>
+                    {!o.approved && (
+                      <>
+                        <button onClick={() => approveOutput(o)} title="Approve"
+                          style={{ ...actionBtn, color: 'var(--green)', background: 'var(--green-bg)', border: '1px solid var(--green)' }}>
+                          Approve ✓
+                        </button>
+                        <Link href={`/outputs/${o.id}`} style={{ ...actionBtn, textDecoration: 'none', display: 'inline-block' }}>Review →</Link>
+                      </>
+                    )}
+                    {o.approved && !o.published_url && (
+                      conns.length === 1 ? (
+                        <button onClick={() => publishOutput(o)} disabled={publishingId === o.id}
+                          style={{ ...actionBtn, color: '#fff', background: 'var(--accent)', border: '1px solid var(--accent)', opacity: publishingId === o.id ? 0.6 : 1 }}>
+                          {publishingId === o.id ? 'Publishing...' : 'Publish ↑'}
+                        </button>
+                      ) : (
+                        <Link href={`/outputs/${o.id}`} style={{ ...actionBtn, textDecoration: 'none', display: 'inline-block' }}>Review →</Link>
+                      )
+                    )}
+                    {o.published_url && (
+                      <a href={o.published_url} target="_blank" rel="noopener noreferrer"
+                        style={{ ...actionBtn, color: 'var(--green)', background: 'var(--green-bg)', border: '1px solid var(--green)', textDecoration: 'none', display: 'inline-block' }}>
+                        View live →
+                      </a>
+                    )}
+                  </div>
+                </div>
+                {publishErrors[o.id] && (
+                  <div style={{ padding: '8px 18px', borderBottom: i < visible.length - 1 ? '1px solid var(--border)' : 'none', borderLeft: '3px solid var(--red)', background: 'var(--red-bg)', fontSize: 12, color: 'var(--red)' }}>
+                    {publishErrors[o.id]}
+                  </div>
+                )}
+              </div>
+            )
+          })
+        )}
       </div>
     </div>
   )

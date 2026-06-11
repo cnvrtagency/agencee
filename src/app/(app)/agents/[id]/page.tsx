@@ -2,6 +2,10 @@
 import { useEffect, useState, useRef } from 'react'
 import { useParams } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
+import { marked } from 'marked'
+import { cleanContent } from '@/lib/content-clean'
+
+marked.setOptions({ breaks: true, gfm: true })
 
 type Agent = {
   id: string; name: string; role: string; slug: string; avatar_initials: string
@@ -9,13 +13,42 @@ type Agent = {
   personality: string; communication_style: string; boundaries: string; working_style: string
   agent_type: string; active: boolean
 }
-type Message = { id: string; role: 'user' | 'assistant'; content: string; created_at: string }
+type TaskEntry = { label: string; done: boolean; ts: string }
+type DraftCard = { title: string; word_count: number; image_count: number; review_url: string }
+type Message = { id: string; role: 'user' | 'assistant'; content: string; created_at: string; _taskLog?: TaskEntry[]; _thoughts?: string[]; _draftCard?: DraftCard }
+
+// Encode/decode task log + thoughts into message content so it survives DB round-trips
+function encodeMessageMeta(content: string, taskLog: TaskEntry[], thoughts: string[]): string {
+  if (!taskLog.length && !thoughts.length) return content
+  return `__META__${JSON.stringify({ taskLog, thoughts })}__ENDMETA__\n${content}`
+}
+function decodeMessageMeta(raw: string): { content: string; taskLog: TaskEntry[]; thoughts: string[] } {
+  const sep = '__ENDMETA__\n'
+  const start = raw.indexOf('__META__')
+  const end = raw.indexOf(sep)
+  if (start !== 0 || end === -1) return { content: raw, taskLog: [], thoughts: [] }
+  const jsonPart = raw.slice(8, end)
+  const contentPart = raw.slice(end + sep.length)
+  try {
+    const { taskLog, thoughts } = JSON.parse(jsonPart)
+    return { content: contentPart, taskLog: taskLog || [], thoughts: thoughts || [] }
+  } catch { return { content: raw, taskLog: [], thoughts: [] } }
+}
 type Conversation = { id: string; title: string; created_at: string }
-type Client = { id: string; name: string; description: string; icp: string; usp: string; brand_voice: string; content_goals: string; competitors: string[]; file_tree: string | null; github_repo: string | null }
+type Client = {
+  id: string; name: string; description: string; icp: string; usp: string;
+  brand_voice: string; content_goals: string; competitors: string[];
+  file_tree: string | null; github_repo: string | null; slug: string | null;
+  // new fields
+  pricing_info?: string; team_info?: string; trust_signals?: string;
+  service_differentiators?: string; location_info?: string; target_keywords?: string;
+  content_tone?: string; avoid_topics?: string; cta_approach?: string; schema_type?: string;
+}
 type PlannedTask = { id: string; primary_keyword: string; content_type: string; supporting_keywords: string[]; title_brief: string; word_count: number; internal_links: string; notes: string; status: string }
 type SitePage = { url: string; title: string | null; h1: string | null; meta_description: string | null; word_count: number | null; content_summary: string | null }
+type GscRow = { query: string; page: string; position: number; impressions: number; clicks: number; ctr: number; period_start?: string; period_end?: string }
 
-function buildSystemPrompt(agent: Agent, clients: Client[], plannedTasks: PlannedTask[], sitePages: Record<string, SitePage[]>): string {
+function buildSystemPrompt(agent: Agent, clients: Client[]): string {
   const parts: string[] = []
   parts.push(`You are ${agent.name}, ${agent.role}.`)
   if (agent.backstory?.trim()) parts.push(`BACKGROUND:\n${agent.backstory}`)
@@ -26,90 +59,252 @@ function buildSystemPrompt(agent: Agent, clients: Client[], plannedTasks: Planne
   if (agent.boundaries?.trim()) parts.push(`WHAT YOU NEVER DO:\n${agent.boundaries}`)
   if (agent.instructions?.trim()) parts.push(`ADDITIONAL INSTRUCTIONS:\n${agent.instructions}`)
 
-  parts.push(`HOW TO WORK LIKE A PROFESSIONAL:
-You are not a passive assistant. Think, investigate, and act like a real SEO professional would.
+  const isSeo = agent.agent_type === 'seo'
+  const isTechnical = agent.agent_type === 'technical'
 
-When Dan starts a conversation about a client, build context before offering opinions:
-- Call audit_site first to understand what is broken or missing
-- Call search_history before planning any new content to know what angles are already covered
-- Call read_page when you need to understand what a specific live page actually says
-- Call read_file when you need the source code before editing it
+  if (isSeo) {
+    parts.push(`WORKING APPROACH:
+You are a proactive SEO professional, not a passive assistant. Investigate before advising; fix don't just report.
+You have tools to fetch live data — call them when you need current information. Do not rely on assumptions when a tool call will give you ground truth.
+- Use analyse_gsc first when starting any SEO or content conversation — it gives you the current performance landscape
+- Use audit_site to understand site health before making strategy calls
+- Use search_history and get_keywords before planning any content — never repeat covered angles
+- Use get_site_pages to get the live page inventory for internal linking — never invent URLs
+- Use read_page to analyse a specific live page in depth
+- Use generate_images (plural, one call) for all blog images — pass an array, not separate calls
+- Use write_content to save finished posts as drafts — a human reviews every draft before it is published
+- Use save_planned_task / update_planned_task to log agreed content to the scheduler
+- When starting a blog post, call search_history, get_keywords, and get_site_pages in a SINGLE response simultaneously — do not call them one at a time. You will receive all three results together before proceeding. Always pass your primary keyword to get_site_pages so only relevant pages are returned.
 
-When you identify an issue, fix it — do not just report it. When Dan asks you to add a blog post, do not ask for permission at each step. Read an existing post to learn the format, write the new one, commit it, and report back what you did.
+BLOG POST RULES:
+- Always produce title tag (~60 chars, lead with keyword, end on differentiator) AND meta description (~155 chars, keyword + value prop + location)
+- Primary keyword in: H1, first 100 words, at least one H2, title tag, meta description
+- Location terms in first 100 words for local content — never buried
+- Real URLs only for internal links — flag missing pages as [NEEDS PAGE: /slug]
+- Prose over bullets — max 3 bullet lists per article
+- FAQ sections need JSON-LD schema block appended
+- Images required — 2–4 per post, placed naturally, SEO filename + alt text. Use generate_images in a single call for all blog images. Image prompts must follow IMAGE GENERATION rules below.
+- Named credentialed practitioner for health/care content — never anonymous
 
-Think in terms of the bigger picture: keyword gaps, content clusters, internal linking, page quality, site structure. Make recommendations that move the needle.
+CONTENT FORMAT:
+Write all content in clean markdown with YAML frontmatter. Never write TypeScript, JSX, or code.
 
-GITHUB CAPABILITY:
-You have direct read and write access to each client's GitHub repo.
+Required frontmatter:
+---
+title: "Post Title Here"
+slug: "post-title-here"
+description: "Meta description 150-160 characters"
+keyword: "primary target keyword"
+category: "Category Name"
+reading_time: "8 min read"
+date: "YYYY-MM-DD"
+---
 
-read_file: Read any file from the repo. Always do this before editing an existing file.
+Body content in standard markdown:
+- Use ## for H2 headings, ### for H3
+- Use standard markdown links: [anchor text](/path)
+- Reference images with standard markdown: ![alt text](supabase-url-here)
+- Use **bold** for emphasis, not HTML tags
+- Use > for callout boxes / worth knowing sections
 
-write_file: Write or update any file. Add blog posts, edit pages, fix SEO issues, change structure. Provide a clear commit message. Report back exactly what changed and why.
+WORKFLOW FOR EVERY BLOG POST:
+1. Call search_history to check what has already been written
+2. Call analyse_gsc to understand current performance
+3. Call get_keywords to find the best keyword to target
+4. Call get_site_pages to understand the site structure for internal links
+5. Call generate_images with specific, detailed prompts (2-3 images)
+6. Write the full markdown post using the image URLs returned
+7. Call write_content to save the draft for review
 
-Work methodically: read first, understand the format, then write. If adding a blog post, read an existing one so yours matches exactly.
+Never write TypeScript or JSX. Always use markdown.`)
+  }
 
-PLANNED TASKS CAPABILITY:
-You can create and update planned tasks that appear in the scheduler. When the user asks you to plan, save, or create a future task — or when you have agreed on a content piece — call the save_planned_task function with all the details. When the user asks to update an existing planned task, call update_planned_task with the task id and the fields to change. Always confirm what you saved or updated in your response, listing the key details so the user can verify.
-
-When confirming a saved task, format it clearly:
-"Saved to planned tasks:
-— [content type]: [primary keyword]
-— Supporting: [keywords]
-— Brief: [angle]
-— Words: [count]
-— Links to: [internal links if any]
-You'll find it in the scheduler when you're ready to schedule it."`)
+  if (isTechnical) {
+    parts.push(`PUBLISHING:
+Use publish_content with the output_id to publish approved drafts. Always confirm the draft is approved first. Report the live URL when done.`)
+  }
 
   if (clients.length > 0) {
     const clientContext = clients.map(c => [
       `CLIENT: ${c.name}`,
-      c.description ? `Description: ${c.description}` : '',
-      c.icp ? `Ideal customer: ${c.icp}` : '',
+      c.description ? `About: ${c.description}` : '',
+      c.icp ? `Customer: ${c.icp}` : '',
       c.usp ? `USP: ${c.usp}` : '',
-      c.brand_voice ? `Brand voice: ${c.brand_voice}` : '',
-      c.content_goals ? `Content goals: ${c.content_goals}` : '',
+      c.brand_voice ? `Voice: ${c.brand_voice}` : '',
+      c.content_goals ? `Goals: ${c.content_goals}` : '',
+      c.content_tone ? `Tone: ${c.content_tone}` : '',
+      c.avoid_topics ? `Avoid: ${c.avoid_topics}` : '',
+      c.cta_approach ? `CTA: ${c.cta_approach}` : '',
+      c.pricing_info ? `Pricing: ${c.pricing_info}` : '',
+      c.team_info ? `Team: ${c.team_info}` : '',
+      c.trust_signals ? `Trust: ${c.trust_signals}` : '',
+      c.service_differentiators ? `Differentiators: ${c.service_differentiators}` : '',
+      c.location_info ? `Location: ${c.location_info}` : '',
+      c.target_keywords ? `Target keywords: ${c.target_keywords}` : '',
+      c.schema_type ? `Schema type: ${c.schema_type}` : '',
       c.competitors?.length ? `Competitors: ${c.competitors.join(', ')}` : '',
-    ].filter(Boolean).join('\n')).join('\n\n---\n\n')
-    parts.push(`YOUR CLIENTS:\n\n${clientContext}`)
+      c.github_repo ? `Repo: ${c.github_repo}` : '',
+    ].filter(Boolean).join('\n')).join('\n\n')
+    parts.push(`CLIENTS:\n${clientContext}`)
+
+    parts.push(`CLIENT DISAMBIGUATION:
+You are working on behalf of: ${clients.map(c => c.name).join(' and ')}
+
+WORKSPACE CLIENTS: ${clients.map(c => c.name).join(', ')}
+
+If a request could apply to multiple clients and it is unclear which one is intended, ask: "Which client is this for — ${clients.map(c => c.name).join(', ')}?" before proceeding.
+If there is only one client in the workspace, assume all work relates to that client.
+If a message is clearly general (e.g. "how does GSC work", "what is a backlink") answer without needing a client context.`)
   }
 
-  // Site pages inventory
-  const siteContext = clients.map(c => {
-    const pages = sitePages[c.id]
-    if (!pages || pages.length === 0) return null
-    const pageList = pages.map(p => {
-      const path = p.url.replace(/^https?:\/\/[^/]+/, '') || '/'
-      const summary = p.content_summary
-        ? ` — ${p.content_summary}`
-        : (p.h1 ? ` — H1: ${p.h1}` : (p.title ? ` — ${p.title}` : ''))
-      const meta = !p.meta_description ? ' [NO META]' : ''
-      return `  ${path}${summary}${meta}`
-    }).join('\n')
-    return `LIVE PAGES — ${c.name} (${pages.length} pages crawled):\n${pageList}`
-  }).filter(Boolean).join('\n\n')
+  if (isSeo) {
+  parts.push(`IMAGE GENERATION:
+Always use generate_images (a single call with an array) — never make separate single-image calls.
 
-  if (siteContext) {
-    parts.push(`LIVE SITE INVENTORY:\n\nThese are the actual pages currently live on your clients' websites. Use the exact URLs from this list for internal link recommendations. Never invent or guess URLs — only reference pages you can see here.\n\n${siteContext}`)
+Rules for every image prompt you write:
+1. Set the scene as a real UK home — living room, kitchen, hallway, bedroom. Never a clinical setting, hospital, or consulting room.
+2. Show a real person being helped — not a posed subject staring at the camera. Natural, candid, documentary feel.
+3. Natural lighting — window light preferred. No studio flash, no harsh shadows, no white backgrounds.
+4. No white coats, uniforms, or clinical equipment visible in primary compositions.
+5. Warm, editorial quality — think Guardian Weekend or BBC lifestyle photography. Not Getty stock.
+6. Every image needs an SEO filename (kebab-case, keyword-rich) and accurate alt text describing exactly what is shown.
+
+GOOD prompt example: "An older woman sitting in a comfortable armchair in a bright living room, listening attentively as a healthcare professional explains something to her. Natural daylight from a window. Warm, relaxed atmosphere. Candid documentary style. Not posed."
+BAD prompt example: "A professional audiologist in a clinic performing ear wax removal on a patient."
+
+Per-image requirements:
+- filename: keyword-rich kebab-case, e.g. "home-hearing-test-newcastle"
+- alt_text: describe the scene accurately, include the primary keyword naturally
+- prompt: follow all 6 rules above`)
+
+  parts.push(`MANDATORY RESEARCH — before answering any content question:
+Before responding to any question about content strategy, keyword opportunities, what to write next, or how the site is performing, you MUST call all three of the following tools in a single parallel response — do not wait for one before calling the next:
+- search_history — find what has already been written, avoid repeating angles, find linking opportunities
+- get_site_pages — understand the live page inventory for internal links
+- analyse_gsc — get the current performance data to ground your recommendations in real numbers
+
+Do not give content recommendations, propose topics, or draft anything before you have all three results. This is mandatory, not optional.
+
+Exception: purely conversational or educational messages ("how are you", "what is a backlink", "explain canonical tags") may be answered directly. If the next message is about content for a client, the research tools are mandatory again.
+
+PROACTIVE RESPONSIBILITIES:
+- After publishing new content, call suggest_internal_links to find existing pages that should link to it
+- If you spot a keyword gap or cannibalisation issue, raise it unprompted
+- After every successful write_content, call suggest_internal_links to identify existing pages that should link to the new content`)
+
+  parts.push(`CONTENT PLANNING:
+When creating content plans, default to 3 pieces per week unless the user specifies otherwise or the keyword bank is too shallow.
+A typical 4-week plan should contain 10-14 pieces, not 4.
+Sequence by:
+1. Fastest wins first (near-miss keywords with no content targeting them)
+2. Hub pages before supporting pages
+3. Commercial intent before informational
+4. Higher volume before lower volume when difficulty is similar
+Never plan fewer than 2 pieces per week unless explicitly asked. If the keyword bank lacks high-value untargeted keywords, surface that gap rather than padding with low-value topics.`)
   }
 
-  // File tree / codebase
-  const codebaseContext = clients.map(c => {
-    if (!c.file_tree) return null
-    return `CODEBASE FILE TREE — ${c.name} (${c.github_repo || 'GitHub repo'}):\n\nUse this to understand the project structure. Call read_file to read specific files.\n\n${c.file_tree}`
-  }).filter(Boolean).join('\n\n')
-  if (codebaseContext) parts.push(codebaseContext)
+  parts.push(`RESPONSE STYLE:
+Write conversationally, not as a document. Markdown renders properly — use it deliberately, not excessively.
+- Lead with the most important insight, not a preamble
+- Use ## headings only to separate genuinely distinct sections in longer analyses. Not for responses under 200 words.
+- Use bullet lists for genuinely list-like content. Write continuous reasoning as prose.
+- Bold sparingly — only for the single most important term or finding in a section
+- Never start with "Certainly", "Great question", "Of course", or any filler. Get straight to the point.
+- For short answers (under 100 words), write plain prose with no formatting
+- End with a clear single question or action, not a list of options
+- UK English. No em dashes.
 
-  if (plannedTasks.length > 0) {
-    const taskList = plannedTasks.map(t =>
-      `ID: ${t.id} | ${t.content_type.replace(/_/g, ' ')} | "${t.primary_keyword}" | status: ${t.status}${t.title_brief ? ` | brief: ${t.title_brief}` : ''}`
-    ).join('\n')
-    parts.push(`EXISTING PLANNED TASKS (reference these when updating):\n${taskList}`)
-  }
+LENGTH:
+- Conversational replies: 2-4 sentences
+- Analysis of a single keyword or page: 150-300 words
+- Full content strategy or plan: up to 500 words, structured
+- Never produce walls of text for a question with a clear direct answer
+- If writing more than 400 words, ask: is the user asking for a document or a conversation? Default to conversation.`)
 
-  return parts.join('\n\n---\n\n')
+  return parts.join('\n\n')
 }
 
-const TOOLS = [
+const ALL_TOOLS = [
+  {
+    name: 'write_content',
+    description: `Save a completed piece of content as a draft for review.
+
+Content must be in markdown format with YAML frontmatter.
+Images should be referenced using their Supabase Storage URLs from generate_images.
+This saves the content as a draft. A human will review it before it is published.
+
+Required frontmatter fields:
+- title: the post title
+- slug: URL-friendly slug (kebab-case)
+- description: meta description (150-160 chars)
+- keyword: primary target keyword
+- category: content category
+- reading_time: estimated reading time e.g. "8 min read"
+- date: publish date YYYY-MM-DD`,
+    input_schema: {
+      type: 'object',
+      properties: {
+        client_name: { type: 'string' },
+        content: { type: 'string', description: 'Full markdown content including YAML frontmatter' },
+        images: {
+          type: 'array',
+          description: 'Images generated for this post',
+          items: { type: 'object', properties: {
+            url: { type: 'string' }, alt_text: { type: 'string' },
+            filename: { type: 'string' }, storage_path: { type: 'string' }
+          } }
+        },
+        title: { type: 'string' },
+        slug: { type: 'string' },
+        primary_keyword: { type: 'string' },
+        meta_description: { type: 'string' },
+        word_count: { type: 'number' }
+      },
+      required: ['client_name', 'content', 'title', 'slug', 'primary_keyword']
+    },
+  },
+  {
+    name: 'publish_content',
+    description: `Publish an approved content draft to the client's website.
+
+Reads the approved content_outputs record, converts to the platform format,
+and publishes via the appropriate API or file commit.
+
+Supports: wordpress, shopify, github (MDX), webflow`,
+    input_schema: {
+      type: 'object',
+      properties: {
+        output_id: { type: 'string', description: 'The content_outputs ID to publish' },
+        client_name: { type: 'string' },
+        platform_override: { type: 'string', enum: ['wordpress', 'shopify', 'github', 'webflow'], description: 'Override the platform if needed. Otherwise reads from site_connections' }
+      },
+      required: ['output_id', 'client_name']
+    },
+  },
+  {
+    name: 'generate_images',
+    description: 'Generate multiple images in parallel using Nano Banana Pro AI and upload them to Supabase Storage. Returns an array of public URLs to reference in the markdown post. Images are automatically enhanced with client context (location, brand feel, target audience) to ensure they feel authentic rather than stock. Always use this for blog post images — pass all images in one call.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        client_name: { type: 'string', description: 'The client name, e.g. "Acme Corp"' },
+        images: {
+          type: 'array',
+          description: 'Array of images to generate (max 4)',
+          items: {
+            type: 'object',
+            properties: {
+              prompt: { type: 'string', description: 'Detailed image generation prompt. Warm, professional, photorealistic, natural soft lighting, real environments. No stock-photo feel.' },
+              alt_text: { type: 'string', description: 'Descriptive alt text for the image.' },
+              filename: { type: 'string', description: 'Short kebab-case slug without extension, e.g. "private-audiologist-north-east". Will be prefixed with "blog-" automatically.' },
+            },
+            required: ['prompt', 'alt_text', 'filename'],
+          },
+        },
+      },
+      required: ['client_name', 'images'],
+    },
+  },
   {
     name: 'save_planned_task',
     description: 'Save a planned content task to the scheduler. Call this when the user asks to plan or save a future task, or when you have agreed on a content piece to create.',
@@ -150,12 +345,13 @@ const TOOLS = [
   },
   {
     name: 'read_file',
-    description: 'Read the full content of a specific file from the client codebase on GitHub. Use this when you need to study the actual code or content of a specific page or component before making changes.',
+    description: 'Read the content of a specific file from the client codebase on GitHub. Use this to inspect existing files before referencing or changing anything. The full parameter is a no-op and can be omitted.',
     input_schema: {
       type: 'object',
       properties: {
         client_name: { type: 'string', description: 'The client whose repo to read from' },
         file_path: { type: 'string', description: 'The file path relative to repo root, e.g. src/app/page.tsx or content/blog/my-post.mdx' },
+        full: { type: 'boolean', description: 'Set to true to return the complete file content without any trimming. Default false.' },
       },
       required: ['client_name', 'file_path'],
     },
@@ -209,15 +405,135 @@ const TOOLS = [
       required: ['client_name', 'file_path', 'content', 'commit_message'],
     },
   },
+  {
+    name: 'get_site_pages',
+    description: 'Get crawled pages for a client site. Use this to find real URLs for internal links. Always pass keyword (the primary keyword you are writing about) — this returns the 10 most relevant pages plus any stubs, keeping context lean. Omit keyword only when auditing the full site structure.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        client_name: { type: 'string' },
+        keyword: { type: 'string', description: 'The primary keyword you are writing about, e.g. "ear wax removal Newcastle". When provided, returns the top 10 most relevant pages plus any stubs instead of all 100 pages — keeps context lean.' },
+        filter: { type: 'string', enum: ['all', 'no_meta', 'no_h1', 'thin'], description: 'all = every page, no_meta = missing meta, no_h1 = missing H1, thin = under 300 words' },
+      },
+      required: ['client_name'],
+    },
+  },
+  {
+    name: 'get_keywords',
+    description: 'Fetch the full keyword bank for a client. Returns all keywords with their intent, funnel stage, monthly volume, difficulty, current ranking position, and any existing content targeting them. Call this when planning content strategy, identifying gaps, or deciding what to write next.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        client_name: { type: 'string', description: 'The client' },
+        filter: { type: 'string', enum: ['all', 'untargeted', 'ranking', 'high_volume'], description: 'all = full list, untargeted = no content yet, ranking = currently ranking, high_volume = 1000+ monthly searches' },
+      },
+      required: ['client_name'],
+    },
+  },
+  {
+    name: 'suggest_keyword',
+    description: 'Propose a new keyword for a client to be reviewed and approved in the Agencee /keywords page. Use this when you identify a valuable keyword opportunity that is not yet in the client\'s keyword bank.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        client_name: { type: 'string', description: 'The client to suggest the keyword for' },
+        keyword: { type: 'string', description: 'The keyword to suggest' },
+        rationale: { type: 'string', description: 'Why this keyword is valuable — what gap it fills, what intent it serves' },
+        monthly_volume_estimate: { type: 'number', description: 'Estimated monthly search volume' },
+        difficulty_estimate: { type: 'number', description: 'Estimated keyword difficulty (0-100)' },
+        intent: { type: 'string', enum: ['informational', 'commercial', 'transactional', 'navigational'] },
+        funnel_stage: { type: 'string', enum: ['tofu', 'mofu', 'bofu'] },
+        cluster: { type: 'string', description: 'The topic cluster this keyword belongs to' },
+      },
+      required: ['client_name', 'keyword', 'rationale'],
+    },
+  },
+  {
+    name: 'create_content_plan',
+    description: 'Create a content calendar plan for a client. Adds multiple planned pieces to the content calendar which the user can then review, queue, and track.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        client_name: { type: 'string', description: 'The client to build the plan for' },
+        entries: {
+          type: 'array',
+          description: 'Array of content pieces to plan',
+          items: {
+            type: 'object',
+            properties: {
+              title: { type: 'string', description: 'Working title for the piece' },
+              primary_keyword: { type: 'string', description: 'Target keyword' },
+              content_type: { type: 'string', enum: ['blog_post', 'pillar_page', 'category_page', 'local_seo'] },
+              scheduled_date: { type: 'string', description: 'ISO date string (YYYY-MM-DD) for when to publish' },
+              notes: { type: 'string', description: 'Brief notes on the angle or approach' },
+            },
+            required: ['title'],
+          },
+        },
+      },
+      required: ['client_name', 'entries'],
+    },
+  },
+  {
+    name: 'analyse_competitors',
+    description: 'Retrieve and analyse crawled competitor data for a client. Returns a summary of what competitors cover, their top pages, and content patterns. Use this to identify content gaps and opportunities before planning new content.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        client_name: { type: 'string', description: 'The client to analyse competitors for' },
+      },
+      required: ['client_name'],
+    },
+  },
+  {
+    name: 'suggest_internal_links',
+    description: 'After saving new content, identify existing pages that should link to it. Call this after every successful write_content.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        client_name: { type: 'string' },
+        new_page_url: { type: 'string' },
+        new_page_keyword: { type: 'string' },
+        new_page_title: { type: 'string' },
+      },
+      required: ['client_name', 'new_page_url', 'new_page_keyword', 'new_page_title'],
+    },
+  },
+  {
+    name: 'analyse_gsc',
+    description: 'Analyse Google Search Console data for a client. Returns near-miss keywords (ranking 5-15 with good impressions), declining pages, top performing queries, and specific content opportunities. Call this at the start of any conversation to understand the current SEO performance landscape before making recommendations.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        client_name: { type: 'string', description: 'The client to analyse' },
+        period: { type: 'string', enum: ['7d', '28d', '90d'], description: 'Time period to analyse. Use 28d for most analyses.' },
+      },
+      required: ['client_name'],
+    },
+  },
 ]
 
+// Tool access by agent type — shared tools go to every agent,
+// Ada (agent_type 'seo') gets the content + intelligence tools,
+// Theo (agent_type 'technical') gets publishing + repo write access.
+const SHARED_TOOL_NAMES = ['search_history', 'get_site_pages', 'get_keywords', 'read_file', 'read_page', 'audit_site']
+const ADA_TOOL_NAMES = ['generate_images', 'write_content', 'save_planned_task', 'update_planned_task', 'suggest_keyword', 'create_content_plan', 'analyse_competitors', 'suggest_internal_links', 'analyse_gsc']
+const THEO_TOOL_NAMES = ['publish_content', 'write_file']
+
+function getToolsForAgent(agentType: string) {
+  const names = agentType === 'technical'
+    ? [...SHARED_TOOL_NAMES, ...THEO_TOOL_NAMES]
+    : [...SHARED_TOOL_NAMES, ...ADA_TOOL_NAMES]
+  return ALL_TOOLS.filter(t => names.includes(t.name))
+}
+
 const S = {
-  btn: { background: '#6366F1', color: '#fff', border: 'none', borderRadius: 7, padding: '9px 18px', fontSize: 14, fontWeight: 500, cursor: 'pointer' } as React.CSSProperties,
-  btnSm: { background: '#1C1F2A', color: '#8B91A8', border: '1px solid #252836', borderRadius: 6, padding: '6px 12px', fontSize: 12, fontWeight: 500, cursor: 'pointer' } as React.CSSProperties,
-  label: { fontSize: 11, color: '#8B91A8', textTransform: 'uppercase' as const, letterSpacing: '1px', marginBottom: 4, display: 'block' } as React.CSSProperties,
-  hint: { fontSize: 12, color: '#5A6070', marginBottom: 8, lineHeight: 1.4 } as React.CSSProperties,
+  btn: { background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 'var(--radius)', padding: '9px 18px', fontSize: 14, fontWeight: 500, cursor: 'pointer' } as React.CSSProperties,
+  btnSm: { background: 'var(--surface-2)', color: 'var(--text-2)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '6px 12px', fontSize: 12, fontWeight: 500, cursor: 'pointer' } as React.CSSProperties,
+  label: { fontSize: 11, color: 'var(--text-2)', textTransform: 'uppercase' as const, letterSpacing: '1px', marginBottom: 4, display: 'block' } as React.CSSProperties,
+  hint: { fontSize: 12, color: 'var(--text-dim)', marginBottom: 8, lineHeight: 1.4 } as React.CSSProperties,
   field: { marginBottom: 24 } as React.CSSProperties,
-  sectionHead: { fontSize: 13, fontWeight: 600, color: '#E2E4EE', marginBottom: 16, paddingBottom: 10, borderBottom: '1px solid #252836' } as React.CSSProperties,
+  sectionHead: { fontSize: 13, fontWeight: 600, color: 'var(--text)', marginBottom: 16, paddingBottom: 10, borderBottom: '1px solid var(--border)' } as React.CSSProperties,
   section: { marginBottom: 32 } as React.CSSProperties,
 }
 
@@ -257,19 +573,81 @@ export default function AgentPage() {
   const [sitePages, setSitePages] = useState<Record<string, SitePage[]>>({})
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
+  const [agentStatus, setAgentStatus] = useState<string | null>(null)
+  const [taskLog, setTaskLog] = useState<TaskEntry[]>([])
+  const [thoughts, setThoughts] = useState<string[]>([])
+  const autoSendRef = useRef(false)
+  const taskLogRef = useRef<TaskEntry[]>([])
+  const thoughtsRef = useRef<string[]>([])
   const [settings, setSettings] = useState<Partial<Agent>>({})
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
+  const [userId, setUserId] = useState<string | null>(null)
+  const [workspaceId, setWorkspaceId] = useState<string | null>(null)
+  const [gscRows, setGscRows] = useState<Record<string, GscRow[]>>({})
   const scroller = useRef<HTMLDivElement>(null)
+
+  // Map tool names → human-readable status labels
+  const TOOL_STATUS: Record<string, string> = {
+    audit_site: 'Auditing site…',
+    get_site_pages: 'Loading site pages…',
+    search_history: 'Checking content history…',
+    save_planned_task: 'Saving task to queue…',
+    update_planned_task: 'Updating planned task…',
+    write_file: 'Writing to GitHub…',
+    read_file: 'Reading file from repo…',
+    read_page: 'Reading live page…',
+    generate_images: 'Generating images with Nano Banana…',
+    get_keywords: 'Loading keyword bank…',
+    write_content: 'Saving draft…',
+    publish_content: 'Publishing…',
+    suggest_keyword: 'Saving keyword suggestion…',
+    create_content_plan: 'Building content calendar…',
+    analyse_competitors: 'Analysing competitor sites…',
+    suggest_internal_links: 'Finding internal link opportunities…',
+    analyse_gsc: 'Analysing Search Console data…',
+  }
 
   useEffect(() => {
     if (!id) return
+    supabase.auth.getUser().then(async ({ data }) => {
+      const uid = data.user?.id ?? null
+      setUserId(uid)
+      if (uid) {
+        const { data: ws } = await supabase.from('workspaces').select('id').eq('owner_id', uid).maybeSingle()
+        if (ws) setWorkspaceId(ws.id)
+      }
+    })
     loadAgent(); loadClients(); loadConversations(); loadPlannedTasks()
+    const params = new URLSearchParams(window.location.search)
+    const convParam = params.get('conversation')
+    if (convParam) loadMessages(convParam)
+    const prefill = params.get('draft')
+    const autoSend = params.get('send') === '1'
+    const brief = params.get('brief')
+    const briefPos = params.get('position')
+    const briefImpressions = params.get('impressions')
+    if (brief) {
+      const msg = `I want to push "${decodeURIComponent(brief)}" from position ${briefPos || '?'} to page 1. It's currently getting ${briefImpressions || '?'} impressions. Analyse this keyword and recommend a content approach.`
+      setDraft(msg)
+      autoSendRef.current = true
+    } else if (prefill) {
+      setDraft(decodeURIComponent(prefill))
+      if (autoSend) autoSendRef.current = true
+    }
   }, [id])
 
   useEffect(() => {
     if (scroller.current) scroller.current.scrollTop = scroller.current.scrollHeight
   }, [messages])
+
+  // Auto-send when ?send=1 — fires once agent and clients are loaded
+  useEffect(() => {
+    if (autoSendRef.current && agent && clients.length > 0 && draft.trim() && !sending) {
+      autoSendRef.current = false
+      send()
+    }
+  }, [agent, clients])
 
   async function loadAgent() {
     const { data } = await supabase.from('agents').select('*').eq('id', id).single()
@@ -277,10 +655,25 @@ export default function AgentPage() {
   }
 
   async function loadClients() {
-    const { data } = await supabase.from('client_profiles').select('id,name,description,icp,usp,brand_voice,content_goals,competitors,file_tree,github_repo').order('name')
+    const { data } = await supabase.from('client_profiles').select('id,name,description,icp,usp,brand_voice,content_goals,competitors,file_tree,github_repo,slug,pricing_info,team_info,trust_signals,service_differentiators,location_info,target_keywords,content_tone,avoid_topics,cta_approach,schema_type').order('name')
     const clientList = data || []
     setClients(clientList)
     loadSitePages(clientList)
+    loadGscData(clientList)
+  }
+
+  async function loadGscData(clientList: Client[]) {
+    const gsc: Record<string, GscRow[]> = {}
+    for (const c of clientList) {
+      const { data } = await supabase.from('search_performance')
+        .select('query,page,position,impressions,clicks,ctr,period_start,period_end')
+        .eq('client_id', c.id)
+        .not('query', 'in', '("__total__","__page__","__device__")')
+        .order('impressions', { ascending: false })
+        .limit(200)
+      if (data && data.length > 0) gsc[c.id] = data
+    }
+    setGscRows(gsc)
   }
 
   async function loadSitePages(clientList: Client[]) {
@@ -303,22 +696,175 @@ export default function AgentPage() {
   }
 
   async function newConversation() {
-    const { data } = await supabase.from('conversations').insert({ agent_id: id, title: 'New conversation' }).select().single()
+    let uid = userId
+    if (!uid) {
+      const { data: authData } = await supabase.auth.getUser()
+      uid = authData.user?.id ?? null
+      if (uid) setUserId(uid)
+    }
+    const { data } = await supabase.from('conversations').insert({ agent_id: id, title: 'New conversation', user_id: uid }).select().single()
     if (data) { setConversations(prev => [data, ...prev]); setActiveConv(data.id); setMessages([]) }
+  }
+
+  async function deleteConversation(convId: string, e: React.MouseEvent) {
+    e.stopPropagation()
+    if (!confirm('Delete this conversation? This cannot be undone.')) return
+    await supabase.from('messages').delete().eq('conversation_id', convId)
+    await supabase.from('conversations').delete().eq('id', convId)
+    setConversations(prev => prev.filter(c => c.id !== convId))
+    if (activeConv === convId) { setActiveConv(null); setMessages([]) }
   }
 
   async function loadMessages(convId: string) {
     setActiveConv(convId)
+    const url = new URL(window.location.href)
+    url.searchParams.set('conversation', convId)
+    window.history.replaceState(null, '', url.toString())
     const { data } = await supabase.from('messages').select('*').eq('conversation_id', convId).order('created_at')
-    setMessages(data || [])
+    const parsed = (data || []).map((m: any) => {
+      if (m.role !== 'assistant') return m
+      const { content, taskLog, thoughts } = decodeMessageMeta(m.content || '')
+      return { ...m, content, _taskLog: taskLog, _thoughts: thoughts }
+    })
+    setMessages(parsed)
+    // Restore task log from the last assistant message that used tools
+    const lastWithTasks = [...parsed].reverse().find(m => m.role === 'assistant' && m._taskLog?.length > 0)
+    setTaskLog(lastWithTasks?._taskLog || [])
+    taskLogRef.current = lastWithTasks?._taskLog || []
   }
 
+  // Holds the card data for a draft saved by write_content during the current
+  // agentic loop — attached to the assistant message when the reply is saved.
+  const pendingDraftCardRef = useRef<DraftCard | null>(null)
+
   async function handleToolCall(toolName: string, toolInput: any, convId: string): Promise<string> {
+    // ── write_content: save a markdown draft to content_outputs (Ada) ──────────
+    if (toolName === 'write_content') {
+      const client = clients.find(c => c.name.toLowerCase().includes((toolInput.client_name || '').toLowerCase()))
+      if (!client) return JSON.stringify({ success: false, error: `Could not find client matching "${toolInput.client_name}".` })
+      try {
+        const cleaned = cleanContent(toolInput.content || '')
+        const wordCount = toolInput.word_count || cleaned.split(/\s+/).filter(Boolean).length
+        let uid = userId
+        if (!uid) { const { data: authData } = await supabase.auth.getUser(); uid = authData.user?.id ?? null }
+
+        const { data: output, error: outputError } = await supabase.from('content_outputs').insert({
+          workspace_id: workspaceId,
+          client_id: client.id,
+          user_id: uid,
+          agent_type: 'seo',
+          title: toolInput.title,
+          content: cleaned,
+          primary_keyword: toolInput.primary_keyword,
+          meta_description: toolInput.meta_description || '',
+          word_count: wordCount,
+          approved: false,
+          source: 'chat',
+          format: 'markdown',
+          images: toolInput.images || [],
+          notes: 'Draft created by Ada. Awaiting review.',
+        }).select().single()
+
+        if (outputError || !output) {
+          return JSON.stringify({ success: false, error: 'Failed to save draft.' })
+        }
+
+        fetch('/api/agent-activity', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ agent_id: id, client_id: client.id, action: 'content_created', detail: { output_id: output.id, title: toolInput.title, slug: toolInput.slug, primary_keyword: toolInput.primary_keyword }, tokens_used: 0 }),
+        }).catch((err: any) => console.error('[write_content] agent-activity log failed:', err?.message))
+
+        if (workspaceId) {
+          fetch('/api/notifications/output-ready', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              workspace_id: workspaceId,
+              output_id: output.id,
+              title: toolInput.title,
+              client_name: client.name,
+              primary_keyword: toolInput.primary_keyword,
+              word_count: wordCount,
+            }),
+          }).catch((err: any) => console.error('[write_content] output-ready notification failed:', err?.message))
+        }
+
+        pendingDraftCardRef.current = {
+          title: toolInput.title,
+          word_count: wordCount,
+          image_count: (toolInput.images || []).length,
+          review_url: `/outputs/${output.id}`,
+        }
+
+        return JSON.stringify({ success: true, output_id: output.id, message: 'Draft saved successfully. Title: "' + toolInput.title + '". It is now in your Outputs queue for review at /outputs/' + output.id + '.', review_url: '/outputs/' + output.id })
+      } catch (e: any) { return JSON.stringify({ success: false, error: e?.message || 'Failed to save draft.' }) }
+    }
+
+    // ── publish_content: publish an approved draft to the client site (Theo) ───
+    if (toolName === 'publish_content') {
+      try {
+        const { data: output } = await supabase.from('content_outputs').select('*').eq('id', toolInput.output_id).single()
+        if (!output) return JSON.stringify({ success: false, error: 'Output not found' })
+        if (!output.approved) return JSON.stringify({ success: false, error: 'Output is not approved. Ask the user to approve it first.' })
+
+        const { data: connection } = await supabase.from('site_connections').select('*').eq('client_id', output.client_id).limit(1).maybeSingle()
+        const platform = toolInput.platform_override || connection?.platform
+        if (!platform) return JSON.stringify({ success: false, error: 'No platform configured for this client. Add a site connection first.' })
+
+        const publishRes = await fetch('/api/connections/publish', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ output_id: toolInput.output_id, connection_id: connection?.id }),
+        })
+        const publishData = await publishRes.json()
+        if (!publishRes.ok || !publishData.success) {
+          return JSON.stringify({ success: false, error: publishData.error || 'Publishing failed.' })
+        }
+        return JSON.stringify({ success: true, platform, published_url: publishData.published_url, message: 'Published successfully to ' + platform + '. Live at: ' + publishData.published_url })
+      } catch (e: any) { return JSON.stringify({ success: false, error: e?.message || 'Publishing failed.' }) }
+    }
+
+    // ── generate_images: parallel image generation → Supabase Storage ──────────
+    if (toolName === 'generate_images') {
+      const currentClient = clients.find(c => c.name.toLowerCase().includes((toolInput.client_name || '').toLowerCase()))
+      const clientStyleContext = currentClient ? [
+        `Setting: always a real home in ${currentClient.location_info || 'the UK'}, never a clinic.`,
+        `Target audience: ${currentClient.icp ? currentClient.icp.slice(0, 200) : 'general public'}.`,
+        `Brand feel: ${currentClient.content_tone || currentClient.brand_voice?.slice(0, 100) || 'professional and reassuring'}.`,
+      ].join(' ') : ''
+      const images: Array<{ prompt: string; alt_text: string; filename: string }> = toolInput.images || []
+      if (!images.length) return JSON.stringify({ success: false, error: 'No images provided.' })
+      const results = await Promise.all(images.map(async (img) => {
+        try {
+          const enhancedPrompt = clientStyleContext
+            ? `${img.prompt}\n\nSTYLE REQUIREMENTS: ${clientStyleContext} Natural home environment, never clinical. Warm, documentary photography style. Natural lighting. Real, unstaged feel. No white coats or clinical equipment. High quality, editorial standard.`
+            : img.prompt
+          const res = await fetch('/api/generate-image', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ prompt: enhancedPrompt, filename: img.filename, client_id: currentClient?.id || null, workspace_id: workspaceId }),
+          })
+          const data = await res.json()
+          if (data.error) return { error: data.error, filename: img.filename }
+          return { url: data.url, filename: data.filename, alt_text: img.alt_text, storage_path: data.storage_path }
+        } catch { return { error: 'Generation failed.', filename: img.filename } }
+      }))
+      const successful = results.filter((r: any) => !r.error)
+      const failed = results.filter((r: any) => r.error)
+      return JSON.stringify({
+        success: true,
+        images: successful,
+        failed: failed.length ? failed : undefined,
+        message: `Generated ${successful.length} image(s)${failed.length ? `, ${failed.length} failed` : ''}. Reference each image in the markdown post using its url.`,
+      })
+    }
+
     if (toolName === 'save_planned_task') {
       const client = clients.find(c => c.name.toLowerCase().includes((toolInput.client_name || '').toLowerCase()))
       if (!client) return `Could not find client matching "${toolInput.client_name}".`
       const { data, error } = await supabase.from('planned_tasks').insert({
-        agent_id: id, client_id: client.id, conversation_id: convId,
+        agent_id: id, client_id: client.id, conversation_id: convId, user_id: userId ?? (await supabase.auth.getUser()).data.user?.id,
         content_type: toolInput.content_type || 'blog_post',
         primary_keyword: toolInput.primary_keyword,
         supporting_keywords: toolInput.supporting_keywords || [],
@@ -354,7 +900,15 @@ export default function AgentPage() {
         const res = await fetch(`/api/github?client_id=${client.id}&path=${encodeURIComponent(toolInput.file_path)}`)
         const data = await res.json()
         if (data.error) return `Could not read file: ${data.error}`
-        return `File: ${toolInput.file_path}\n\n${data.content}`
+        const content: string = data.content
+
+        // ── No trimming needed with the split-file structure ─────────────────────
+        // blogContent.tsx is now a slim index (~80 lines). Returns in full — small.
+        // Individual post files (blogPosts/[slug].tsx) are 300-500 lines each.
+        // Reading any single post file is safe without trimming.
+        // The `full` parameter is kept for backward compat but does nothing.
+
+        return `File: ${toolInput.file_path}\n\n${content}`
       } catch { return 'Failed to read file.' }
     }
 
@@ -422,18 +976,71 @@ export default function AgentPage() {
     if (toolName === 'search_history') {
       const client = clients.find(c => c.name.toLowerCase().includes((toolInput.client_name || '').toLowerCase()))
       if (!client) return `Could not find client matching "${toolInput.client_name}".`
+      const { data } = await supabase.from('content_history').select('title,url,primary_keyword,summary,published_at,performance_notes,ranking_position,ranking_date,traffic_notes').eq('client_id', client.id).order('published_at', { ascending: false })
+      if (!data || data.length === 0) return `No content history for ${client.name} yet — this client has no published pieces on record.`
       const query = (toolInput.query || '').toLowerCase()
-      const { data } = await supabase.from('content_history').select('title,url,primary_keyword,summary,published_at,performance_notes').eq('client_id', client.id).order('published_at', { ascending: false })
-      if (!data || data.length === 0) return `No content history found for ${client.name}.`
-      const matches = data.filter(h =>
-        (h.title || '').toLowerCase().includes(query) ||
-        (h.primary_keyword || '').toLowerCase().includes(query) ||
-        (h.summary || '').toLowerCase().includes(query)
-      )
-      if (matches.length === 0) return `No published content matching "${toolInput.query}" found for ${client.name}. Total history: ${data.length} pieces.`
-      return `Content history matching "${toolInput.query}" for ${client.name}:\n\n` + matches.map(h =>
-        `Title: ${h.title}\nKeyword: ${h.primary_keyword || 'not set'}\nURL: ${h.url || 'not published'}\nPublished: ${h.published_at ? new Date(h.published_at).toLocaleDateString('en-GB') : 'unknown'}\nAngle: ${h.summary || 'no summary'}\nPerformance: ${h.performance_notes || 'no data yet'}`
-      ).join('\n\n---\n\n')
+      const list = query
+        ? data.filter(h => (h.title || '').toLowerCase().includes(query) || (h.primary_keyword || '').toLowerCase().includes(query) || (h.summary || '').toLowerCase().includes(query))
+        : data
+      const header = query && list.length < data.length
+        ? `${list.length} of ${data.length} pieces match "${toolInput.query}" for ${client.name}:`
+        : `Full content history for ${client.name} (${data.length} pieces):`
+      return header + '\n\n' + (list.length > 0 ? list : data).map(h =>
+        `• "${h.title}" [${h.primary_keyword || 'no keyword'}]${h.url ? ` → ${h.url}` : ' (not published)'}\n  Published: ${h.published_at ? new Date(h.published_at).toLocaleDateString('en-GB') : 'unknown'} | Angle: ${h.summary || 'no summary'}${h.ranking_position ? ` | Ranking: #${h.ranking_position}` : ''}${h.ranking_date ? ` (as of ${new Date(h.ranking_date).toLocaleDateString('en-GB')})` : ''}${h.traffic_notes ? ` | Traffic: ${h.traffic_notes}` : ''}`
+      ).join('\n')
+    }
+
+    if (toolName === 'get_site_pages') {
+      const client = clients.find(c => c.name.toLowerCase().includes((toolInput.client_name || '').toLowerCase()))
+      if (!client) return `Could not find client matching "${toolInput.client_name}".`
+      const pages = sitePages[client.id] || []
+      if (pages.length === 0) return `No crawled pages for ${client.name}. Run a site crawl first from the client profile.`
+      let filtered = pages
+      if (toolInput.filter === 'no_meta') filtered = pages.filter(p => !p.meta_description)
+      else if (toolInput.filter === 'no_h1') filtered = pages.filter(p => !p.h1)
+      else if (toolInput.filter === 'thin') filtered = pages.filter(p => p.word_count !== null && p.word_count < 300)
+      // Keyword relevance filtering — when a keyword is supplied, return the top 10 scoring pages
+      // plus any stubs (word_count = 0/null) worth linking to, instead of all 100 pages.
+      // Scoring: count how many keyword words appear in the URL, title, H1, or content_summary.
+      if (toolInput.keyword) {
+        const words = (toolInput.keyword as string).toLowerCase().split(/\s+/).filter(Boolean)
+        const scored = filtered.map(p => {
+          const haystack = [p.url, p.title, p.h1, p.content_summary].filter(Boolean).join(' ').toLowerCase()
+          const score = words.reduce((s: number, w: string) => s + (haystack.includes(w) ? 1 : 0), 0)
+          return { page: p, score }
+        })
+        const stubs = scored.filter(({ page }) => !page.word_count || page.word_count === 0)
+        const relevant = scored
+          .filter(({ score, page }) => score > 0 && (page.word_count || 0) > 0)
+          .sort((a, b) => b.score - a.score)
+          .slice(0, 10)
+        const relevantUrls = new Set(relevant.map(r => r.page.url))
+        const merged = [...relevant, ...stubs.filter(s => !relevantUrls.has(s.page.url))]
+        filtered = merged.map(({ page }) => page)
+      }
+      const filterLabel = toolInput.filter && toolInput.filter !== 'all' ? ` (filter: ${toolInput.filter})` : ''
+      const kwLabel = toolInput.keyword ? ` | keyword: "${toolInput.keyword}"` : ''
+      return `Site pages for ${client.name}${filterLabel}${kwLabel} — ${filtered.length} pages:\n\n` + filtered.map(p => {
+        const meta = !p.meta_description ? ' [NO META]' : ''
+        const h1 = p.h1 ? ` | H1: ${p.h1}` : ' [NO H1]'
+        const words = p.word_count ? ` | ${p.word_count}w` : ''
+        return `${p.url}${h1}${meta}${words}`
+      }).join('\n')
+    }
+
+    if (toolName === 'get_keywords') {
+      const client = clients.find(c => c.name.toLowerCase().includes((toolInput.client_name || '').toLowerCase()))
+      if (!client) return `Could not find client matching "${toolInput.client_name}".`
+      const { data } = await supabase.from('keyword_banks').select('keyword,intent,funnel_stage,monthly_volume,difficulty,current_position,content_targeting_this,cluster,priority,opportunity_score').eq('client_id', client.id).order('opportunity_score', { ascending: false, nullsFirst: false }).limit(200)
+      if (!data || data.length === 0) return `No keywords in bank for ${client.name}. Add some in the Keywords section.`
+      let filtered = data
+      if (toolInput.filter === 'untargeted') filtered = data.filter(k => !k.content_targeting_this)
+      else if (toolInput.filter === 'ranking') filtered = data.filter(k => k.current_position)
+      else if (toolInput.filter === 'high_volume') filtered = data.filter(k => k.monthly_volume >= 1000)
+      const label = toolInput.filter && toolInput.filter !== 'all' ? ` (filter: ${toolInput.filter})` : ''
+      return `Keyword bank for ${client.name}${label} — ${filtered.length} keywords:\n\n` + filtered.map(k =>
+        `• "${k.keyword}" | ${k.intent || '—'} | ${k.funnel_stage || '—'} | vol: ${k.monthly_volume || '?'} | KD: ${k.difficulty || '?'} | pos: ${k.current_position || 'not ranking'} | opp_score: ${k.opportunity_score ?? '—'} | targeting: ${k.content_targeting_this || 'nothing yet'}${k.cluster ? ` | cluster: ${k.cluster}` : ''}`
+      ).join('\n')
     }
 
     if (toolName === 'write_file') {
@@ -452,8 +1059,230 @@ export default function AgentPage() {
         })
         const data = await res.json()
         if (data.error) return `Failed to write file: ${data.error}`
-        return `File written successfully: ${toolInput.file_path}\nCommit: ${toolInput.commit_message}\nURL: ${data.url}`
+
+        // ── Fix 2: unified content record ────────────────────────────────────────
+        const fileTitle = toolInput.file_path.split('/').pop()?.replace(/\.[^.]+$/, '') || toolInput.file_path
+        let uid = userId
+        if (!uid) { const { data: authData } = await supabase.auth.getUser(); uid = authData.user?.id ?? null }
+        const { data: outputRow } = await supabase.from('content_outputs').insert({
+          client_id: client.id,
+          user_id: uid,
+          agent_type: 'seo',
+          title: fileTitle,
+          content: cleanContent(toolInput.content.slice(0, 50000)), // cap at 50k chars for DB
+          primary_keyword: fileTitle,
+          approved: false,
+          notes: `Written by Ada via write_file. Path: ${toolInput.file_path}`,
+        }).select().single()
+        if (outputRow) {
+          await supabase.from('content_history').insert({
+            client_id: client.id,
+            user_id: uid,
+            title: fileTitle,
+            primary_keyword: fileTitle,
+            summary: toolInput.commit_message || `File written: ${toolInput.file_path}`,
+            published_at: new Date().toISOString(),
+          })
+        }
+        // ─────────────────────────────────────────────────────────────────────────
+
+        // ── Notify: output ready ──────────────────────────────────────────────
+        if (outputRow && workspaceId) {
+          fetch('/api/notifications/output-ready', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              workspace_id: workspaceId,
+              output_id: outputRow.id,
+              title: fileTitle,
+              client_name: client.name,
+              primary_keyword: fileTitle,
+            }),
+          }).catch((err: any) => console.error('[write_file] output-ready notification failed:', err?.message))
+        }
+        // ─────────────────────────────────────────────────────────────────────
+
+        return `File committed to production branch: ${toolInput.file_path}\nCommit: ${toolInput.commit_message}\nURL: ${data.url}`
       } catch { return 'Failed to write file.' }
+    }
+
+    // ── suggest_keyword: Ada proposes a keyword to keyword_suggestions ────────
+    if (toolName === 'suggest_keyword') {
+      const client = clients.find(c => c.name.toLowerCase().includes((toolInput.client_name || '').toLowerCase()))
+      if (!client) return `Could not find client matching "${toolInput.client_name}".`
+      const { data, error } = await supabase.from('keyword_suggestions').insert({
+        client_id: client.id,
+        keyword: toolInput.keyword,
+        rationale: toolInput.rationale || null,
+        monthly_volume_estimate: toolInput.monthly_volume_estimate || null,
+        difficulty_estimate: toolInput.difficulty_estimate || null,
+        intent: toolInput.intent || null,
+        funnel_stage: toolInput.funnel_stage || null,
+        cluster: toolInput.cluster || null,
+        status: 'pending',
+        suggested_by: id,
+      }).select().single()
+      if (error) return `Failed to save keyword suggestion: ${error.message}`
+      await fetch('/api/agent-activity', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent_id: id, client_id: client.id, action: 'keyword_suggestion', detail: `Suggested keyword: "${toolInput.keyword}"`, tokens_used: 0 }) })
+      return `Keyword suggestion saved: "${toolInput.keyword}" — awaiting user approval in /keywords.`
+    }
+
+    // ── create_content_plan: Ada builds a content calendar ───────────────────
+    if (toolName === 'create_content_plan') {
+      const client = clients.find(c => c.name.toLowerCase().includes((toolInput.client_name || '').toLowerCase()))
+      if (!client) return `Could not find client matching "${toolInput.client_name}".`
+      const entries: any[] = toolInput.entries || []
+      if (!entries.length) return 'No calendar entries provided in the plan.'
+      try {
+        const inserts = entries.map(e => ({
+          client_id: client.id,
+          workspace_id: workspaceId,
+          title: e.title,
+          primary_keyword: e.primary_keyword || null,
+          content_type: e.content_type || 'blog_post',
+          scheduled_date: e.scheduled_date || null,
+          status: 'planned',
+          notes: e.notes || null,
+        }))
+        const { data, error } = await supabase.from('content_calendar').insert(inserts).select()
+        if (error) {
+          console.error('create_content_plan error:', error)
+          return JSON.stringify({ success: false, error: error.message, hint: (error as any).hint })
+        }
+        await fetch('/api/agent-activity', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent_id: id, client_id: client.id, action: 'content_plan', detail: `Created content plan with ${entries.length} entries`, tokens_used: 0 }) })
+        return `Content plan created: ${entries.length} entries added to the calendar.\n\nEntries:\n${entries.map(e => `• ${e.title}${e.scheduled_date ? ` (${e.scheduled_date})` : ''}`).join('\n')}`
+      } catch (e: any) {
+        console.error('create_content_plan exception:', e)
+        return JSON.stringify({ success: false, error: e.message })
+      }
+    }
+
+    // ── analyse_competitors: Ada summarises competitor insights ───────────────
+    if (toolName === 'analyse_competitors') {
+      const client = clients.find(c => c.name.toLowerCase().includes((toolInput.client_name || '').toLowerCase()))
+      if (!client) return `Could not find client matching "${toolInput.client_name}".`
+      const { data: compSites } = await supabase.from('competitor_sites').select('id,url,name').eq('client_id', client.id)
+      if (!compSites || compSites.length === 0) return `No competitors registered for ${client.name}. Add them in the Competitors tab on the client page.`
+      const { data: compPages } = await supabase.from('competitor_pages').select('url,title,h1,word_count,keywords,content_summary,competitor_id').eq('client_id', client.id).order('word_count', { ascending: false }).limit(50)
+      const perSite = compSites.map(site => {
+        const pages = (compPages || []).filter(p => p.competitor_id === site.id)
+        return `${site.name || site.url} (${pages.length} pages crawled):\n${pages.slice(0, 10).map(p => `  ${p.url} — ${p.word_count || 0}w — ${p.content_summary || p.title || 'No summary'}`).join('\n') || '  No pages crawled yet.'}`
+      })
+      await fetch('/api/agent-activity', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent_id: id, client_id: client.id, action: 'competitor_analysis', detail: `Analysed ${compSites.length} competitors`, tokens_used: 0 }) })
+      return `Competitor analysis for ${client.name}:\n\n${perSite.join('\n\n')}`
+    }
+
+    // ── suggest_internal_links ─────────────────────────────────────────────────
+    if (toolName === 'suggest_internal_links') {
+      const client = clients.find(c => c.name.toLowerCase().includes((toolInput.client_name || '').toLowerCase()))
+      if (!client) return `Could not find client matching "${toolInput.client_name}".`
+      const pages = sitePages[client.id] || []
+      if (pages.length === 0) return 'No crawled pages for this client — run a site crawl first.'
+      const kwWords = (toolInput.new_page_keyword || '').toLowerCase().split(/\s+/).filter(Boolean)
+      const titleWords = (toolInput.new_page_title || '').toLowerCase().split(/\s+/).filter(Boolean)
+      const allWords = [...new Set([...kwWords, ...titleWords])]
+      const scored = pages
+        .filter(p => p.url !== toolInput.new_page_url)
+        .map(p => {
+          const haystack = [p.title, p.h1, p.content_summary].filter(Boolean).join(' ').toLowerCase()
+          const score = allWords.reduce((s, w) => s + (haystack.includes(w) ? 1 : 0), 0)
+          return { page: p, score }
+        })
+        .filter(s => s.score > 0)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 5)
+      if (scored.length === 0) return `No obviously relevant pages found to link to "${toolInput.new_page_title}".`
+      const suggestions = scored.map(s => `${s.page.title || s.page.url} (${s.page.url}) — suggested anchor: '${kwWords.slice(0, 3).join(' ')}'`)
+      const body = `Internal links to add for "${toolInput.new_page_title}":\n${suggestions.join('\n')}`
+      await fetch('/api/briefing-items', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client_id: client.id, type: 'suggestion', title: 'Internal links needed', body, action_url: `/clients/${client.id}?tab=pages`, priority: 30, dismissed: false }) })
+      await fetch('/api/agent-activity', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent_id: id, client_id: client.id, action: 'internal_links_suggested', detail: `Suggested ${suggestions.length} internal links for "${toolInput.new_page_title}"`, tokens_used: 0 }) })
+      return `Suggested internal links:\n${suggestions.join('\n')}`
+    }
+
+    if (toolName === 'analyse_gsc') {
+      const client = clients.find(c => c.name.toLowerCase().includes((toolInput.client_name || '').toLowerCase()))
+      if (!client) return `Could not find client matching "${toolInput.client_name}".`
+      const period = toolInput.period || '28d'
+
+      const { data: rows } = await supabase
+        .from('search_performance')
+        .select('*')
+        .eq('client_id', client.id)
+        .not('query', 'in', '("__total__","__page__","__device__")')
+        .order('impressions', { ascending: false })
+        .limit(200)
+
+      const { data: totalsAll } = await supabase
+        .from('search_performance')
+        .select('*')
+        .eq('client_id', client.id)
+        .eq('query', '__total__')
+
+      if (!rows || rows.length === 0) return `No GSC data for ${client.name}. Run a sync from the Search Performance tab first.`
+
+      // Sort totals by period_start ascending → [90d, 28d, 7d]
+      const sortedTotals = (totalsAll || []).sort((a: any, b: any) => new Date(a.period_start).getTime() - new Date(b.period_start).getTime())
+      let totalRow: any = null
+      if (period === '90d') totalRow = sortedTotals[0]
+      else if (period === '28d') totalRow = sortedTotals[1] ?? sortedTotals[0]
+      else totalRow = sortedTotals[sortedTotals.length - 1]
+
+      const totalClicks = totalRow?.clicks ?? rows.reduce((a: number, r: any) => a + r.clicks, 0)
+      const totalImpressions = totalRow?.impressions ?? rows.reduce((a: number, r: any) => a + r.impressions, 0)
+      const avgPos = totalRow?.position ?? (rows.length > 0 ? rows.reduce((a: number, r: any) => a + r.position * (r.impressions || 1), 0) / Math.max(rows.reduce((a: number, r: any) => a + (r.impressions || 1), 0), 1) : 0)
+      const avgCtr = totalRow?.ctr ?? (rows.length > 0 ? rows.reduce((a: number, r: any) => a + r.ctr, 0) / rows.length : 0)
+
+      const nearMisses = rows
+        .filter((r: any) => r.position >= 5 && r.position <= 15 && r.impressions > 50)
+        .sort((a: any, b: any) => b.impressions - a.impressions)
+        .slice(0, 10)
+        .map((r: any) => ({
+          query: r.query,
+          position: Math.round(r.position * 10) / 10,
+          impressions: r.impressions,
+          clicks: r.clicks,
+          ctr: (r.ctr * 100).toFixed(1) + '%',
+          opportunity: `Moving from position ${Math.round(r.position)} to page 1 could drive ~${Math.round(r.impressions * 0.28)} additional clicks/month`,
+        }))
+
+      const lowCtr = rows
+        .filter((r: any) => r.position <= 10 && r.ctr < 0.03 && r.impressions > 100)
+        .map((r: any) => ({
+          query: r.query,
+          position: Math.round(r.position * 10) / 10,
+          impressions: r.impressions,
+          ctr: (r.ctr * 100).toFixed(1) + '%',
+          issue: 'Ranking well but low CTR — title tag or meta description likely needs improvement',
+        }))
+
+      // Discover new keywords from GSC data
+      let newSuggestions = 0
+      if (workspaceId) {
+        try {
+          const { discoverKeywordsFromGSC } = await import('@/lib/gsc-keywords')
+          newSuggestions = await discoverKeywordsFromGSC(
+            supabase as any,
+            client.id,
+            workspaceId,
+            rows.map((r: any) => ({ query: r.query, impressions: r.impressions, clicks: r.clicks, position: r.position }))
+          )
+        } catch { /* non-critical */ }
+      }
+
+      return JSON.stringify({
+        period,
+        summary: {
+          total_clicks: totalClicks,
+          total_impressions: totalImpressions,
+          average_position: Math.round(avgPos * 10) / 10,
+          ctr: (avgCtr * 100).toFixed(2) + '%',
+        },
+        near_misses: nearMisses,
+        low_ctr_opportunities: lowCtr.slice(0, 5),
+        top_queries: rows.slice(0, 10).map((r: any) => ({ query: r.query, position: Math.round(r.position * 10) / 10, clicks: r.clicks, impressions: r.impressions })),
+        insight_count: nearMisses.length + lowCtr.length,
+        keyword_discovery: { new_suggestions: newSuggestions },
+      }, null, 2)
     }
 
     return 'Unknown tool.'
@@ -461,47 +1290,158 @@ export default function AgentPage() {
 
   async function send() {
     if (!draft.trim() || !agent || sending) return
+    // Resolve userId inline so RLS inserts never fail due to async state lag
+    let uid = userId
+    if (!uid) {
+      const { data: authData } = await supabase.auth.getUser()
+      uid = authData.user?.id ?? null
+      if (uid) setUserId(uid)
+    }
     let convId = activeConv
     if (!convId) {
-      const { data } = await supabase.from('conversations').insert({ agent_id: id, title: draft.slice(0, 60) }).select().single()
-      if (!data) return
+      const { data, error } = await supabase.from('conversations').insert({ agent_id: id, title: draft.slice(0, 60), user_id: uid }).select().single()
+      if (!data) { console.error('Failed to create conversation:', error?.message); return }
       convId = data.id; setActiveConv(convId); setConversations(prev => [data, ...prev])
     }
     const userMsg: Message = { id: crypto.randomUUID(), role: 'user', content: draft, created_at: new Date().toISOString() }
     const placeholder: Message = { id: crypto.randomUUID(), role: 'assistant', content: '', created_at: new Date().toISOString() }
     setMessages(prev => [...prev, userMsg, placeholder])
     setDraft(''); setSending(true)
-    await supabase.from('messages').insert({ conversation_id: convId, role: 'user', content: userMsg.content })
-    const history = [...messages.filter(m => m.content), userMsg]
-    const systemPrompt = buildSystemPrompt(agent, clients, plannedTasks, sitePages)
+    setAgentStatus('Thinking…')
+    setTaskLog([]); taskLogRef.current = []
+    setThoughts([]); thoughtsRef.current = []
+    pendingDraftCardRef.current = null
+    await supabase.from('messages').insert({ conversation_id: convId, role: 'user', content: userMsg.content, user_id: uid })
+    const systemPrompt = buildSystemPrompt(agent, clients)
+    const addTask = (label: string, done = false) => {
+      const entry: TaskEntry = { label, done, ts: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }
+      taskLogRef.current = [...taskLogRef.current, entry]
+      setTaskLog([...taskLogRef.current])
+    }
+    const completeLastTask = () => {
+      taskLogRef.current = taskLogRef.current.map((t, i) => i === taskLogRef.current.length - 1 ? { ...t, done: true } : t)
+      setTaskLog([...taskLogRef.current])
+    }
+    // Build agentic message loop — keeps going until Ada stops using tools
+    // Strip any __META__ prefixes that snuck into state (defensive decode)
+    const apiMessages: any[] = [...messages.filter(m => m.content), userMsg].map(m => ({
+      role: m.role,
+      content: m.role === 'assistant' ? decodeMessageMeta(m.content).content : m.content,
+    }))
+    // Helper to save + display the assistant message
+    const saveReply = async (reply: string) => {
+      const stored = encodeMessageMeta(reply, taskLogRef.current, thoughtsRef.current)
+      await supabase.from('messages').insert({ conversation_id: convId, role: 'assistant', content: stored, user_id: uid })
+      await supabase.from('conversations').update({ updated_at: new Date().toISOString(), title: userMsg.content.slice(0, 60) }).eq('id', convId)
+      setMessages(prev => prev.map(m => m.id === placeholder.id ? { ...m, content: reply, _taskLog: [...taskLogRef.current], _thoughts: [...thoughtsRef.current], _draftCard: pendingDraftCardRef.current || undefined } : m))
+    }
     try {
-      const res = await fetch('/api/chat', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 4000, system: systemPrompt, tools: TOOLS, messages: history.map(m => ({ role: m.role, content: m.content })) }),
-      })
-      const data = await res.json()
-      if (data.stop_reason === 'tool_use') {
-        const toolUseBlock = data.content.find((b: any) => b.type === 'tool_use')
-        if (toolUseBlock) {
-          const toolResult = await handleToolCall(toolUseBlock.name, toolUseBlock.input, convId!)
-          const continueRes = await fetch('/api/chat', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 2000, system: systemPrompt, tools: TOOLS, messages: [...history.map(m => ({ role: m.role, content: m.content })), { role: 'assistant', content: data.content }, { role: 'user', content: [{ type: 'tool_result', tool_use_id: toolUseBlock.id, content: toolResult }] }] }),
-          })
-          const continueData = await continueRes.json()
-          const reply = (continueData.content || []).filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n')
-          await supabase.from('messages').insert({ conversation_id: convId, role: 'assistant', content: reply })
-          await supabase.from('conversations').update({ updated_at: new Date().toISOString() }).eq('id', convId)
-          setMessages(prev => prev.map(m => m.id === placeholder.id ? { ...m, content: reply } : m))
+      let loopCount = 0
+      let savedReply = false
+      while (loopCount < 12) {
+        loopCount++
+        setAgentStatus(loopCount === 1 ? 'Thinking…' : 'Working…')
+        const res = await fetch('/api/chat', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 16000, system: systemPrompt, tools: getToolsForAgent(agent.agent_type), messages: apiMessages }),
+        })
+        const data = await res.json()
+        if (data.error || !data.content) {
+          const errMsg = typeof data.error === 'string' ? data.error : (data.error?.message || 'Something went wrong — try again.')
+          const errReply = `⚠️ ${errMsg}`
+          await saveReply(errReply)
+          savedReply = true
+          break
         }
-      } else {
-        const reply = (data.content || []).filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n')
-        await supabase.from('messages').insert({ conversation_id: convId, role: 'assistant', content: reply })
-        await supabase.from('conversations').update({ updated_at: new Date().toISOString(), title: userMsg.content.slice(0, 60) }).eq('id', convId)
-        setMessages(prev => prev.map(m => m.id === placeholder.id ? { ...m, content: reply } : m))
+
+        // Capture any reasoning text Ada emits before a tool call
+        const thinkingText = (data.content || []).filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n').trim()
+        if (thinkingText) {
+          thoughtsRef.current = [...thoughtsRef.current, thinkingText]
+          setThoughts([...thoughtsRef.current])
+        }
+
+        if (data.stop_reason === 'tool_use') {
+          // Strip large content fields from write_file/write_content tool inputs before pushing
+          // to history — prevents large file contents from bloating context on every turn
+          const trimmedContent = data.content.map((b: any) => {
+            if (b.type === 'tool_use' && (b.name === 'write_file' || b.name === 'write_content') && b.input?.content?.length > 2000) {
+              return { ...b, input: { ...b.input, content: `[file content trimmed — ${b.input.content.length} chars]` } }
+            }
+            return b
+          })
+          apiMessages.push({ role: 'assistant', content: trimmedContent })
+          const toolResults: any[] = []
+          const toolBlocks = data.content.filter((b: any) => b.type === 'tool_use')
+          // Add all tasks to the log upfront and capture their indices so parallel completions
+          // can mark the correct entry done (completeLastTask only marks index length-1).
+          const taskIndices: number[] = []
+          toolBlocks.forEach((block: any) => {
+            const label = TOOL_STATUS[block.name] || `Using ${block.name.replace(/_/g, ' ')}…`
+            taskIndices.push(taskLogRef.current.length)
+            addTask(label)
+          })
+          if (toolBlocks.length > 1) {
+            setAgentStatus(`Running ${toolBlocks.length} tools in parallel…`)
+          } else if (toolBlocks.length === 1) {
+            setAgentStatus(TOOL_STATUS[toolBlocks[0].name] || `Using ${toolBlocks[0].name.replace(/_/g, ' ')}…`)
+          }
+          // Execute all tool calls in parallel — Anthropic supports multiple tool_use blocks
+          // per assistant message; results are returned as a single tool_result array.
+          const parallelResults = await Promise.all(toolBlocks.map(async (block: any, i: number) => {
+            const result = await handleToolCall(block.name, block.input, convId!)
+            // Mark this specific task done by index rather than always marking the last entry
+            taskLogRef.current = taskLogRef.current.map((t, idx) =>
+              idx === taskIndices[i] ? { ...t, done: true } : t
+            )
+            setTaskLog([...taskLogRef.current])
+            // Trim large tool results before storing in history (read_file, audit_site can return 80KB+)
+            const MAX_RESULT = 8000
+            const trimmedResult = result.length > MAX_RESULT
+              ? result.slice(0, MAX_RESULT) + `\n\n[... result truncated at ${MAX_RESULT} chars to fit context window]`
+              : result
+            return { type: 'tool_result', tool_use_id: block.id, content: trimmedResult }
+          }))
+          toolResults.push(...parallelResults)
+          apiMessages.push({ role: 'user', content: toolResults })
+        } else if (data.stop_reason === 'max_tokens') {
+          const partial = (data.content || []).filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n')
+          const reply = (partial || 'Response cut off — the file was too large to write in one go.') + '\n\n_Output was cut short. Reply "continue" to get the rest._'
+          await saveReply(reply)
+          savedReply = true
+          break
+        } else {
+          // end_turn — build reply; if empty, ask Ada to summarise so we never save a blank message
+          setAgentStatus('Done')
+          let reply = (data.content || []).filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n').trim()
+          if (!reply && taskLogRef.current.length > 0) {
+            // Ada finished silently after tool calls — ask for a one-line summary then save that
+            apiMessages.push({ role: 'assistant', content: data.content && data.content.length > 0 ? data.content : [{ type: 'text', text: '' }] })
+            apiMessages.push({ role: 'user', content: [{ type: 'text', text: 'Briefly summarise what you just did in 1-3 sentences.' }] })
+            const summaryRes = await fetch('/api/chat', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 512, system: systemPrompt, messages: apiMessages }),
+            })
+            const summaryData = await summaryRes.json()
+            reply = (summaryData.content || []).filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n').trim() || 'Done — all changes committed.'
+          } else if (!reply) {
+            reply = 'Done.'
+          }
+          await saveReply(reply)
+          savedReply = true
+          break
+        }
       }
-    } catch { setMessages(prev => prev.map(m => m.id === placeholder.id ? { ...m, content: 'Something went wrong. Try again.' } : m)) }
+      // Loop hit max iterations without saving — save what we have
+      if (!savedReply) {
+        await saveReply('Working... loop limit reached. Reply to continue.')
+      }
+    } catch (e: any) {
+      const errReply = `⚠️ ${e.message || 'Something went wrong'}`
+      try { await saveReply(errReply) } catch { setMessages(prev => prev.map(m => m.id === placeholder.id ? { ...m, content: errReply } : m)) }
+    }
     setSending(false)
+    setAgentStatus(null)
   }
 
   async function saveSettings() {
@@ -515,52 +1455,87 @@ export default function AgentPage() {
   const fmt = (d: string) => new Date(d).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
   const clock = (d: string) => new Date(d).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 
-  if (!agent) return <div style={{ color: '#8B91A8', fontSize: 14 }}>Loading...</div>
+  if (!agent) return <div style={{ color: 'var(--text-2)', fontSize: 14, padding: 40 }}>Loading...</div>
 
   return (
     <div style={{ height: 'calc(100vh - 72px)', display: 'flex', flexDirection: 'column' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 24, flexShrink: 0 }}>
-        <div style={{ width: 48, height: 48, borderRadius: 11, background: '#1C1F2A', border: '1px solid #2A2D3A', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, fontWeight: 600, color: '#6366F1', fontFamily: '"JetBrains Mono", monospace', flexShrink: 0 }}>
+        <div style={{ width: 48, height: 48, borderRadius: 11, background: 'var(--surface-3)', border: '1px solid var(--border-bright)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, fontWeight: 600, color: 'var(--accent)', fontFamily: 'var(--font-mono)', flexShrink: 0 }}>
           {agent.avatar_initials || agent.name.slice(0, 2).toUpperCase()}
         </div>
         <div style={{ flex: 1 }}>
-          <div style={{ fontSize: 20, fontWeight: 600, color: '#E2E4EE' }}>{agent.name}</div>
-          <div style={{ fontSize: 12, color: '#6366F1', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.8px' }}>{agent.role}</div>
+          <div style={{ fontSize: 20, fontWeight: 600, color: 'var(--text)', letterSpacing: '-0.3px' }}>{agent.name}</div>
+          <div style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.8px' }}>{agent.role}</div>
         </div>
         <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
           {Object.keys(sitePages).length > 0 && (
-            <span style={{ fontSize: 11, color: '#34D399', fontFamily: '"JetBrains Mono",monospace' }}>
+            <span style={{ fontSize: 11, color: 'var(--green)', fontFamily: 'var(--font-mono)' }}>
               {Object.values(sitePages).reduce((a, b) => a + b.length, 0)} pages loaded
             </span>
           )}
           {(['chat', 'settings'] as const).map(t => (
-            <button key={t} onClick={() => setTab(t)} style={{ ...S.btnSm, background: tab === t ? '#6366F1' : '#1C1F2A', color: tab === t ? '#fff' : '#8B91A8', border: tab === t ? 'none' : '1px solid #252836', textTransform: 'capitalize' }}>{t}</button>
+            <button key={t} onClick={() => setTab(t)} style={{ ...S.btnSm, background: tab === t ? 'var(--accent)' : 'var(--surface-2)', color: tab === t ? '#fff' : 'var(--text-2)', border: tab === t ? 'none' : '1px solid var(--border)', textTransform: 'capitalize', borderRadius: 99, letterSpacing: '0.3px' }}>{t}</button>
           ))}
         </div>
       </div>
 
       {tab === 'chat' && (
         <div style={{ display: 'flex', gap: 16, flex: 1, minHeight: 0 }}>
-          <div style={{ width: 220, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{ width: 224, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
             <button style={{ ...S.btn, width: '100%', marginBottom: 4 }} onClick={newConversation}>+ New chat</button>
+
+            {/* Live activity queue */}
+            {(sending || taskLog.length > 0) && (
+              <div style={{ marginBottom: 8, background: 'var(--bg)', border: `1px solid ${sending ? 'rgba(79,127,255,0.3)' : 'var(--border)'}`, borderRadius: 'var(--radius)', overflow: 'hidden' }}>
+                <div style={{ padding: '7px 10px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                  {sending && <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--accent)', display: 'inline-block', animation: 'pulse 1.5s ease-in-out infinite' }} />}
+                  <span style={{ fontSize: 10, color: sending ? 'var(--accent)' : 'var(--text-2)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.8px' }}>
+                    {sending ? 'Active' : 'Last session'}
+                  </span>
+                </div>
+                <div style={{ padding: '6px 0' }}>
+                  {sending && agentStatus && !taskLog.find(t => !t.done && t.label === agentStatus) && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '5px 10px' }}>
+                      <span style={{ width: 5, height: 5, borderRadius: '50%', background: 'var(--accent)', flexShrink: 0, animation: 'pulse 1s ease-in-out infinite' }} />
+                      <span style={{ fontSize: 12, color: 'var(--text-2)' }}>{agentStatus}</span>
+                    </div>
+                  )}
+                  {taskLog.map((t, i) => (
+                    <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '5px 10px' }}>
+                      <span style={{ fontSize: 11, flexShrink: 0, color: t.done ? 'var(--green)' : 'var(--accent)' }}>{t.done ? '✓' : '◌'}</span>
+                      <span style={{ fontSize: 12, color: t.done ? 'var(--text-2)' : 'var(--text)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.label.replace('…', '')}</span>
+                      <span style={{ fontSize: 10, color: 'var(--text-dim)', fontFamily: 'var(--font-mono)', flexShrink: 0 }}>{t.ts}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {plannedTasks.length > 0 && (
               <div style={{ marginBottom: 8 }}>
-                <div style={{ fontSize: 10, color: '#8B91A8', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: 6, padding: '0 2px' }}>Planned tasks</div>
+                <div style={{ fontSize: 10, color: 'var(--text-2)', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: 6, padding: '0 2px' }}>Planned tasks</div>
                 {plannedTasks.slice(0, 5).map(t => (
-                  <div key={t.id} style={{ padding: '8px 10px', borderRadius: 7, background: '#1C1F2A', border: '1px solid #252836', marginBottom: 4 }}>
-                    <div style={{ fontSize: 12, color: '#E2E4EE', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.primary_keyword}</div>
-                    <div style={{ fontSize: 10, color: t.status === 'ready' ? '#34D399' : '#F59E0B', marginTop: 2, textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: 600 }}>{t.status}</div>
+                  <div key={t.id} style={{ padding: '8px 10px', borderRadius: 'var(--radius)', background: 'var(--surface-2)', border: '1px solid var(--border)', marginBottom: 4 }}>
+                    <div style={{ fontSize: 12, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.primary_keyword}</div>
+                    <div style={{ fontSize: 10, color: t.status === 'ready' ? 'var(--green)' : 'var(--amber)', marginTop: 2, textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: 600 }}>{t.status}</div>
                   </div>
                 ))}
               </div>
             )}
-            <div style={{ fontSize: 10, color: '#8B91A8', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: 4, padding: '0 2px' }}>Conversations</div>
+            <div style={{ fontSize: 10, color: 'var(--text-2)', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: 4, padding: '0 2px' }}>Conversations</div>
             <div style={{ overflow: 'auto', flex: 1 }}>
               {conversations.map(c => (
-                <button key={c.id} onClick={() => loadMessages(c.id)} style={{ width: '100%', textAlign: 'left', padding: '10px 12px', borderRadius: 8, background: activeConv === c.id ? '#1C1F2A' : 'transparent', border: activeConv === c.id ? '1px solid #252836' : '1px solid transparent', cursor: 'pointer', marginBottom: 3 }}>
-                  <div style={{ fontSize: 13, color: '#E2E4EE', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.title || 'Conversation'}</div>
-                  <div style={{ fontSize: 11, color: '#8B91A8', marginTop: 2, fontFamily: '"JetBrains Mono",monospace' }}>{fmt(c.created_at)}</div>
-                </button>
+                <div key={c.id} style={{ position: 'relative', marginBottom: 3 }}
+                  onMouseEnter={e => { const btn = e.currentTarget.querySelector('.del-btn') as HTMLElement; if (btn) btn.style.opacity = '1' }}
+                  onMouseLeave={e => { const btn = e.currentTarget.querySelector('.del-btn') as HTMLElement; if (btn) btn.style.opacity = '0' }}>
+                  <button onClick={() => loadMessages(c.id)} style={{ width: '100%', textAlign: 'left', padding: '10px 12px', paddingRight: 28, borderRadius: 'var(--radius)', background: activeConv === c.id ? 'var(--surface-2)' : 'transparent', border: activeConv === c.id ? '1px solid var(--border)' : '1px solid transparent', cursor: 'pointer' }}>
+                    <div style={{ fontSize: 13, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.title || 'Conversation'}</div>
+                    <div style={{ fontSize: 11, color: 'var(--text-2)', marginTop: 2, fontFamily: 'var(--font-mono)' }}>{fmt(c.created_at)}</div>
+                  </button>
+                  <button className="del-btn" onClick={(e) => deleteConversation(c.id, e)}
+                    style={{ position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-2)', fontSize: 14, padding: '2px 4px', borderRadius: 4, opacity: 0, transition: 'opacity 0.15s' }}
+                    title="Delete conversation">✕</button>
+                </div>
               ))}
             </div>
           </div>
@@ -568,29 +1543,93 @@ export default function AgentPage() {
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
             {!activeConv ? (
               <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12 }}>
-                <div style={{ fontSize: 18, fontWeight: 600, color: '#E2E4EE' }}>Start a conversation with {agent.name}</div>
-                <div style={{ fontSize: 14, color: '#8B91A8', textAlign: 'center', maxWidth: 420, lineHeight: 1.6 }}>
+                <div style={{ fontSize: 18, fontWeight: 600, color: 'var(--text)' }}>Start a conversation with {agent.name}</div>
+                <div style={{ fontSize: 14, color: 'var(--text-2)', textAlign: 'center', maxWidth: 420, lineHeight: 1.6 }}>
                   {agent.name} knows your clients, their keyword banks, and every live page on their websites.
-                  {Object.keys(sitePages).length === 0 && <span style={{ color: '#F59E0B' }}> Crawl a client site first to give her full page knowledge.</span>}
+                  {Object.keys(sitePages).length === 0 && <span style={{ color: 'var(--amber)' }}> Crawl a client site first to give her full page knowledge.</span>}
                 </div>
                 <button style={{ ...S.btn, marginTop: 8 }} onClick={newConversation}>Start chatting</button>
               </div>
             ) : (
               <>
                 <div ref={scroller} style={{ flex: 1, overflow: 'auto', display: 'flex', flexDirection: 'column', gap: 16, paddingBottom: 8 }}>
-                  {messages.length === 0 && <div style={{ margin: 'auto' }}><div style={{ fontSize: 15, color: '#8B91A8' }}>Say something to get started.</div></div>}
-                  {messages.map((m, i) => (
-                    <div key={m.id || i} style={{ display: 'flex', flexDirection: 'column', alignItems: m.role === 'user' ? 'flex-end' : 'flex-start', maxWidth: '80%', alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start' }}>
-                      <div style={{ padding: '12px 16px', borderRadius: 12, fontSize: 14, lineHeight: 1.65, whiteSpace: 'pre-wrap', background: m.role === 'user' ? '#6366F1' : '#1C1F2A', color: m.role === 'user' ? '#fff' : '#E2E4EE', borderBottomRightRadius: m.role === 'user' ? 3 : 12, borderBottomLeftRadius: m.role === 'assistant' ? 3 : 12 }}>
-                        {m.content || <span style={{ opacity: 0.5 }}>Thinking...</span>}
+                  {messages.length === 0 && <div style={{ margin: 'auto' }}><div style={{ fontSize: 15, color: 'var(--text-2)' }}>Say something to get started.</div></div>}
+                  {messages.filter((m, i) => m.role === 'user' || m.content || i === messages.length - 1).map((m, i) => {
+                    const msgTaskLog = m._taskLog || (m.id === messages[messages.length - 1]?.id && sending ? taskLog : [])
+                    const msgThoughts = m._thoughts || (m.id === messages[messages.length - 1]?.id && sending ? thoughts : [])
+                    return (
+                    <div key={m.id || i} style={{ display: 'flex', flexDirection: 'column', alignItems: m.role === 'user' ? 'flex-end' : 'flex-start', maxWidth: '82%', alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start' }}>
+                      {/* Task log + thoughts — shown on assistant messages that used tools */}
+                      {m.role === 'assistant' && (msgTaskLog.length > 0 || (sending && m.id === messages[messages.length - 1]?.id)) && (
+                        <div style={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '8px 12px', marginBottom: 6, fontSize: 12, minWidth: 240, maxWidth: 400 }}>
+                          {msgTaskLog.map((t, ti) => (
+                            <div key={ti} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '3px 0', color: t.done ? 'var(--text-dim)' : 'var(--text-2)' }}>
+                              <span style={{ color: t.done ? 'var(--green)' : 'var(--accent)', fontSize: 11 }}>{t.done ? '✓' : '◌'}</span>
+                              <span style={{ flex: 1 }}>{t.label.replace('…','')}</span>
+                              <span style={{ color: '#374151', fontFamily: 'monospace', fontSize: 10 }}>{t.ts}</span>
+                            </div>
+                          ))}
+                          {sending && m.id === messages[messages.length - 1]?.id && agentStatus && agentStatus !== 'Done' && (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '3px 0', color: 'var(--text-2)' }}>
+                              <span style={{ display: 'inline-flex', gap: 2 }}>
+                                {[0,1,2].map(d => <span key={d} style={{ width: 4, height: 4, borderRadius: '50%', background: 'var(--accent)', display: 'inline-block', animation: 'dot-bounce 1.2s ease-in-out infinite', animationDelay: `${d * 0.2}s` }} />)}
+                              </span>
+                              <span>{agentStatus}</span>
+                            </div>
+                          )}
+                          {msgThoughts.length > 0 && (
+                            <div style={{ marginTop: 6, paddingTop: 6, borderTop: '1px solid var(--border)', color: 'var(--text-2)', lineHeight: 1.5, fontStyle: 'italic' }}>
+                              {msgThoughts[msgThoughts.length - 1].slice(0, 240)}{msgThoughts[msgThoughts.length - 1].length > 240 ? '…' : ''}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                      <div style={{ padding: '12px 16px', borderRadius: 12, background: m.role === 'user' ? 'var(--accent)' : 'var(--surface-2)', color: m.role === 'user' ? '#fff' : 'var(--text)', borderBottomRightRadius: m.role === 'user' ? 3 : 12, borderBottomLeftRadius: m.role === 'assistant' ? 3 : 12, borderLeft: m.role === 'assistant' ? '2px solid var(--accent)' : 'none' }}>
+                        {m.role === 'assistant' && m.content
+                          ? <div className="ada-message-content" dangerouslySetInnerHTML={{ __html: marked.parse(m.content) as string }} />
+                          : m.content
+                            ? <span style={{ fontSize: 14, lineHeight: 1.65, whiteSpace: 'pre-wrap' }}>{m.content}</span>
+                            : <span style={{ opacity: 0.5, fontSize: 14 }}>…</span>
+                        }
                       </div>
-                      <div style={{ fontSize: 11, color: '#8B91A8', marginTop: 4, fontFamily: '"JetBrains Mono",monospace' }}>{m.role === 'assistant' ? agent.name : 'You'} · {clock(m.created_at)}</div>
+                      {m.role === 'assistant' && m._draftCard && (
+                        <div style={{ background: 'var(--surface-2)', borderLeft: '3px solid var(--green)', borderRadius: 'var(--radius-md)', padding: '12px 16px', marginTop: 6, alignSelf: 'stretch' }}>
+                          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>✓ Draft saved · &quot;{m._draftCard.title}&quot;</div>
+                          <div style={{ fontSize: 12, color: 'var(--text-2)', fontFamily: 'var(--font-mono)', marginTop: 4 }}>{m._draftCard.word_count} words · {m._draftCard.image_count} image{m._draftCard.image_count === 1 ? '' : 's'}</div>
+                          <a href={m._draftCard.review_url} style={{ display: 'inline-block', fontSize: 13, color: 'var(--accent)', marginTop: 6, textDecoration: 'none', fontWeight: 500 }}>Review draft →</a>
+                        </div>
+                      )}
+                      <div style={{ fontSize: 11, color: 'var(--text-2)', marginTop: 4, fontFamily: 'var(--font-mono)' }}>{m.role === 'assistant' ? agent.name : 'You'} · {clock(m.created_at)}</div>
                     </div>
-                  ))}
+                  )})}
                 </div>
-                <div style={{ display: 'flex', gap: 10, paddingTop: 12, borderTop: '1px solid #252836', alignItems: 'flex-end', flexShrink: 0 }}>
-                  <textarea value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() } }} placeholder={`Message ${agent.name}...`} rows={2} style={{ flex: 1, resize: 'none', background: '#1C1F2A', border: '1px solid #252836', borderRadius: 10, padding: '12px 14px', fontSize: 14, color: '#E2E4EE', outline: 'none', lineHeight: 1.5, fontFamily: 'inherit' }} />
-                  <button onClick={send} disabled={!draft.trim() || sending} style={{ ...S.btn, flexShrink: 0, opacity: (!draft.trim() || sending) ? 0.4 : 1 }}>{sending ? '...' : 'Send'}</button>
+                <div style={{ flexShrink: 0 }}>
+                  {/* Quick action chips — show when conversation is new/empty */}
+                  {messages.length === 0 && (
+                    <div style={{ marginBottom: 10 }}>
+                      <div style={{ fontSize: 10, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: 8 }}>Quick actions</div>
+                      <div style={{ display: 'flex', flexWrap: 'wrap' as const, gap: 6 }}>
+                        {[
+                          { label: '🔍 Audit site', msg: `Audit the site for ${clients[0]?.name || 'the client'}. Call audit_site, identify the most impactful SEO issues, prioritise them, and tell me what to fix first.` },
+                          { label: '✍️ Write blog post', msg: `Write a complete, publish-ready blog post for ${clients[0]?.name || 'the client'}. Check search_history first to avoid repeating angles, then ask me for the target keyword before starting.` },
+                          { label: '🔁 Rewrite article', msg: `I need to rewrite an existing article. Call search_history for ${clients[0]?.name || 'the client'}, then ask me which piece to rework. Once I confirm, rewrite it as clean markdown with fresh SEO-named images and save it with write_content for review.` },
+                          { label: '📋 Content plan', msg: `Review the keyword bank and content history for ${clients[0]?.name || 'the client'}, then propose a 4-week content plan. For each piece include: target keyword, angle, content type, and why it's the right next move.` },
+                          { label: '🔗 Fix broken links', msg: `Audit the site for ${clients[0]?.name || 'the client'} and find any pages with placeholder or broken internal links. Read those files and fix the links to point to real pages from the site inventory.` },
+                          { label: '📈 Keyword gaps', msg: `Look at the keyword bank and content history for ${clients[0]?.name || 'the client'}. Identify the most valuable keyword gaps — high intent queries we haven't targeted yet — and recommend the top 5 to write next with a brief angle for each.` },
+                        ].map(({ label, msg }) => (
+                          <button key={label} onClick={() => { setDraft(msg) }} style={{ background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 99, padding: '5px 12px', fontSize: 12, color: 'var(--text-2)', cursor: 'pointer', transition: 'all 0.12s', whiteSpace: 'nowrap' as const }}
+                            onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.color = 'var(--text)' }}
+                            onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = 'var(--text-2)' }}>
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  <div style={{ display: 'flex', gap: 10, paddingTop: 12, borderTop: '1px solid var(--border)', alignItems: 'flex-end' }}>
+                    <textarea value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() } }} placeholder={`Message ${agent.name}...`} rows={2} style={{ flex: 1, resize: 'none', fontFamily: 'inherit' }} />
+                    <button onClick={send} disabled={!draft.trim() || sending} style={{ ...S.btn, flexShrink: 0, opacity: (!draft.trim() || sending) ? 0.4 : 1 }}>{sending ? '...' : 'Send'}</button>
+                  </div>
                 </div>
               </>
             )}
@@ -601,22 +1640,22 @@ export default function AgentPage() {
       {tab === 'settings' && (
         <div style={{ overflow: 'auto', flex: 1 }}>
           <div style={{ maxWidth: 680 }}>
-            <p style={{ fontSize: 14, color: '#8B91A8', marginBottom: 32, lineHeight: 1.6 }}>Every field here shapes how {agent.name} thinks, speaks and behaves. Changes take effect on the next message.</p>
+            <p style={{ fontSize: 13.5, color: 'var(--text-2)', marginBottom: 32, lineHeight: 1.6 }}>Every field here shapes how {agent.name} thinks, speaks and behaves. Changes take effect on the next message.</p>
             {SETTINGS_FIELDS.map(({ section, fields }) => (
               <div key={section} style={S.section}>
                 <div style={S.sectionHead}>{section}</div>
-                {fields.map(({ key, label, hint, type, rows }) => (
+                {fields.map(({ key, label, hint, type, ...rest }) => { const rows = (rest as any).rows as number | undefined; return (
                   <div key={key} style={S.field}>
                     <label style={S.label}>{label}</label>
                     {hint && <div style={S.hint}>{hint}</div>}
                     {type === 'textarea' ? <textarea rows={rows || 3} value={(settings as any)[key] || ''} onChange={e => setSetting(key as keyof Agent, e.target.value)} style={{ lineHeight: 1.6 }} /> : <input type="text" value={(settings as any)[key] || ''} onChange={e => setSetting(key as keyof Agent, e.target.value)} />}
                   </div>
-                ))}
+                )})}
               </div>
             ))}
             <div style={{ display: 'flex', alignItems: 'center', gap: 12, paddingBottom: 40 }}>
               <button style={S.btn} onClick={saveSettings} disabled={saving}>{saving ? 'Saving...' : 'Save changes'}</button>
-              {saved && <span style={{ fontSize: 13, color: '#34D399', fontWeight: 500 }}>Saved</span>}
+              {saved && <span style={{ fontSize: 13, color: 'var(--green)', fontWeight: 500 }}>Saved</span>}
             </div>
           </div>
         </div>

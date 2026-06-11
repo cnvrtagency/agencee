@@ -2,56 +2,59 @@
 
 /* ─── Design tokens ─────────────────────────────────────────
    All colours, fonts and radii live here.
-   To white-label: edit lib/theme.ts and these variables.
    ────────────────────────────────────────────────────────── */
 :root {
-  --bg:           #030507;
-  --surface:      #0C0F16;
-  --surface-2:    #131820;
-  --surface-3:    #181D28;
-  --border:       rgba(255,255,255,0.07);
-  --border-mid:   rgba(255,255,255,0.11);
+  --bg:           #F8F9FB;
+  --surface:      #FFFFFF;
+  --surface-2:    #F2F4F8;
+  --surface-3:    #E8ECF2;
+  --border:       #E2E6EE;
+  --border-bright:#C8D0E0;
 
-  --text:         #EDEEF2;
-  --text-muted:   #6B7280;
-  --text-dim:     #374151;
+  --text:         #0F1520;
+  --text-2:       #5A6A82;
+  /* Legacy alias kept for backwards compat with existing component refs */
+  --text-muted:   #5A6A82;
+  --text-dim:     #8A9AB2;
 
-  --accent:       #6366F1;
-  --accent-hover: #818CF8;
-  --accent-glow:  rgba(99,102,241,0.15);
-  --accent-bg:    rgba(99,102,241,0.08);
+  --accent:       #4F7FFF;
+  --accent-hover: #3A6AEE;
+  --accent-glow:  rgba(79,127,255,0.10);
+  --accent-bg:    rgba(79,127,255,0.06);
 
-  --green:        #22C55E;
-  --green-bg:     rgba(34,197,94,0.1);
-  --amber:        #F59E0B;
-  --amber-bg:     rgba(245,158,11,0.1);
-  --red:          #EF4444;
-  --red-bg:       rgba(239,68,68,0.1);
+  --green:        #0F9D6E;
+  --green-bg:     rgba(15,157,110,0.08);
+  --amber:        #D97706;
+  --amber-bg:     rgba(217,119,6,0.08);
+  --red:          #DC2626;
+  --red-bg:       rgba(220,38,38,0.08);
+  --purple:       #7C3AED;
+  --purple-bg:    rgba(124,58,237,0.08);
 
-  --font-sans:    "Inter", system-ui, sans-serif;
-  --font-mono:    "JetBrains Mono", monospace;
-  --font-display: "Calistoga", serif;
+  --font-sans:    'Inter', -apple-system, sans-serif;
+  --font-mono:    'JetBrains Mono', monospace;
+  --font-display: 'Instrument Serif', Georgia, serif;
 
-  --radius:       8px;
-  --radius-md:    10px;
-  --radius-lg:    14px;
+  --radius:       6px;
+  --radius-md:    8px;
+  --radius-lg:    12px;
   --ease:         cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 @theme {
-  --color-bg:       #030507;
-  --color-surface:  #0C0F16;
-  --color-accent:   #6366F1;
-  --color-text:     #EDEEF2;
-  --font-sans:      "Inter", system-ui, sans-serif;
-  --font-mono:      "JetBrains Mono", monospace;
-  --font-display:   "Calistoga", serif;
+  --color-bg:       #F8F9FB;
+  --color-surface:  #FFFFFF;
+  --color-accent:   #4F7FFF;
+  --color-text:     #0F1520;
+  --font-sans:      'Inter', -apple-system, sans-serif;
+  --font-mono:      'JetBrains Mono', monospace;
+  --font-display:   'Instrument Serif', Georgia, serif;
 }
 
 /* ─── Reset ─────────────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-html { color-scheme: dark; }
+html { color-scheme: light; }
 
 body {
   background: var(--bg);
@@ -66,14 +69,14 @@ body {
 /* ─── Scrollbars ─────────────────────────────────────────── */
 ::-webkit-scrollbar              { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track        { background: transparent; }
-::-webkit-scrollbar-thumb        { background: rgba(255,255,255,0.08); border-radius: 99px; }
-::-webkit-scrollbar-thumb:hover  { background: rgba(255,255,255,0.14); }
+::-webkit-scrollbar-thumb        { background: rgba(0,0,0,0.10); border-radius: 99px; }
+::-webkit-scrollbar-thumb:hover  { background: rgba(0,0,0,0.18); }
 
 /* ─── Form elements ──────────────────────────────────────── */
 input, textarea, select {
   font-family: var(--font-sans);
   font-size: 14px;
-  background: var(--surface-2);
+  background: var(--surface-3);
   border: 1px solid var(--border);
   color: var(--text);
   border-radius: var(--radius);
@@ -99,3 +102,84 @@ textarea { resize: vertical; line-height: 1.6; }
   background: var(--accent-bg);
   color: var(--text);
 }
+
+/* ─── Animations ─────────────────────────────────────────── */
+@keyframes dot-bounce {
+  0%, 80%, 100% { transform: translateY(0); opacity: 0.4; }
+  40%           { transform: translateY(-5px); opacity: 1; }
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.3; }
+}
+
+/* Avatar pulse ring for active agents */
+@keyframes pulse-ring {
+  0%   { box-shadow: 0 0 0 0 rgba(79,127,255,0.25); }
+  70%  { box-shadow: 0 0 0 7px rgba(79,127,255,0); }
+  100% { box-shadow: 0 0 0 0 rgba(79,127,255,0); }
+}
+
+/* Sidebar system status — slow breathe when idle */
+@keyframes breathe {
+  0%, 100% { opacity: 0.25; transform: scaleX(0.55); }
+  50%       { opacity: 0.9;  transform: scaleX(1); }
+}
+
+/* Faster breathe when tasks are running */
+@keyframes breathe-fast {
+  0%, 100% { opacity: 0.4; transform: scaleX(0.6); }
+  50%       { opacity: 1;   transform: scaleX(1); }
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ─── Markdown prose (output detail) ─────────────────────── */
+.md-prose h1 { font-size: 22px; font-weight: 600; color: var(--text); margin: 28px 0 12px; line-height: 1.3; letter-spacing: -0.3px; }
+.md-prose h2 { font-size: 17px; font-weight: 600; color: var(--text); margin: 24px 0 10px; line-height: 1.35; }
+.md-prose h3 { font-size: 14.5px; font-weight: 600; color: var(--text); margin: 18px 0 7px; line-height: 1.4; }
+.md-prose h4 { font-size: 13px; font-weight: 600; color: var(--text-2); margin: 14px 0 6px; text-transform: uppercase; letter-spacing: 0.5px; }
+.md-prose p  { color: var(--text-2); font-size: 14.5px; line-height: 1.8; margin: 0 0 14px; }
+.md-prose p:last-child { margin-bottom: 0; }
+.md-prose ul, .md-prose ol { color: var(--text-2); font-size: 14.5px; line-height: 1.8; margin: 0 0 14px; padding-left: 22px; }
+.md-prose li  { margin-bottom: 4px; }
+.md-prose strong { color: var(--text); font-weight: 600; }
+.md-prose em  { font-style: italic; }
+.md-prose code { font-family: var(--font-mono); font-size: 12.5px; background: var(--surface-3); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; color: var(--accent); }
+.md-prose pre  { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; overflow-x: auto; margin: 0 0 16px; }
+.md-prose pre code { background: none; border: none; padding: 0; font-size: 13px; color: var(--text-2); }
+.md-prose blockquote { border-left: 3px solid var(--accent); padding-left: 16px; color: var(--text-2); font-style: italic; margin: 0 0 16px; }
+.md-prose hr   { border: none; border-top: 1px solid var(--border); margin: 24px 0; }
+.md-prose a    { color: var(--accent); text-decoration: underline; text-decoration-color: rgba(79,127,255,0.35); }
+.md-prose a:hover { text-decoration-color: var(--accent); }
+
+/* ─── Ada message markdown rendering ─────────────────────── */
+.ada-message-content { color: var(--text); font-size: 14px; line-height: 1.7; }
+.ada-message-content h1, .ada-message-content h2, .ada-message-content h3 { color: var(--text); font-weight: 500; margin: 16px 0 8px 0; font-size: 14px; letter-spacing: 0.02em; }
+.ada-message-content h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-2); margin-top: 20px; }
+.ada-message-content p { margin: 0 0 10px 0; }
+.ada-message-content p:last-child { margin-bottom: 0; }
+.ada-message-content ul, .ada-message-content ol { margin: 8px 0 10px 0; padding-left: 20px; }
+.ada-message-content li { margin-bottom: 4px; line-height: 1.6; }
+.ada-message-content strong { font-weight: 500; color: var(--text); }
+.ada-message-content hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
+.ada-message-content code { font-family: var(--font-mono, monospace); font-size: 12px; background: var(--surface-2); padding: 2px 6px; border-radius: 4px; color: var(--accent); }
+.ada-message-content blockquote { border-left: 2px solid var(--accent); margin: 12px 0; padding: 8px 16px; background: var(--surface-2); border-radius: 0 4px 4px 0; color: var(--text-2); }
+.ada-message-content a { color: var(--accent); text-decoration: none; }
+.ada-message-content a:hover { text-decoration: underline; }
+
+/* ─── Markdown body (output review preview) ──────────────── */
+.markdown-body h2 { font-size: 20px; font-weight: 600; color: var(--text); margin: 28px 0 10px; line-height: 1.35; }
+.markdown-body h3 { font-size: 16px; font-weight: 600; color: var(--text); margin: 20px 0 8px; line-height: 1.4; }
+.markdown-body p { font-size: 14px; line-height: 1.7; color: var(--text); margin: 0 0 12px; }
+.markdown-body ul, .markdown-body ol { padding-left: 20px; font-size: 14px; line-height: 1.7; color: var(--text); margin: 0 0 12px; }
+.markdown-body li { margin: 4px 0; }
+.markdown-body img { max-width: 100%; border-radius: 8px; margin: 16px 0; display: block; }
+.markdown-body a { color: var(--accent); }
+.markdown-body strong { color: var(--text); font-weight: 600; }
+.markdown-body blockquote { border-left: 3px solid var(--border); padding-left: 14px; color: var(--text-2); margin: 16px 0; }
+.markdown-body code { font-family: var(--font-mono); font-size: 13px; background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
+.markdown-body hr { border: none; border-top: 1px solid var(--border); margin: 24px 0; }

@@ -4,39 +4,134 @@ import { usePathname } from 'next/navigation'
 import { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 
-const nav = [
-  {
-    href: '/', label: 'Dashboard',
-    icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>,
-  },
-  {
-    href: '/agents', label: 'Agents',
-    icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>,
-  },
-  {
-    href: '/clients', label: 'Clients',
-    icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>,
-  },
-  {
-    href: '/queue', label: 'Queue',
-    icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>,
-  },
-  {
-    href: '/outputs', label: 'Outputs',
-    icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>,
-  },
-]
+// SVG icons keyed by name
+const ICONS: Record<string, React.ReactNode> = {
+  dashboard: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>,
+  marketplace: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><path d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm-8 2a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></svg>,
+  clients: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>,
+  reports: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>,
+  chat: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>,
+  list: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>,
+  calendar: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>,
+  tag: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>,
+  file: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>,
+  activity: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>,
+  settings: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>,
+}
 
-type Usage = { tokens_used_this_month: number; monthly_token_budget: number; workspace_name: string } | null
+type Agent = {
+  id: string
+  name: string
+  role: string
+  avatar_initials: string
+  active: boolean
+  nav_items: { label: string; path: string; icon: string }[]
+}
+
+type Usage = { tokens_used_this_month: number; monthly_token_budget: number } | null
+
+function NavItem({ href, label, icon, exact }: { href: string; label: string; icon?: React.ReactNode; exact?: boolean }) {
+  const path = usePathname()
+  const active = exact ? path === href : path === href || path.startsWith(href + '/')
+  return (
+    <Link href={href} style={{
+      display: 'flex', alignItems: 'center', gap: 9,
+      padding: '7px 10px',
+      borderRadius: 'var(--radius)',
+      fontSize: 13, fontWeight: active ? 500 : 400,
+      color: active ? 'var(--text)' : 'var(--text-2)',
+      background: active ? 'var(--accent-bg)' : 'transparent',
+      borderLeft: active ? '2px solid var(--accent)' : '2px solid transparent',
+      textDecoration: 'none',
+      transition: 'background 0.12s, color 0.12s',
+      cursor: 'pointer',
+    }}
+    onMouseEnter={e => {
+      if (!active) {
+        (e.currentTarget as HTMLElement).style.background = 'rgba(79,127,255,0.04)'
+        ;(e.currentTarget as HTMLElement).style.color = 'var(--text)'
+      }
+    }}
+    onMouseLeave={e => {
+      if (!active) {
+        (e.currentTarget as HTMLElement).style.background = 'transparent'
+        ;(e.currentTarget as HTMLElement).style.color = 'var(--text-2)'
+      }
+    }}
+    >
+      {icon && <span style={{ opacity: active ? 1 : 0.5, color: active ? 'var(--accent)' : 'currentColor', flexShrink: 0, display: 'flex' }}>{icon}</span>}
+      {label}
+    </Link>
+  )
+}
+
+function SubNavItem({ href, label, icon }: { href: string; label: string; icon?: React.ReactNode }) {
+  const path = usePathname()
+  const active = path === href || path.startsWith(href + '/')
+  return (
+    <Link href={href} style={{
+      display: 'flex', alignItems: 'center', gap: 8,
+      padding: '5px 10px 5px 26px',
+      borderRadius: 'var(--radius)',
+      fontSize: 12.5, fontWeight: active ? 500 : 400,
+      color: active ? 'var(--text)' : 'var(--text-2)',
+      background: active ? 'var(--accent-bg)' : 'transparent',
+      borderLeft: active ? '2px solid var(--accent)' : '2px solid transparent',
+      textDecoration: 'none',
+      transition: 'background 0.12s, color 0.12s',
+      cursor: 'pointer',
+    }}
+    onMouseEnter={e => {
+      if (!active) {
+        (e.currentTarget as HTMLElement).style.background = 'rgba(79,127,255,0.04)'
+        ;(e.currentTarget as HTMLElement).style.color = 'var(--text)'
+      }
+    }}
+    onMouseLeave={e => {
+      if (!active) {
+        (e.currentTarget as HTMLElement).style.background = 'transparent'
+        ;(e.currentTarget as HTMLElement).style.color = 'var(--text-2)'
+      }
+    }}
+    >
+      {icon && <span style={{ opacity: active ? 1 : 0.45, color: active ? 'var(--accent)' : 'currentColor', flexShrink: 0, display: 'flex' }}>{icon}</span>}
+      {label}
+    </Link>
+  )
+}
+
+function Divider() {
+  return <div style={{ height: 1, background: 'var(--border)', margin: '8px 10px' }} />
+}
 
 export default function Sidebar() {
   const path = usePathname()
+  const [agents, setAgents] = useState<Agent[]>([])
   const [usage, setUsage] = useState<Usage>(null)
+  const [workspaceName, setWorkspaceName] = useState<string>('')
+  const [hasRunning, setHasRunning] = useState(false)
 
   useEffect(() => {
-    supabase.from('workspace_settings').select('tokens_used_this_month,monthly_token_budget,workspace_name').maybeSingle().then(({ data }) => {
-      if (data) setUsage(data)
-    })
+    async function load() {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) return
+
+      const [agentRes, usageRes, wsRes, runRes] = await Promise.all([
+        supabase.from('agents').select('id,name,role,avatar_initials,active,nav_items').eq('active', true).order('created_at'),
+        supabase.from('workspace_settings').select('tokens_used_this_month,monthly_token_budget').eq('user_id', user.id).maybeSingle(),
+        supabase.from('workspaces').select('name').eq('owner_id', user.id).maybeSingle(),
+        supabase.from('content_queue').select('id', { count: 'exact', head: true }).eq('status', 'running'),
+      ])
+
+      setAgents((agentRes.data || []).map((a: any) => ({
+        ...a,
+        nav_items: Array.isArray(a.nav_items) ? a.nav_items : [],
+      })))
+      if (usageRes.data) setUsage(usageRes.data)
+      if (wsRes.data) setWorkspaceName(wsRes.data.name || '')
+      setHasRunning((runRes.count || 0) > 0)
+    }
+    load()
   }, [])
 
   const usagePct = usage ? Math.min(100, Math.round((usage.tokens_used_this_month / usage.monthly_token_budget) * 100)) : 0
@@ -44,7 +139,7 @@ export default function Sidebar() {
 
   return (
     <aside style={{
-      width: 240,
+      width: 220,
       flexShrink: 0,
       background: 'var(--surface)',
       borderRight: '1px solid var(--border)',
@@ -54,77 +149,105 @@ export default function Sidebar() {
       top: 0, left: 0, bottom: 0,
     }}>
       {/* Wordmark */}
-      <div style={{ padding: '28px 24px 24px', borderBottom: '1px solid var(--border)' }}>
-        <div style={{ fontFamily: 'var(--font-display)', fontSize: 22, color: 'var(--text)', letterSpacing: '0.3px', lineHeight: 1 }}>
+      <div style={{ padding: '22px 20px 18px' }}>
+        <div style={{ fontFamily: 'var(--font-display)', fontStyle: 'italic', fontSize: 22, color: 'var(--text)', letterSpacing: '0.1px', lineHeight: 1 }}>
           Agencee
         </div>
-        {usage?.workspace_name && (
-          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 5, letterSpacing: '0.3px' }}>
-            {usage.workspace_name}
+        {workspaceName && (
+          <div style={{ fontSize: 11, color: 'var(--text-2)', marginTop: 4, letterSpacing: '0.3px' }}>
+            {workspaceName}
           </div>
         )}
       </div>
+      <div style={{ height: 1, background: 'var(--border)', flexShrink: 0 }} />
 
       {/* Nav */}
-      <nav style={{ flex: 1, padding: '12px 12px', display: 'flex', flexDirection: 'column', gap: 2, overflowY: 'auto' }}>
-        {nav.map(({ href, label, icon }) => {
-          const active = href === '/' ? path === '/' : path.startsWith(href)
+      <nav style={{ flex: 1, padding: '8px 8px', display: 'flex', flexDirection: 'column', gap: 1, overflowY: 'auto' }}>
+        {/* Global */}
+        <NavItem href="/" label="Dashboard" icon={ICONS.dashboard} exact />
+        <NavItem href="/clients" label="Clients" icon={ICONS.clients} />
+        <NavItem href="/outputs" label="Outputs" icon={ICONS.file} />
+        <NavItem href="/reports" label="Reports" icon={ICONS.reports} />
+        <NavItem href="/marketplace" label="Marketplace" icon={ICONS.marketplace} />
+
+        {/* Agent sections */}
+        {agents.map(agent => {
+          const navItems = agent.nav_items || []
           return (
-            <Link key={href} href={href} style={{
-              display: 'flex', alignItems: 'center', gap: 10,
-              padding: '9px 12px', borderRadius: 'var(--radius)',
-              fontSize: 13.5, fontWeight: active ? 500 : 400,
-              color: active ? 'var(--text)' : 'var(--text-muted)',
-              background: active ? 'var(--surface-2)' : 'transparent',
-              textDecoration: 'none',
-              transition: 'var(--transition)',
-              cursor: 'pointer',
-            }}
-            onMouseEnter={e => { if (!active) { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.03)'; (e.currentTarget as HTMLElement).style.color = 'var(--text)' } }}
-            onMouseLeave={e => { if (!active) { (e.currentTarget as HTMLElement).style.background = 'transparent'; (e.currentTarget as HTMLElement).style.color = 'var(--text-muted)' } }}
-            >
-              <span style={{ opacity: active ? 1 : 0.6, color: active ? 'var(--accent)' : 'currentColor', flexShrink: 0 }}>{icon}</span>
-              {label}
-              {active && <span style={{ marginLeft: 'auto', width: 4, height: 4, borderRadius: '50%', background: 'var(--accent)', flexShrink: 0 }} />}
-            </Link>
+            <div key={agent.id}>
+              <Divider />
+              {/* Agent header — links to chat */}
+              <Link href={`/agents/${agent.id}`} style={{ textDecoration: 'none' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 9, padding: '6px 10px', cursor: 'pointer' }}
+                  onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'rgba(79,127,255,0.04)'}
+                  onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'transparent'}
+                >
+                  <div style={{
+                    width: 26, height: 26, borderRadius: 7,
+                    background: 'var(--surface-3)',
+                    border: '1px solid var(--border-bright)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontSize: 10, fontWeight: 700, color: 'var(--accent)',
+                    fontFamily: 'var(--font-mono)', flexShrink: 0,
+                    animation: hasRunning && agent.active ? 'pulse-ring 1.8s ease-out infinite' : 'none',
+                    boxShadow: hasRunning && agent.active ? '0 0 0 0 rgba(79,127,255,0.55)' : 'none',
+                  }}>
+                    {agent.avatar_initials || agent.name.slice(0, 2).toUpperCase()}
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text)', lineHeight: 1.2 }}>{agent.name}</div>
+                    <div style={{ fontSize: 10, color: 'var(--text-2)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{agent.role}</div>
+                  </div>
+                </div>
+              </Link>
+
+              {/* Agent sub-nav */}
+              {navItems.map((item: { label: string; path: string; icon: string }) => {
+                const resolvedPath = item.path.replace('[id]', agent.id)
+                // For the Chat item (/agents/[id]) use exact matching
+                const isChat = item.path === '/agents/[id]'
+                return (
+                  <SubNavItem
+                    key={item.label}
+                    href={resolvedPath}
+                    label={item.label}
+                    icon={ICONS[item.icon]}
+                  />
+                )
+              })}
+            </div>
           )
         })}
+
+        {/* Bottom global */}
+        <Divider />
       </nav>
 
-      {/* Bottom */}
-      <div style={{ padding: '16px 16px 24px', borderTop: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 12 }}>
-        {/* Usage bar */}
+      {/* Bottom panel */}
+      <div style={{ padding: '12px 12px 18px', borderTop: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 10 }}>
         {usage && (
           <div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Token usage</span>
-              <span style={{ fontSize: 11, color: usagePct >= 70 ? usageColour : 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 }}>
+              <span style={{ fontSize: 11, color: 'var(--text-2)' }}>Tokens</span>
+              <span style={{ fontSize: 11, color: usagePct >= 70 ? usageColour : 'var(--text-2)', fontFamily: 'var(--font-mono)' }}>
                 {usagePct}%
               </span>
             </div>
-            <div style={{ height: 3, background: 'var(--surface-3)', borderRadius: 99, overflow: 'hidden' }}>
-              <div style={{ height: '100%', width: `${usagePct}%`, background: usageColour, borderRadius: 99, transition: 'width 0.6s var(--ease)' }} />
-            </div>
-            <div style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 5, fontFamily: 'var(--font-mono)' }}>
-              {(usage.tokens_used_this_month / 1000).toFixed(0)}k / {(usage.monthly_token_budget / 1000).toFixed(0)}k this month
+            <div style={{ height: 2, background: 'var(--surface-3)', borderRadius: 99, overflow: 'hidden' }}>
+              <div style={{ height: '100%', width: `${usagePct}%`, background: usageColour, borderRadius: 99, transition: 'width 0.6s' }} />
             </div>
           </div>
         )}
 
-        {/* Settings link */}
-        <Link href="/settings" style={{
-          display: 'flex', alignItems: 'center', gap: 10,
-          padding: '8px 12px', borderRadius: 'var(--radius)',
-          fontSize: 13, color: path === '/settings' ? 'var(--text)' : 'var(--text-muted)',
-          background: path === '/settings' ? 'var(--surface-2)' : 'transparent',
-          textDecoration: 'none', transition: 'var(--transition)',
-        }}
-        onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = 'var(--text)' }}
-        onMouseLeave={e => { if (path !== '/settings') (e.currentTarget as HTMLElement).style.color = 'var(--text-muted)' }}
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.6 }}><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-          Settings
-        </Link>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div style={{ flex: 1, height: 2, borderRadius: 99, background: 'var(--accent)',
+            animation: hasRunning ? 'breathe-fast 0.9s ease-in-out infinite' : 'breathe 2.8s ease-in-out infinite' }} />
+          <span style={{ fontSize: 10, color: 'var(--text-2)', whiteSpace: 'nowrap', fontFamily: 'var(--font-mono)' }}>
+            {hasRunning ? 'running' : 'ready'}
+          </span>
+        </div>
+
+        <NavItem href="/settings" label="Settings" icon={ICONS.settings} exact />
       </div>
     </aside>
   )

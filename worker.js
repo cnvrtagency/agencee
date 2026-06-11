@@ -10,6 +10,15 @@ const supabase = createClient(
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
+// ─── Resolve the owner user_id (first workspace_settings row, or env fallback) ─
+let OWNER_USER_ID = process.env.OWNER_USER_ID || null;
+async function getOwnerUserId() {
+  if (OWNER_USER_ID) return OWNER_USER_ID;
+  const { data } = await supabase.from("workspace_settings").select("user_id").limit(1).single();
+  OWNER_USER_ID = data?.user_id || null;
+  return OWNER_USER_ID;
+}
+
 // ─── Pick up queued tasks that are due ───────────────────────────────────────
 
 async function getNextTask() {
@@ -223,6 +232,7 @@ function parseOutput(text, task) {
 // ─── Save output and update queue ────────────────────────────────────────────
 
 async function saveOutput(task, parsed) {
+  const userId = task.user_id || await getOwnerUserId();
   const { data: output, error: outputError } = await supabase
     .from("content_outputs")
     .insert({
@@ -235,6 +245,7 @@ async function saveOutput(task, parsed) {
       meta_description: parsed.meta_description,
       word_count: parsed.word_count,
       notes: parsed.notes,
+      user_id: userId,
     })
     .select()
     .single();
@@ -287,6 +298,64 @@ async function runTask(task) {
   }
 }
 
+// ─── Scheduled publish ───────────────────────────────────────────────────────
+
+async function publishScheduled() {
+  const { data: outputs } = await supabase
+    .from("content_outputs")
+    .select("*, client_profiles(*)")
+    .eq("approved", true)
+    .not("scheduled_publish_at", "is", null)
+    .is("published_url", null)
+    .lte("scheduled_publish_at", new Date().toISOString());
+
+  if (!outputs?.length) return;
+
+  for (const output of outputs) {
+    try {
+      const client = output.client_profiles;
+      if (!client?.github_repo) continue;
+
+      const slug = `content/blog/${output.primary_keyword.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}.md`;
+      const frontmatter = [
+        "---",
+        `title: "${(output.title || output.primary_keyword).replace(/"/g, "'")}"`,
+        output.meta_description ? `description: "${output.meta_description.replace(/"/g, "'")}"` : "",
+        output.primary_keyword ? `keyword: "${output.primary_keyword}"` : "",
+        `date: "${new Date().toISOString().split("T")[0]}"`,
+        "---",
+      ].filter(Boolean).join("\n");
+      const fileContent = `${frontmatter}\n\n${output.content}`;
+
+      // Get existing file SHA if it exists
+      const [owner, repo] = client.github_repo.replace("https://github.com/", "").split("/");
+      const shaRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/contents/${slug}`, {
+        headers: { Authorization: `token ${process.env.GITHUB_TOKEN}`, Accept: "application/vnd.github.v3+json" },
+      });
+      const shaData = shaRes.ok ? await shaRes.json() : null;
+
+      const commitRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/contents/${slug}`, {
+        method: "PUT",
+        headers: { Authorization: `token ${process.env.GITHUB_TOKEN}`, Accept: "application/vnd.github.v3+json", "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: `Scheduled publish: ${output.title || output.primary_keyword}`,
+          content: Buffer.from(fileContent).toString("base64"),
+          ...(shaData?.sha ? { sha: shaData.sha } : {}),
+        }),
+      });
+
+      if (commitRes.ok) {
+        const commitData = await commitRes.json();
+        const publishedUrl = commitData.content?.html_url || null;
+        await supabase.from("content_outputs").update({ published_url: publishedUrl, scheduled_publish_at: null }).eq("id", output.id);
+        console.log(`[${new Date().toISOString()}] Scheduled publish: "${output.title}" → ${slug}`);
+      }
+    } catch (err) {
+      console.error(`[${new Date().toISOString()}] Scheduled publish failed for output ${output.id}:`, err.message);
+    }
+  }
+}
+
 // ─── Scheduler ───────────────────────────────────────────────────────────────
 
 async function tick() {
@@ -296,6 +365,8 @@ async function tick() {
 }
 
 cron.schedule("*/5 * * * *", tick);
+cron.schedule("*/5 * * * *", publishScheduled);
 tick();
+publishScheduled();
 
-console.log("SEO agent worker running. Checking queue every 5 minutes.");
+console.log("SEO agent worker running. Checking queue and scheduled publishes every 5 minutes.");

@@ -100,10 +100,59 @@ async function fetchPage(url: string): Promise<{ html: string; finalUrl: string 
 }
 
 export async function POST(req: NextRequest) {
-  const { client_id, website } = await req.json()
+  let body: any
+  try { body = await req.json() } catch { return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 }) }
+  const { client_id, website, competitor_id } = body
+
+  // Competitor crawl mode
+  if (competitor_id) {
+    const { data: comp } = await supabase.from('competitor_sites').select('url, name').eq('id', competitor_id).single()
+    if (!comp?.url) return NextResponse.json({ error: 'Competitor site not found or has no URL' }, { status: 400 })
+
+    const baseUrl = comp.url.replace(/\/$/, '')
+    const visited = new Set<string>()
+    const queue: string[] = [baseUrl]
+    const pages: any[] = []
+    const maxPages = 40
+
+    while (queue.length > 0 && pages.length < maxPages) {
+      const url = queue.shift()!
+      if (visited.has(url)) continue
+      visited.add(url)
+      const result = await fetchPage(url)
+      if (!result) continue
+      const { html, finalUrl } = result
+      visited.add(finalUrl)
+      const title = extractText(html, 'title')
+      const h1 = extractText(html, 'h1')
+      const metaDesc = extractMeta(html, 'description')
+      const wordCount = countWords(html)
+      const content = extractContent(html)
+      pages.push({ competitor_id, client_id, url: finalUrl, title, h1, meta_description: metaDesc, word_count: wordCount, content, crawled_at: new Date().toISOString() })
+      for (const link of extractLinks(html, finalUrl)) {
+        if (!visited.has(link) && !queue.includes(link)) queue.push(link)
+      }
+    }
+
+    if (pages.length === 0) return NextResponse.json({ error: 'Could not crawl competitor site.' }, { status: 400 })
+
+    await supabase.from('competitor_pages').delete().eq('competitor_id', competitor_id)
+    const batchSize = 20
+    for (let i = 0; i < pages.length; i += batchSize) {
+      await supabase.from('competitor_pages').insert(pages.slice(i, i + batchSize))
+    }
+    await supabase.from('competitor_sites').update({ last_crawled_at: new Date().toISOString() }).eq('id', competitor_id)
+    return NextResponse.json({ success: true, pages_crawled: pages.length, competitor: comp.name })
+  }
+
+  // Normal site crawl mode
   if (!client_id || !website) {
     return NextResponse.json({ error: 'client_id and website required' }, { status: 400 })
   }
+
+  // Resolve workspace_id — look up via google_connections for this client, fall back to first workspace
+  const { data: gcRow } = await supabase.from('google_connections').select('workspace_id').eq('client_id', client_id).maybeSingle()
+  const workspaceId: string | null = gcRow?.workspace_id ?? null
 
   const baseUrl = website.replace(/\/$/, '')
   const visited = new Set<string>()
@@ -132,6 +181,7 @@ export async function POST(req: NextRequest) {
     const summary = buildSummary(title, h1, headings, content)
 
     pages.push({
+      workspace_id: workspaceId,
       client_id,
       url: finalUrl,
       title,
@@ -154,15 +204,21 @@ export async function POST(req: NextRequest) {
   }
 
   // Delete old crawl data
-  await supabase.from('site_pages').delete().eq('client_id', client_id)
+  const { error: deleteError } = await supabase.from('site_pages').delete().eq('client_id', client_id)
+  if (deleteError) {
+    return NextResponse.json({ error: `Failed to clear old crawl data: ${deleteError.message}` }, { status: 500 })
+  }
 
   // Insert in batches
   const batchSize = 20
   for (let i = 0; i < pages.length; i += batchSize) {
-    await supabase.from('site_pages').insert(pages.slice(i, i + batchSize))
+    const { error: insertError } = await supabase.from('site_pages').insert(pages.slice(i, i + batchSize))
+    if (insertError) {
+      return NextResponse.json({ error: `Insert failed at batch ${i / batchSize}: ${insertError.message}` }, { status: 500 })
+    }
   }
 
   await supabase.from('client_profiles').update({ last_crawled_at: new Date().toISOString() }).eq('id', client_id)
 
-  return NextResponse.json({ success: true, pages_crawled: pages.length })
+  return NextResponse.json({ success: true, pages_crawled: pages.length, workspace_id: workspaceId })
 }
