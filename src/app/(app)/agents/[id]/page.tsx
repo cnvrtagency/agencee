@@ -702,6 +702,7 @@ export default function AgentPage() {
   const [sessionTokens, setSessionTokens] = useState(0)
   const [sessionCost, setSessionCost] = useState(0)
   const sessionTokensRef = useRef(0)
+  const draftSavedRef = useRef(false)
   const scroller = useRef<HTMLDivElement>(null)
 
   // Map tool names → human-readable status labels
@@ -919,6 +920,27 @@ export default function AgentPage() {
         let uid = userId
         if (!uid) { const { data: authData } = await supabase.auth.getUser(); uid = authData.user?.id ?? null }
 
+        // Prevent duplicate saves — check for same keyword + client in last 30 mins
+        const { data: existing } = await supabase
+          .from('content_outputs')
+          .select('id')
+          .eq('client_id', client.id)
+          .ilike('primary_keyword', toolInput.primary_keyword)
+          .eq('approved', false)
+          .gte('created_at', new Date(Date.now() - 30 * 60 * 1000).toISOString())
+          .maybeSingle()
+
+        if (existing) {
+          draftSavedRef.current = true
+          return JSON.stringify({
+            success: true,
+            output_id: existing.id,
+            message: 'Draft already saved — do not call write_content again. Review at /outputs/' + existing.id + '. Now call suggest_internal_links.',
+            review_url: '/outputs/' + existing.id,
+            already_existed: true,
+          })
+        }
+
         const { data: output, error: outputError } = await supabase.from('content_outputs').insert({
           workspace_id: workspaceId,
           client_id: client.id,
@@ -976,6 +998,7 @@ export default function AgentPage() {
           image_count: (toolInput.images || []).length,
           review_url: `/outputs/${output.id}`,
         }
+        draftSavedRef.current = true
 
         return JSON.stringify({ success: true, output_id: output.id, message: 'Draft saved successfully. Title: "' + toolInput.title + '". It is now in your Outputs queue for review at /outputs/' + output.id + '.', review_url: '/outputs/' + output.id })
       } catch (e: any) { return JSON.stringify({ success: false, error: e?.message || 'Failed to save draft.' }) }
@@ -1606,7 +1629,7 @@ export default function AgentPage() {
     const placeholder: Message = { id: crypto.randomUUID(), role: 'assistant', content: '', created_at: new Date().toISOString() }
     setMessages(prev => [...prev, userMsg, placeholder])
     setDraft(''); setSending(true)
-    setSessionTokens(0); setSessionCost(0); sessionTokensRef.current = 0
+    draftSavedRef.current = false
     setAgentStatus('Thinking…')
     setTaskLog([]); taskLogRef.current = []
     setThoughts([]); thoughtsRef.current = []
@@ -1755,6 +1778,24 @@ export default function AgentPage() {
           }))
           toolResults.push(...parallelResults)
           apiMessages.push({ role: 'user', content: toolResults })
+          // After write_content succeeded, allow one more turn for Ada's summary then stop
+          if (draftSavedRef.current && loopCount >= 3) {
+            const wrapRes = await fetch('/api/chat', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                model: 'claude-haiku-4-5-20251001',
+                max_tokens: 500,
+                system: systemPrompt,
+                messages: apiMessages,
+              }),
+            })
+            const wrapData = await wrapRes.json()
+            const wrapReply = (wrapData.content || []).filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n').trim()
+            await saveReply(wrapReply || 'Draft saved and ready for review.')
+            savedReply = true
+            break
+          }
         } else if (data.stop_reason === 'max_tokens') {
           const partial = (data.content || []).filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n')
           const reply = (partial || 'Response cut off — the file was too large to write in one go.') + '\n\n_Output was cut short. Reply "continue" to get the rest._'

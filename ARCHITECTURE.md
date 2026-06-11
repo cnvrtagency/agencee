@@ -1,7 +1,7 @@
 # Agencee — Master Architecture Document
 
 **Living document. Update at the end of every build session.**
-Last updated: 11 June 2026. Session: Agent overview page, real-time session cost tracking, today's cost in sidebar, crawl 403 fix, GSC sync 400 fix, automations sidebar page.
+Last updated: 11 June 2026. Session: Duplicate write_content fix, session token reset fix, all 6 automations corrected, agent_activity unconditional insert, schedule editing UI.
 
 ---
 
@@ -256,7 +256,7 @@ Exist as cards in `/marketplace` only. No agent_type, tools, or system prompt.
 |---|---|---|
 | `/api/intelligence/decay` | POST | Compare 28d vs 56d GSC data. Flag keywords dropped >3 positions with >50 impressions → briefing_items + agent_activity. |
 | `/api/intelligence/score-keywords` | POST | Recalculate opportunity_score for all keyword_banks rows (position + volume + KD + content_targeting_this). |
-| `/api/intelligence/run-automation` | POST | Executes one agent automation by type. Handlers: weekly_keyword_scan, monthly_content_plan, competitor_analysis, site_audit, gsc_review, internal_link_audit. Returns `{ ok, summary }`. Called by the Automations tab "Run now" button and by cron via schedule/check. |
+| `/api/intelligence/run-automation` | POST | Executes one agent automation by type. Returns `{ ok, summary }`. Called by the Automations page "Run now" button and by cron. **Handlers:** `weekly_keyword_scan` — reads `keyword_banks` using `monthly_volume`+`opportunity_score`, creates briefing_item for top gap. `gsc_review` — fetches `google_connections` (active), calls `/api/gsc/sync` per connection, reports briefing items created. `internal_link_audit` — reads `site_pages.internal_links` (jsonb array), flags pages with <2 links and >300 words. `site_audit` — crawls site, analyses pages for missing meta/H1/thin content, creates briefing_item. `competitor_analysis` — reads `competitor_sites` table (NOT `client_profiles.competitors`), crawls each site via `/api/crawl`. `monthly_content_plan` — calls `/api/calendar/generate-plan` with 4 weeks, 2 posts/week. |
 | `/api/intelligence/knowledge-digest` | POST | Searches the web for current SEO developments via native web_search tool, summarises with Sonnet, stores in `agent_knowledge`. Runs Mondays via cron. Deduplicates by week — skips if row already exists for current week. Agentic loop handles web search turns (max 6 iterations). |
 
 ### Knowledge and clients
@@ -514,6 +514,10 @@ GET /api/schedule/check
 | Client profile top panel not editable | Medium | clients/[id]/page.tsx | **Fixed 11 Jun 2026** — profileFields rendered as textareas with onBlur save |
 | Collapsible sections (Brand, Business, SEO) closed by default | Low | clients/[id]/page.tsx | **Fixed 11 Jun 2026** — all three sections open by default |
 | GSC redirect_uri_mismatch | High | Google Cloud Console config | Open — needs redirect URI added: https://agencee.vercel.app/api/auth/google/callback (manual config fix) |
+| Duplicate write_content — 9 drafts from one conversation (~120k tokens wasted) | Critical | agents/[id]/page.tsx | **Fixed 11 Jun 2026** — 30min dedup check in write_content handler returns already_existed=true; loop exits via Haiku wrap turn after draftSavedRef set + loopCount>=3 |
+| Session token counter reset on every message | High | agents/[id]/page.tsx | **Fixed 11 Jun 2026** — removed reset from send(); only resets in newConversation() |
+| All 6 automations broken (wrong column names, wrong tables, no output) | Critical | api/intelligence/run-automation/route.ts | **Fixed 11 Jun 2026** — weekly_keyword_scan uses monthly_volume+opportunity_score; internal_link_audit uses internal_links jsonb array; competitor_analysis uses competitor_sites table; site_audit analyses crawled pages; monthly_content_plan calls generate-plan route; all create briefing_items |
+| Sidebar today spend not updating (agent_activity not inserted when workspaceId null) | High | api/chat/route.ts | **Fixed 11 Jun 2026** — workspaceId guard removed; always inserts with workspace_id: workspaceId \|\| null |
 | GitHub 500 on save | High | api/clients/[id]/github/route.ts | **Fixed 11 Jun 2026** — encrypt() failure now returns a clear 500 error message explaining ENCRYPTION_KEY must be a 32-byte base64 string. ENCRYPTION_KEY env var required in Vercel. |
 | GSC connections tab empty after OAuth redirect | High | clients/[id]/page.tsx | **Fixed 11 Jun 2026** — client page now reads `?tab=` and `?gsc=` URL params on mount. Tab param switches to the correct tab. gsc=connected shows a 4s success message. gsc=error with message=no_properties shows appropriate error. |
 
@@ -668,6 +672,16 @@ CREATE TABLE IF NOT EXISTS agent_knowledge (
 - `agent_automations` table (from session 6)
 - `agent_knowledge` table (from session 6)
 - Update Ada's nav_items to add Overview as first item (see session notes)
+
+### 11 June 2026 (session 8)
+**Fixed:**
+- Duplicate write_content — 9 drafts per conversation, estimated ~120k tokens wasted per session. Fixed with 30-minute dedup check (same keyword + client, approved=false) before insert. Returns `already_existed: true` with a "do not call again" message. `draftSavedRef` tracks state across the loop. After `write_content` succeeds and `loopCount >= 3`, loop exits via a Haiku wrap-up turn (max 500 tokens) rather than continuing — prevents Ada from re-entering the loop.
+- Session token counter resetting per message — `setSessionTokens(0)/setSessionCost(0)/sessionTokensRef.current=0` was at the top of `send()`. Removed. Counter now accumulates across the full conversation and only resets in `newConversation()`.
+- All 6 automations broken — corrected every handler in `run-automation/route.ts`: wrong column (`search_volume` → `monthly_volume`, `internal_links_count` → `internal_links` jsonb array), wrong table (`client_profiles.competitors` → `competitor_sites`), missing briefing_item creation, `monthly_content_plan` now calls `/api/calendar/generate-plan` instead of bare `/api/chat`, `gsc_review` now reports briefing items created per connection.
+- Sidebar today spend not updating — `agent_activity` insert was guarded by `if (workspaceId)`. Guard removed; always inserts with `workspace_id: workspaceId || null`. Today's spend now accumulates correctly regardless of workspace resolution timing.
+- Schedule editing UI — inline editor on automations page. "Schedule" button per row opens/closes a panel below the card (card border-radius adjusts). Panel has cadence pill row (daily/weekly/monthly), day-of-week pill row (weekly only), hour dropdown (UTC), "Save schedule" button. Saves to `agent_automations` and recomputes `next_run_at`.
+
+**Token waste note:** The duplicate write_content bug was responsible for most unexpectedly high session costs. Each duplicate invocation costs ~10-25k tokens for the write + image generation. With 9 drafts per session this was estimated at ~120k tokens (~$0.50+) per affected conversation.
 
 ### 11 June 2026 (session 4)
 **Built:**

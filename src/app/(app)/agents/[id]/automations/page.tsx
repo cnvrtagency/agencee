@@ -56,6 +56,9 @@ export default function AutomationsPage() {
   const [automations, setAutomations] = useState<Automation[]>([])
   const [togglingAutomation, setTogglingAutomation] = useState<string | null>(null)
   const [runningAutomation, setRunningAutomation] = useState<string | null>(null)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editForm, setEditForm] = useState({ cadence: 'weekly', run_day: 'monday', run_hour: 8 })
+  const [savingSchedule, setSavingSchedule] = useState(false)
 
   const fmt = (d: string) => new Date(d).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
 
@@ -112,6 +115,25 @@ export default function AutomationsPage() {
     }
   }
 
+  async function saveSchedule(automationId: string) {
+    setSavingSchedule(true)
+    const next = getNextRunAt(editForm.cadence, editForm.run_day || null, editForm.run_hour)
+    await supabase.from('agent_automations').update({
+      cadence: editForm.cadence,
+      run_day: editForm.cadence === 'daily' || editForm.cadence === 'monthly' ? null : editForm.run_day,
+      run_hour: editForm.run_hour,
+      next_run_at: next.toISOString(),
+    }).eq('id', automationId)
+    setAutomations(prev => prev.map(a => a.id === automationId ? {
+      ...a, cadence: editForm.cadence,
+      run_day: editForm.cadence === 'daily' ? null : editForm.run_day,
+      run_hour: editForm.run_hour,
+      next_run_at: next.toISOString(),
+    } : a))
+    setSavingSchedule(false)
+    setEditingId(null)
+  }
+
   return (
     <div style={{ maxWidth: 720 }}>
       <div style={{ marginBottom: 28 }}>
@@ -121,7 +143,8 @@ export default function AutomationsPage() {
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
         {automations.map(a => (
-          <div key={a.id} style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: '14px 16px', display: 'flex', alignItems: 'center', gap: 14, opacity: a.enabled ? 1 : 0.65 }}>
+          <div key={a.id}>
+          <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: editingId === a.id ? 'var(--radius-md) var(--radius-md) 0 0' : 'var(--radius-md)', padding: '14px 16px', display: 'flex', alignItems: 'center', gap: 14, opacity: a.enabled ? 1 : 0.65 }}>
             <button
               onClick={() => toggleAutomation(a.id, a.enabled)}
               disabled={togglingAutomation === a.id}
@@ -153,13 +176,66 @@ export default function AutomationsPage() {
               )}
             </div>
 
-            <button
-              onClick={() => runAutomationNow(a)}
-              disabled={runningAutomation === a.id}
-              style={{ flexShrink: 0, fontSize: 12, fontWeight: 500, padding: '5px 10px', borderRadius: 'var(--radius)', background: 'var(--surface-2)', border: '1px solid var(--border)', color: 'var(--text-2)', cursor: 'pointer', whiteSpace: 'nowrap' }}
-            >
-              {runningAutomation === a.id ? 'Running...' : 'Run now'}
-            </button>
+            <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+              <button
+                onClick={() => runAutomationNow(a)}
+                disabled={runningAutomation === a.id}
+                style={{ fontSize: 12, fontWeight: 500, padding: '5px 10px', borderRadius: 'var(--radius)', background: 'var(--surface-2)', border: '1px solid var(--border)', color: 'var(--text-2)', cursor: 'pointer', whiteSpace: 'nowrap' }}
+              >
+                {runningAutomation === a.id ? 'Running...' : 'Run now'}
+              </button>
+              <button
+                onClick={() => {
+                  setEditingId(editingId === a.id ? null : a.id)
+                  setEditForm({ cadence: a.cadence, run_day: a.run_day || 'monday', run_hour: a.run_hour ?? 8 })
+                }}
+                style={{ fontSize: 12, fontWeight: 500, padding: '5px 10px', borderRadius: 'var(--radius)', background: 'var(--surface-2)', border: '1px solid var(--border)', color: 'var(--text-2)', cursor: 'pointer' }}
+              >
+                {editingId === a.id ? 'Cancel' : 'Schedule'}
+              </button>
+            </div>
+          </div>
+          {editingId === a.id && (
+            <div style={{ background: 'var(--surface-2)', border: '1px solid var(--border)', borderTop: 'none', borderRadius: '0 0 var(--radius-md) var(--radius-md)', padding: '14px 16px', display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap' as const }}>
+              <div>
+                <div style={{ fontSize: 11, color: 'var(--text-2)', marginBottom: 5, textTransform: 'uppercase' as const, letterSpacing: '0.8px' }}>Cadence</div>
+                <div style={{ display: 'flex', gap: 4 }}>
+                  {['daily', 'weekly', 'monthly'].map(c => (
+                    <button key={c} onClick={() => setEditForm(f => ({ ...f, cadence: c }))}
+                      style={{ padding: '4px 10px', borderRadius: 99, fontSize: 11, cursor: 'pointer', border: 'none', background: editForm.cadence === c ? 'var(--accent)' : 'var(--surface-3)', color: editForm.cadence === c ? '#fff' : 'var(--text-2)', fontWeight: editForm.cadence === c ? 600 : 400, textTransform: 'capitalize' as const }}>
+                      {c}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {editForm.cadence === 'weekly' && (
+                <div>
+                  <div style={{ fontSize: 11, color: 'var(--text-2)', marginBottom: 5, textTransform: 'uppercase' as const, letterSpacing: '0.8px' }}>Day</div>
+                  <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap' as const }}>
+                    {['monday','tuesday','wednesday','thursday','friday','saturday','sunday'].map(d => (
+                      <button key={d} onClick={() => setEditForm(f => ({ ...f, run_day: d }))}
+                        style={{ padding: '4px 8px', borderRadius: 99, fontSize: 11, cursor: 'pointer', border: 'none', background: editForm.run_day === d ? 'var(--accent)' : 'var(--surface-3)', color: editForm.run_day === d ? '#fff' : 'var(--text-2)', fontWeight: editForm.run_day === d ? 600 : 400, textTransform: 'capitalize' as const }}>
+                        {d.slice(0, 3)}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <div>
+                <div style={{ fontSize: 11, color: 'var(--text-2)', marginBottom: 5, textTransform: 'uppercase' as const, letterSpacing: '0.8px' }}>Hour (UTC)</div>
+                <select value={editForm.run_hour} onChange={e => setEditForm(f => ({ ...f, run_hour: parseInt(e.target.value) }))}
+                  style={{ padding: '5px 8px', borderRadius: 'var(--radius)', fontSize: 12, border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)', cursor: 'pointer' }}>
+                  {Array.from({ length: 24 }, (_, i) => (
+                    <option key={i} value={i}>{String(i).padStart(2, '0')}:00</option>
+                  ))}
+                </select>
+              </div>
+              <button onClick={() => saveSchedule(a.id)} disabled={savingSchedule}
+                style={{ padding: '6px 16px', borderRadius: 'var(--radius)', fontSize: 12, fontWeight: 600, cursor: 'pointer', border: 'none', background: 'var(--accent)', color: '#fff' }}>
+                {savingSchedule ? 'Saving...' : 'Save schedule'}
+              </button>
+            </div>
+          )}
           </div>
         ))}
         {automations.length === 0 && (

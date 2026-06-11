@@ -92,19 +92,14 @@ export async function POST(req: NextRequest) {
       const { error: rpcErr } = await supabase.rpc('increment_tokens', { p_user_id: userId, p_tokens: tokensUsed })
       if (rpcErr) console.error('increment_tokens RPC error:', rpcErr.message, { userId, tokensUsed })
       // Log to agent_activity for per-client token tracking
-      if (workspaceId) {
-        const { error: actErr } = await supabase.from('agent_activity').insert({
-          workspace_id: workspaceId,
-          user_id: userId,
-          client_id: client_id || null,
-          agent_id: agent_id || null,
-          action: 'chat',
-          tokens_used: tokensUsed,
-        })
-        if (actErr) console.error('agent_activity insert error:', actErr.message, { workspaceId, client_id, agent_id })
-      } else {
-        console.warn('Token usage tracked for user but workspaceId is null — agent_activity not logged', { userId })
-      }
+      await supabase.from('agent_activity').insert({
+        workspace_id: workspaceId || null,
+        user_id: userId,
+        client_id: client_id || null,
+        agent_id: agent_id || null,
+        action: 'chat',
+        tokens_used: tokensUsed,
+      }).then(({ error }) => { if (error) console.error('agent_activity insert error:', error.message) })
     }
   }
 

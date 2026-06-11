@@ -36,82 +36,35 @@ export async function POST(req: NextRequest) {
 
   try {
     switch (automation.automation_type) {
+
       case 'weekly_keyword_scan': {
         const results: string[] = []
         for (const client of clientList.slice(0, 5)) {
           const { data: keywords } = await supabase
             .from('keyword_banks')
-            .select('keyword, search_volume, difficulty, content_targeting_this')
+            .select('keyword, monthly_volume, difficulty, current_position, content_targeting_this, opportunity_score')
             .eq('client_id', client.id)
             .is('content_targeting_this', null)
-            .order('search_volume', { ascending: false })
+            .order('opportunity_score', { ascending: false, nullsFirst: false })
             .limit(10)
+
           if (keywords && keywords.length > 0) {
-            results.push(`${client.name}: ${keywords.length} untargeted keywords (top: ${keywords[0].keyword})`)
+            const top = keywords[0]
+            results.push(`${client.name}: ${keywords.length} untargeted keywords. Top opportunity: "${top.keyword}" (vol: ${top.monthly_volume || '?'}, KD: ${top.difficulty || '?'}, pos: ${top.current_position || 'not ranking'})`)
+
+            await supabase.from('briefing_items').upsert({
+              client_id: client.id,
+              type: 'opportunity',
+              title: `Keyword gap: "${top.keyword}"`,
+              body: `${keywords.length} untargeted keywords found. Top opportunity: "${top.keyword}" — ${top.monthly_volume || '?'} searches/month, KD ${top.difficulty || '?'}${top.current_position ? `, currently ranking #${Math.round(top.current_position)}` : ', not ranking'}. No content targeting this keyword yet.`,
+              priority: top.opportunity_score || 50,
+              dismissed: false,
+            }, { onConflict: 'client_id,title' })
           }
         }
         summary = results.length > 0
-          ? `Keyword scan complete. ${results.join('; ')}`
-          : 'Keyword scan complete. No untargeted keywords found.'
-        break
-      }
-
-      case 'monthly_content_plan': {
-        const results: string[] = []
-        for (const client of clientList.slice(0, 3)) {
-          const res = await fetch(`${BASE_URL}/api/chat`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              model: 'claude-haiku-4-5-20251001',
-              max_tokens: 400,
-              messages: [{
-                role: 'user',
-                content: `Generate a brief 4-week content plan for ${client.name} (${client.website || 'no website'}). List 4 topics with target keyword and content type. Be concise.`,
-              }],
-            }),
-          })
-          const data = await res.json()
-          const text = (data.content || []).filter((b: any) => b.type === 'text').map((b: any) => b.text).join('').trim()
-          if (text) results.push(`${client.name}: plan generated`)
-        }
-        summary = results.length > 0
-          ? `Monthly content plans created for: ${results.join(', ')}`
-          : 'Monthly content plan run complete.'
-        break
-      }
-
-      case 'competitor_analysis': {
-        const results: string[] = []
-        for (const client of clientList.slice(0, 3)) {
-          if (!client.competitors?.length) continue
-          const res = await fetch(`${BASE_URL}/api/crawl`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ client_id: client.id, competitor_mode: true }),
-          })
-          if (res.ok) results.push(client.name)
-        }
-        summary = results.length > 0
-          ? `Competitor analysis complete for: ${results.join(', ')}`
-          : 'Competitor analysis run. No clients with competitors configured.'
-        break
-      }
-
-      case 'site_audit': {
-        const results: string[] = []
-        for (const client of clientList.slice(0, 3)) {
-          if (!client.website) continue
-          const res = await fetch(`${BASE_URL}/api/crawl`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ website: client.website, client_id: client.id }),
-          })
-          if (res.ok) results.push(client.name)
-        }
-        summary = results.length > 0
-          ? `Site audit crawl triggered for: ${results.join(', ')}`
-          : 'Site audit run. No client websites configured.'
+          ? results.join(' | ')
+          : 'All keywords in the bank have content targeting them.'
         break
       }
 
@@ -120,21 +73,28 @@ export async function POST(req: NextRequest) {
           .from('google_connections')
           .select('id, client_id')
           .eq('status', 'active')
+
+        if (!connections?.length) {
+          summary = 'No active GSC connections. Connect Google Search Console from the client Connections tab.'
+          break
+        }
+
         const synced: string[] = []
-        for (const conn of connections ?? []) {
+        for (const conn of connections) {
           const res = await fetch(`${BASE_URL}/api/gsc/sync`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ connection_id: conn.id }),
           })
-          if (res.ok) {
-            const client = clientList.find(c => c.id === conn.client_id)
-            if (client) synced.push(client.name)
+          const data = await res.json()
+          const client = clientList.find(c => c.id === conn.client_id)
+          if (res.ok && client) {
+            synced.push(`${client.name} (${data.briefing_items || 0} briefing items created)`)
           }
         }
         summary = synced.length > 0
-          ? `GSC review complete. Synced: ${synced.join(', ')}`
-          : 'GSC review run. No active Google connections found.'
+          ? `GSC synced: ${synced.join(', ')}`
+          : 'GSC sync attempted but no data returned.'
         break
       }
 
@@ -143,20 +103,130 @@ export async function POST(req: NextRequest) {
         for (const client of clientList.slice(0, 5)) {
           const { data: pages } = await supabase
             .from('site_pages')
-            .select('url, internal_links_count')
+            .select('url, title, internal_links, word_count')
             .eq('client_id', client.id)
-            .order('internal_links_count', { ascending: true })
-            .limit(5)
-          if (pages && pages.length > 0) {
-            const lowLinkPages = pages.filter((p: any) => (p.internal_links_count || 0) < 3)
-            if (lowLinkPages.length > 0) {
-              results.push(`${client.name}: ${lowLinkPages.length} pages with fewer than 3 internal links`)
+
+          if (!pages?.length) continue
+
+          const orphans = pages.filter((p: any) => {
+            const links = Array.isArray(p.internal_links) ? p.internal_links : []
+            return links.length < 2 && (p.word_count || 0) > 300
+          })
+
+          if (orphans.length > 0) {
+            results.push(`${client.name}: ${orphans.length} pages with fewer than 2 internal links — ${orphans.slice(0, 3).map((p: any) => p.url).join(', ')}${orphans.length > 3 ? '...' : ''}`)
+
+            await supabase.from('briefing_items').upsert({
+              client_id: client.id,
+              type: 'opportunity',
+              title: `Internal link gaps: ${orphans.length} underlinked pages`,
+              body: `${orphans.length} pages have fewer than 2 internal links pointing to them. These pages are losing link equity. Top candidates: ${orphans.slice(0, 5).map((p: any) => p.url).join(', ')}`,
+              priority: 40,
+              dismissed: false,
+            }, { onConflict: 'client_id,title' })
+          }
+        }
+        summary = results.length > 0
+          ? results.join(' | ')
+          : 'Internal link audit complete. All crawled pages have sufficient internal links.'
+        break
+      }
+
+      case 'site_audit': {
+        const results: string[] = []
+        for (const client of clientList.slice(0, 3)) {
+          if (!client.website) continue
+
+          const crawlRes = await fetch(`${BASE_URL}/api/crawl`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ website: client.website, client_id: client.id }),
+          })
+          const crawlData = await crawlRes.json()
+          if (!crawlRes.ok) { results.push(`${client.name}: crawl failed`); continue }
+
+          const { data: pages } = await supabase
+            .from('site_pages')
+            .select('url, title, h1, meta_description, word_count')
+            .eq('client_id', client.id)
+
+          if (!pages?.length) { results.push(`${client.name}: no pages found`); continue }
+
+          const noMeta = pages.filter(p => !p.meta_description).length
+          const noH1 = pages.filter(p => !p.h1).length
+          const thin = pages.filter(p => (p.word_count || 0) < 300).length
+          const issues = []
+          if (noMeta > 0) issues.push(`${noMeta} missing meta descriptions`)
+          if (noH1 > 0) issues.push(`${noH1} missing H1s`)
+          if (thin > 0) issues.push(`${thin} thin pages (<300 words)`)
+
+          const issueText = issues.length > 0 ? issues.join(', ') : 'no critical issues'
+          results.push(`${client.name}: ${pages.length} pages crawled, ${issueText}`)
+
+          if (issues.length > 0) {
+            await supabase.from('briefing_items').upsert({
+              client_id: client.id,
+              type: 'opportunity',
+              title: `Site audit: ${issues.length} issue type${issues.length > 1 ? 's' : ''} found`,
+              body: `Site audit complete (${pages.length} pages). Issues: ${issues.join('; ')}. Review the Pages tab for details.`,
+              priority: 60,
+              dismissed: false,
+            }, { onConflict: 'client_id,title' })
+          }
+        }
+        summary = results.join(' | ') || 'Site audit complete.'
+        break
+      }
+
+      case 'competitor_analysis': {
+        const results: string[] = []
+        for (const client of clientList.slice(0, 3)) {
+          const { data: compSites } = await supabase
+            .from('competitor_sites')
+            .select('id, url, name')
+            .eq('client_id', client.id)
+
+          if (!compSites?.length) continue
+
+          for (const comp of compSites) {
+            const res = await fetch(`${BASE_URL}/api/crawl`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ client_id: client.id, competitor_id: comp.id }),
+            })
+            if (res.ok) {
+              const data = await res.json()
+              results.push(`${comp.name || comp.url} (${data.pages_crawled || 0} pages)`)
             }
           }
         }
         summary = results.length > 0
-          ? `Internal link audit complete. ${results.join('; ')}`
-          : 'Internal link audit complete. All pages have sufficient internal links.'
+          ? `Competitor crawl complete: ${results.join(', ')}`
+          : 'No competitor sites configured. Add competitors in the client Competitors tab.'
+        break
+      }
+
+      case 'monthly_content_plan': {
+        const results: string[] = []
+        for (const client of clientList.slice(0, 3)) {
+          const res = await fetch(`${BASE_URL}/api/calendar/generate-plan`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              client_id: client.id,
+              weeks: 4,
+              posts_per_week: 2,
+              agent_id: automation.agent_id,
+            }),
+          })
+          const data = await res.json()
+          if (res.ok && data.created > 0) {
+            results.push(`${client.name}: ${data.created} items planned`)
+          }
+        }
+        summary = results.length > 0
+          ? `Content plans generated: ${results.join(', ')}`
+          : 'Monthly content plan complete. No new items added (plans may already exist).'
         break
       }
 
