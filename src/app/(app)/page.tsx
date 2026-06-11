@@ -19,10 +19,10 @@ const S: Record<string, React.CSSProperties> = {
     display: 'flex', flexDirection: 'column', gap: 8,
     cursor: 'pointer', textDecoration: 'none', color: 'inherit',
     transition: 'border-color 0.15s, box-shadow 0.15s',
-    boxShadow: '0 1px 3px rgba(0,0,0,0.3)',
+    boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
     position: 'relative', overflow: 'hidden',
   },
-  panel: { background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)', overflow: 'hidden', boxShadow: '0 1px 3px rgba(0,0,0,0.3)' },
+  panel: { background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)', overflow: 'hidden', boxShadow: '0 1px 3px rgba(0,0,0,0.06)' },
   panelHead: { padding: '14px 20px', borderBottom: '1px solid var(--border)', fontSize: 11, fontWeight: 600, color: 'var(--text-2)', textTransform: 'uppercase' as const, letterSpacing: '1.2px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' },
   row: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '13px 20px', borderBottom: '1px solid var(--border)' },
   empty: { padding: '40px 20px', fontSize: 13, color: 'var(--text-2)', textAlign: 'center' as const },
@@ -311,7 +311,7 @@ export default function Dashboard() {
       )}
 
       {/* Stat cards */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 14, marginBottom: 28 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 14, marginBottom: 28 }} className="stat-grid">
         {statItems.map(({ label, value, href, hi, c, glow }) => (
           <Link key={label} href={href} style={{
             ...S.statCard,

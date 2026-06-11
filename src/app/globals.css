@@ -17,10 +17,17 @@
   --text-muted:   #5A6A82;
   --text-dim:     #8A9AB2;
 
-  --accent:       #4F7FFF;
-  --accent-hover: #3A6AEE;
-  --accent-glow:  rgba(79,127,255,0.10);
-  --accent-bg:    rgba(79,127,255,0.06);
+  /* Brand greens */
+  --brand-bg:         #063227;
+  --brand-bg-deep:    #041f18;
+  --brand-surface:    #0a3d2e;
+  --brand-accent:     #c8f0d0;
+  --brand-accent-dim: #7dc49a;
+
+  --accent:       #063227;
+  --accent-hover: #041f18;
+  --accent-glow:  rgba(6,50,39,0.12);
+  --accent-bg:    rgba(6,50,39,0.06);
 
   --green:        #0F9D6E;
   --green-bg:     rgba(15,157,110,0.08);
@@ -116,9 +123,14 @@ textarea { resize: vertical; line-height: 1.6; }
 
 /* Avatar pulse ring for active agents */
 @keyframes pulse-ring {
-  0%   { box-shadow: 0 0 0 0 rgba(79,127,255,0.25); }
-  70%  { box-shadow: 0 0 0 7px rgba(79,127,255,0); }
-  100% { box-shadow: 0 0 0 0 rgba(79,127,255,0); }
+  0%   { box-shadow: 0 0 0 0 rgba(200,240,208,0.3); }
+  70%  { box-shadow: 0 0 0 7px rgba(200,240,208,0); }
+  100% { box-shadow: 0 0 0 0 rgba(200,240,208,0); }
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.4; }
 }
 
 /* Sidebar system status — slow breathe when idle */
@@ -183,3 +195,39 @@ textarea { resize: vertical; line-height: 1.6; }
 .markdown-body blockquote { border-left: 3px solid var(--border); padding-left: 14px; color: var(--text-2); margin: 16px 0; }
 .markdown-body code { font-family: var(--font-mono); font-size: 13px; background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
 .markdown-body hr { border: none; border-top: 1px solid var(--border); margin: 24px 0; }
+
+/* ─── Responsive layout ──────────────────────────────── */
+.app-main {
+  margin-left: 220px;
+}
+
+.mobile-header {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  .sidebar-panel {
+    transform: translateX(-100%);
+  }
+
+  .sidebar-panel[data-open="true"] {
+    transform: translateX(0) !important;
+  }
+
+  .app-main {
+    margin-left: 0;
+  }
+
+  .mobile-header {
+    display: flex !important;
+  }
+
+  .app-content {
+    padding: 20px 16px !important;
+  }
+
+  /* Stat grid: 2 cols on mobile */
+  .stat-grid {
+    grid-template-columns: repeat(2, 1fr) !important;
+  }
+}

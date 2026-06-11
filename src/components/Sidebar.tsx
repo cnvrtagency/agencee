@@ -3,6 +3,7 @@ import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase'
+import AgenceeLogo from '@/components/AgenceeLogo'
 
 // SVG icons keyed by name
 const ICONS: Record<string, React.ReactNode> = {
@@ -39,27 +40,27 @@ function NavItem({ href, label, icon, exact }: { href: string; label: string; ic
       padding: '7px 10px',
       borderRadius: 'var(--radius)',
       fontSize: 13, fontWeight: active ? 500 : 400,
-      color: active ? 'var(--text)' : 'var(--text-2)',
-      background: active ? 'var(--accent-bg)' : 'transparent',
-      borderLeft: active ? '2px solid var(--accent)' : '2px solid transparent',
+      color: active ? '#ffffff' : 'rgba(255,255,255,0.68)',
+      background: active ? 'rgba(200,240,208,0.1)' : 'transparent',
+      borderLeft: active ? '2px solid var(--brand-accent)' : '2px solid transparent',
       textDecoration: 'none',
       transition: 'background 0.12s, color 0.12s',
       cursor: 'pointer',
     }}
     onMouseEnter={e => {
       if (!active) {
-        (e.currentTarget as HTMLElement).style.background = 'rgba(79,127,255,0.04)'
-        ;(e.currentTarget as HTMLElement).style.color = 'var(--text)'
+        (e.currentTarget as HTMLElement).style.background = 'rgba(200,240,208,0.07)'
+        ;(e.currentTarget as HTMLElement).style.color = '#ffffff'
       }
     }}
     onMouseLeave={e => {
       if (!active) {
         (e.currentTarget as HTMLElement).style.background = 'transparent'
-        ;(e.currentTarget as HTMLElement).style.color = 'var(--text-2)'
+        ;(e.currentTarget as HTMLElement).style.color = 'rgba(255,255,255,0.68)'
       }
     }}
     >
-      {icon && <span style={{ opacity: active ? 1 : 0.5, color: active ? 'var(--accent)' : 'currentColor', flexShrink: 0, display: 'flex' }}>{icon}</span>}
+      {icon && <span style={{ opacity: active ? 1 : 0.5, color: 'currentColor', flexShrink: 0, display: 'flex' }}>{icon}</span>}
       {label}
     </Link>
   )
@@ -74,38 +75,37 @@ function SubNavItem({ href, label, icon }: { href: string; label: string; icon?:
       padding: '5px 10px 5px 26px',
       borderRadius: 'var(--radius)',
       fontSize: 12.5, fontWeight: active ? 500 : 400,
-      color: active ? 'var(--text)' : 'var(--text-2)',
-      background: active ? 'var(--accent-bg)' : 'transparent',
-      borderLeft: active ? '2px solid var(--accent)' : '2px solid transparent',
+      color: active ? '#ffffff' : 'rgba(255,255,255,0.55)',
+      background: active ? 'rgba(200,240,208,0.1)' : 'transparent',
+      borderLeft: active ? '2px solid var(--brand-accent)' : '2px solid transparent',
       textDecoration: 'none',
       transition: 'background 0.12s, color 0.12s',
       cursor: 'pointer',
     }}
     onMouseEnter={e => {
       if (!active) {
-        (e.currentTarget as HTMLElement).style.background = 'rgba(79,127,255,0.04)'
-        ;(e.currentTarget as HTMLElement).style.color = 'var(--text)'
+        (e.currentTarget as HTMLElement).style.background = 'rgba(200,240,208,0.07)'
+        ;(e.currentTarget as HTMLElement).style.color = '#ffffff'
       }
     }}
     onMouseLeave={e => {
       if (!active) {
         (e.currentTarget as HTMLElement).style.background = 'transparent'
-        ;(e.currentTarget as HTMLElement).style.color = 'var(--text-2)'
+        ;(e.currentTarget as HTMLElement).style.color = 'rgba(255,255,255,0.55)'
       }
     }}
     >
-      {icon && <span style={{ opacity: active ? 1 : 0.45, color: active ? 'var(--accent)' : 'currentColor', flexShrink: 0, display: 'flex' }}>{icon}</span>}
+      {icon && <span style={{ opacity: active ? 1 : 0.45, color: 'currentColor', flexShrink: 0, display: 'flex' }}>{icon}</span>}
       {label}
     </Link>
   )
 }
 
 function Divider() {
-  return <div style={{ height: 1, background: 'var(--border)', margin: '8px 10px' }} />
+  return <div style={{ height: 1, background: 'rgba(200,240,208,0.1)', margin: '8px 10px' }} />
 }
 
 export default function Sidebar() {
-  const path = usePathname()
   const [agents, setAgents] = useState<Agent[]>([])
   const [usage, setUsage] = useState<Usage>(null)
   const [workspaceName, setWorkspaceName] = useState<string>('')
@@ -135,31 +135,29 @@ export default function Sidebar() {
   }, [])
 
   const usagePct = usage ? Math.min(100, Math.round((usage.tokens_used_this_month / usage.monthly_token_budget) * 100)) : 0
-  const usageColour = usagePct >= 90 ? 'var(--red)' : usagePct >= 70 ? 'var(--amber)' : 'var(--accent)'
+  const usageColour = usagePct >= 90 ? 'var(--red)' : usagePct >= 70 ? 'var(--amber)' : 'var(--brand-accent)'
 
   return (
     <aside style={{
       width: 220,
       flexShrink: 0,
-      background: 'var(--surface)',
-      borderRight: '1px solid var(--border)',
+      background: 'var(--brand-bg)',
+      borderRight: '1px solid rgba(200,240,208,0.1)',
       display: 'flex',
       flexDirection: 'column',
       position: 'fixed',
       top: 0, left: 0, bottom: 0,
     }}>
-      {/* Wordmark */}
-      <div style={{ padding: '22px 20px 18px' }}>
-        <div style={{ fontFamily: 'var(--font-display)', fontStyle: 'italic', fontSize: 22, color: 'var(--text)', letterSpacing: '0.1px', lineHeight: 1 }}>
-          Agencee
-        </div>
+      {/* Logo */}
+      <div style={{ padding: '20px 20px 16px', display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
+        <AgenceeLogo variant="sidebar" animate={false} />
         {workspaceName && (
-          <div style={{ fontSize: 11, color: 'var(--text-2)', marginTop: 4, letterSpacing: '0.3px' }}>
+          <div style={{ fontSize: 10, color: 'rgba(200,240,208,0.45)', marginTop: 6, letterSpacing: '0.4px', paddingLeft: 2 }}>
             {workspaceName}
           </div>
         )}
       </div>
-      <div style={{ height: 1, background: 'var(--border)', flexShrink: 0 }} />
+      <div style={{ height: 1, background: 'rgba(200,240,208,0.12)', flexShrink: 0 }} />
 
       {/* Nav */}
       <nav style={{ flex: 1, padding: '8px 8px', display: 'flex', flexDirection: 'column', gap: 1, overflowY: 'auto' }}>
@@ -179,24 +177,24 @@ export default function Sidebar() {
               {/* Agent header — links to chat */}
               <Link href={`/agents/${agent.id}`} style={{ textDecoration: 'none' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 9, padding: '6px 10px', cursor: 'pointer' }}
-                  onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'rgba(79,127,255,0.04)'}
+                  onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'rgba(200,240,208,0.07)'}
                   onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'transparent'}
                 >
                   <div style={{
                     width: 26, height: 26, borderRadius: 7,
-                    background: 'var(--surface-3)',
-                    border: '1px solid var(--border-bright)',
+                    background: 'rgba(200,240,208,0.1)',
+                    border: '1px solid rgba(200,240,208,0.2)',
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    fontSize: 10, fontWeight: 700, color: 'var(--accent)',
+                    fontSize: 10, fontWeight: 700, color: 'var(--brand-accent)',
                     fontFamily: 'var(--font-mono)', flexShrink: 0,
                     animation: hasRunning && agent.active ? 'pulse-ring 1.8s ease-out infinite' : 'none',
-                    boxShadow: hasRunning && agent.active ? '0 0 0 0 rgba(79,127,255,0.55)' : 'none',
+                    boxShadow: hasRunning && agent.active ? '0 0 0 0 rgba(200,240,208,0.55)' : 'none',
                   }}>
                     {agent.avatar_initials || agent.name.slice(0, 2).toUpperCase()}
                   </div>
                   <div>
-                    <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text)', lineHeight: 1.2 }}>{agent.name}</div>
-                    <div style={{ fontSize: 10, color: 'var(--text-2)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{agent.role}</div>
+                    <div style={{ fontSize: 12.5, fontWeight: 600, color: '#ffffff', lineHeight: 1.2 }}>{agent.name}</div>
+                    <div style={{ fontSize: 10, color: 'rgba(200,240,208,0.55)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{agent.role}</div>
                   </div>
                 </div>
               </Link>
@@ -204,8 +202,6 @@ export default function Sidebar() {
               {/* Agent sub-nav */}
               {navItems.map((item: { label: string; path: string; icon: string }) => {
                 const resolvedPath = item.path.replace('[id]', agent.id)
-                // For the Chat item (/agents/[id]) use exact matching
-                const isChat = item.path === '/agents/[id]'
                 return (
                   <SubNavItem
                     key={item.label}
@@ -224,25 +220,25 @@ export default function Sidebar() {
       </nav>
 
       {/* Bottom panel */}
-      <div style={{ padding: '12px 12px 18px', borderTop: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div style={{ padding: '12px 12px 18px', borderTop: '1px solid rgba(200,240,208,0.1)', display: 'flex', flexDirection: 'column', gap: 10 }}>
         {usage && (
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 }}>
-              <span style={{ fontSize: 11, color: 'var(--text-2)' }}>Tokens</span>
-              <span style={{ fontSize: 11, color: usagePct >= 70 ? usageColour : 'var(--text-2)', fontFamily: 'var(--font-mono)' }}>
+              <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.55)' }}>Tokens</span>
+              <span style={{ fontSize: 11, color: usagePct >= 70 ? usageColour : 'rgba(255,255,255,0.55)', fontFamily: 'var(--font-mono)' }}>
                 {usagePct}%
               </span>
             </div>
-            <div style={{ height: 2, background: 'var(--surface-3)', borderRadius: 99, overflow: 'hidden' }}>
+            <div style={{ height: 2, background: 'rgba(255,255,255,0.1)', borderRadius: 99, overflow: 'hidden' }}>
               <div style={{ height: '100%', width: `${usagePct}%`, background: usageColour, borderRadius: 99, transition: 'width 0.6s' }} />
             </div>
           </div>
         )}
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <div style={{ flex: 1, height: 2, borderRadius: 99, background: 'var(--accent)',
+          <div style={{ flex: 1, height: 2, borderRadius: 99, background: 'var(--brand-accent)',
             animation: hasRunning ? 'breathe-fast 0.9s ease-in-out infinite' : 'breathe 2.8s ease-in-out infinite' }} />
-          <span style={{ fontSize: 10, color: 'var(--text-2)', whiteSpace: 'nowrap', fontFamily: 'var(--font-mono)' }}>
+          <span style={{ fontSize: 10, color: 'rgba(200,240,208,0.5)', whiteSpace: 'nowrap', fontFamily: 'var(--font-mono)' }}>
             {hasRunning ? 'running' : 'ready'}
           </span>
         </div>

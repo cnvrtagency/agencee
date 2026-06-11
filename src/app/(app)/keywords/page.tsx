@@ -17,7 +17,7 @@ const S: Record<string, React.CSSProperties> = {
   td: { padding: '13px 18px', fontSize: 13, borderBottom: '1px solid var(--border)', verticalAlign: 'top' as const },
 }
 
-function pill(active: boolean, color = 'var(--accent)'): React.CSSProperties {
+function pill(active: boolean, color = 'var(--brand-bg)'): React.CSSProperties {
   return {
     padding: '5px 14px', borderRadius: 99, fontSize: 12, cursor: 'pointer', border: 'none',
     background: active ? color : 'var(--surface-2)',
