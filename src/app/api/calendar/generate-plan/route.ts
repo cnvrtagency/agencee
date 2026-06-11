@@ -99,7 +99,7 @@ export async function POST(req: NextRequest) {
       ? `Totals (28d): ${gsc.totals.clicks} clicks, ${gsc.totals.impressions} impressions, avg pos ${gsc.totals.avg_position}
 Near-miss keywords: ${(gsc.near_miss || []).map((n: any) => `"${n.query}" #${n.position} (${n.impressions}imp)`).join(', ') || 'none'}
 Low CTR pages: ${(gsc.low_ctr || []).map((l: any) => `${l.url} ${l.ctr}%`).join(', ') || 'none'}`
-      : 'No GSC data available.'
+      : 'No GSC data available. Treat this as a startup/no-history plan: use the client profile, services, locations, target keyword seeds, live pages, competitor coverage, and sensible SERP intent assumptions. Label inferred opportunities clearly in rationales.'
 
     const prompt = `You are an expert SEO content strategist planning content for ${client.name}.
 
@@ -109,6 +109,9 @@ Customer: ${(client as any).icp || 'not specified'}
 USP: ${(client as any).usp || 'not specified'}
 Goals: ${(client as any).content_goals || 'not specified'}
 ${(client as any).location_info ? `Location: ${(client as any).location_info}` : ''}
+${(client as any).service_differentiators ? `Service differentiators: ${(client as any).service_differentiators}` : ''}
+${(client as any).target_keywords ? `Target keyword seeds: ${(client as any).target_keywords}` : ''}
+${(client as any).trust_signals ? `Trust signals: ${(client as any).trust_signals}` : ''}
 
 LIVE SITE PAGES (do not plan content that duplicates these):
 ${sitePageLines || 'No crawl data'}
@@ -119,7 +122,7 @@ ${gscBlock}
 ${competitorContext ? `COMPETITOR CONTENT (what they cover that you might not):\n${competitorContext}` : 'No competitor data — add and crawl competitors in the client Competitors tab.'}
 
 KEYWORD BANK (targeting:NOTHING means genuinely untargeted):
-${kwLines || 'Empty'}
+${kwLines || 'Empty. For a startup/no-history plan, create seed opportunities from profile services, locations, target keyword seeds, competitor coverage, pricing/comparison intent, and trust/FAQ topics.'}
 
 PUBLISHED CONTENT HISTORY:
 ${historyLines || 'None'}
@@ -155,9 +158,9 @@ Sequencing rules:
 7. Vary content types -- not every piece should be a blog_post. Location pages, pillar pages, FAQ pages, and comparison pages all have different ranking dynamics.
 8. Never plan 3+ pieces targeting the same location in a row -- spread geography across the plan
 9. Spread publish dates evenly: ${posts_per_week} per week, weekdays only (Mon-Fri)
-10. If the keyword bank lacks enough high-value untargeted keywords, say so in the summary rather than padding with low-value variations
+10. If the keyword bank lacks enough high-value untargeted keywords, create seed opportunities from services, locations, target keyword seeds, and competitor coverage. Say which ideas are inferred rather than GSC-proven, and do not pad with low-value variations.
 
-Each entry's rationale must explain WHY this specific piece in this specific position -- not just "good keyword". Reference the actual data: position, impressions, competitor coverage, or topical gap that makes it the right move.
+Each entry's rationale must explain WHY this specific piece in this specific position -- not just "good keyword". Reference the actual data where available: position, impressions, competitor coverage, live page gap, target keyword seed, service/location fit, or startup topical gap that makes it the right move.
 
 Respond with ONLY a JSON object, no markdown fences, no preamble:
 {

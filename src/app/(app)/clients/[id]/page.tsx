@@ -151,6 +151,7 @@ export default function ClientDetail() {
   const [savingComp, setSavingComp] = useState(false)
   const [crawlingComp, setCrawlingComp] = useState<string | null>(null)
   const [compPages, setCompPages] = useState<Record<string, any[]>>({})
+  const [compCrawlErrors, setCompCrawlErrors] = useState<Record<string, string>>({})
   const [expandedComp, setExpandedComp] = useState<string | null>(null)
   const [justAddedCompId, setJustAddedCompId] = useState<string | null>(null)
 
@@ -427,7 +428,7 @@ export default function ClientDetail() {
     try {
       const res = await fetch('/api/crawl', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client_id: id, website: client.website }) })
       const data = await res.json()
-      if (data.error) setCrawlError(data.error)
+      if (data.error) setCrawlError([data.error, data.details].filter(Boolean).join(' '))
       else { loadClient(); loadPages(); setActiveTab('pages') }
     } catch { setCrawlError('Crawl failed.') }
     setCrawling(false)
@@ -606,11 +607,23 @@ export default function ClientDetail() {
 
   async function crawlCompetitor(compId: string, url: string) {
     setCrawlingComp(compId)
+    setCompCrawlErrors(prev => {
+      const next = { ...prev }
+      delete next[compId]
+      return next
+    })
     try {
       const res = await fetch('/api/crawl', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client_id: id, website: url, competitor_id: compId }) })
       const data = await res.json()
-      if (!data.error) { loadCompetitors(); loadCompPages(compId) }
-    } catch {}
+      if (data.error) {
+        setCompCrawlErrors(prev => ({ ...prev, [compId]: [data.error, data.details].filter(Boolean).join(' ') }))
+        loadCompetitors(); loadCompPages(compId)
+      } else {
+        loadCompetitors(); loadCompPages(compId)
+      }
+    } catch {
+      setCompCrawlErrors(prev => ({ ...prev, [compId]: 'Crawl failed before Ada could read the site. Check the URL and try again.' }))
+    }
     setCrawlingComp(null)
   }
 
@@ -1172,6 +1185,7 @@ export default function ClientDetail() {
                 {competitors.map((c, i) => {
                   const pages = compPages[c.id] || []
                   const isExpanded = expandedComp === c.id
+                  const crawlError = compCrawlErrors[c.id]
                   return (
                     <div key={c.id} style={{ borderBottom: i < competitors.length - 1 ? '1px solid var(--border)' : 'none' }}>
                       <div style={{ padding: '16px 20px', display: 'flex', alignItems: 'center', gap: 14, cursor: 'pointer' }}
@@ -1183,6 +1197,7 @@ export default function ClientDetail() {
                           <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', marginBottom: 2 }}>{c.name || c.url}</div>
                           <a href={c.url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} style={{ fontSize: 12, color: 'var(--accent)', fontFamily: 'var(--font-mono)' }}>{c.url}</a>
                           {c.last_crawled_at && <span style={{ fontSize: 11, color: 'var(--text-dim)', marginLeft: 10 }}>Crawled {new Date(c.last_crawled_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}</span>}
+                          {crawlError && <div style={{ fontSize: 12, color: 'var(--red)', marginTop: 6, lineHeight: 1.5 }}>{crawlError}</div>}
                           {(() => {
                             const pages = compPages[c.id] || []
                             const withSummary = pages.filter((p: any) => p.content_summary)
@@ -1207,7 +1222,9 @@ export default function ClientDetail() {
                       {isExpanded && (
                         <div style={{ background: 'var(--surface-2)', borderTop: '1px solid var(--border)', padding: '0 0 4px' }}>
                           {pages.length === 0 ? (
-                            <div style={{ padding: '20px', fontSize: 13, color: 'var(--text-2)' }}>{c.last_crawled_at ? 'No pages found.' : 'Crawl to see competitor pages.'}</div>
+                            <div style={{ padding: '20px', fontSize: 13, color: crawlError ? 'var(--red)' : 'var(--text-2)', lineHeight: 1.6 }}>
+                              {crawlError || (c.last_crawled_at ? 'No pages are stored for this competitor yet. Re-crawl to refresh diagnostics.' : 'Crawl to see competitor pages.')}
+                            </div>
                           ) : (
                             <table style={{ ...S.table }}>
                               <thead>
@@ -1240,7 +1257,7 @@ export default function ClientDetail() {
       {activeTab === 'schedule' && (() => {
         const JOB_TYPES = [
           { type: 'gsc_intelligence', icon: '🔍', label: 'GSC Intelligence', desc: 'Syncs search data, scores keywords, updates briefing room' },
-          { type: 'keyword_research', icon: '🔑', label: 'Keyword Research', desc: 'Finds new keyword opportunities from GSC and competitors' },
+          { type: 'keyword_research', icon: '🔑', label: 'Keyword Research', desc: 'Finds opportunities from GSC, competitors, seed services, and locations' },
           { type: 'content', icon: '✍️', label: 'Content Creation', desc: 'Writes and stages content based on your content calendar' },
           { type: 'site_audit', icon: '🔧', label: 'Site Audit', desc: 'Crawls your site and surfaces technical issues' },
         ]

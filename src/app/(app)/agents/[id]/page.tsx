@@ -199,6 +199,7 @@ Tool usage guide:
 - get_keywords: call to see the full keyword bank with targets and current ranking positions
 - audit_site: call when doing a full site health review
 - analyse_competitors: call when evaluating content gaps against competitors
+- startup_seo_brief: call when a site is new, has no/low GSC history, has a thin keyword bank, or the user asks how to grow a startup from scratch
 - read_page: call when you need the full content of a specific page before writing something adjacent
 - generate_images: call after writing the draft, not before
 - write_content: call to save finished drafts for review
@@ -214,6 +215,9 @@ Before claiming any keyword is "untargeted" or any topic "has not been covered,"
 3. search_history — has a draft or published piece covered this angle?
 All three must agree before you say something is a gap. If they conflict, read the relevant page before concluding.
 If get_keywords reports "inferred coverage" for a keyword, treat it as already targeted unless the user explicitly asks for a stronger/dedicated page.
+
+STARTUP / NO-GSC RULE:
+Google Search Console is useful but optional. If a client is new, has no GSC rows, has not connected GSC, or has too little historical search data, do not stop or tell the user to wait for GSC. Switch to startup SEO mode: use startup_seo_brief, the client profile, services, locations, site pages, keyword bank, competitor URLs/pages, and web_search/SERP research to build a seed keyword strategy. Be clear when volume/difficulty is estimated, then use suggest_keyword for valuable seed opportunities that are missing from the bank.
 
 BLOG POST WORKFLOW:
 1. search_history — check what exists on this topic
@@ -255,7 +259,7 @@ CONTENT PLANNING:
 Default to 3 posts per week unless keyword bank is shallow or user specifies otherwise.
 Sequence: fastest ranking wins first (KD <30, near-miss), then hub pages, then commercial intent, then informational.
 A 4-week plan = 10-14 pieces, not 4.
-If keyword bank is thin, flag it rather than padding with low-value topics.
+If keyword bank is thin, use startup_seo_brief plus web_search to create seed commercial/local/informational opportunities. Do not pad with low-value topics.
 
 PROACTIVE RESPONSIBILITIES:
 - After publishing, call suggest_internal_links
@@ -599,6 +603,17 @@ Supports: wordpress, shopify, github (MDX), webflow`,
     },
   },
   {
+    name: 'startup_seo_brief',
+    description: 'Build a seed SEO brief for a new or low-history client without relying on Google Search Console. Returns profile context, services/locations/target keywords, live pages, keyword bank coverage, content history, competitor URLs/pages, and clear instructions for startup keyword and content strategy.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        client_name: { type: 'string', description: 'The client to brief' },
+      },
+      required: ['client_name'],
+    },
+  },
+  {
     name: 'suggest_internal_links',
     description: 'After saving new content, identify existing pages that should link to it. Call this after every successful write_content.',
     input_schema: {
@@ -784,6 +799,7 @@ export default function AgentPage() {
     suggest_keyword: 'Saving keyword suggestion…',
     create_content_plan: 'Building content calendar…',
     analyse_competitors: 'Analysing competitor sites…',
+    startup_seo_brief: 'Building startup SEO brief…',
     suggest_internal_links: 'Finding internal link opportunities…',
     analyse_gsc: 'Analysing Search Console data…',
     web_search: 'Searching the web…',
@@ -1472,6 +1488,12 @@ export default function AgentPage() {
 
       const perSite = compSites.map(site => {
         const pages = (compPages || []).filter(p => p.competitor_id === site.id)
+        if (pages.length === 0) {
+          const host = (() => {
+            try { return new URL(site.url).hostname } catch { return site.url }
+          })()
+          return `${site.name || site.url} — no pages crawled yet. Re-crawl this competitor from the Competitors tab. If the crawl still finds no pages, use web_search with site:${host} plus the client's service/location themes to inspect public competitor content manually.`
+        }
         const withSummaries = pages.filter(p => p.content_summary)
         const gaps = withSummaries.filter(p => {
           const pageTopics = `${p.title || ''} ${p.content_summary || ''}`.toLowerCase()
@@ -1519,7 +1541,101 @@ export default function AgentPage() {
         }, { onConflict: 'client_id' })
       } catch { /* non-critical */ }
 
-      return `Competitor analysis for ${client.name} — ${compSites.length} competitors:\n\nNote: gaps are identified by comparing competitor page topics against your live site. Verify before acting.\n\n${perSite.join('\n\n')}`
+      const crawledPageCount = (compPages || []).length
+      const emptyCrawlNote = crawledPageCount === 0
+        ? '\n\nNo crawled competitor pages are stored yet, so do not present this as a complete competitor gap analysis. Use the registered competitor URLs as seed sites for web_search, or ask the user to re-crawl after checking the diagnostics in the Competitors tab.'
+        : ''
+      return `Competitor analysis for ${client.name} — ${compSites.length} competitors:\n\nNote: gaps are identified by comparing competitor page topics against your live site. Verify before acting.${emptyCrawlNote}\n\n${perSite.join('\n\n')}`
+    }
+
+    // ── startup_seo_brief: seed SEO strategy without relying on GSC ───────────
+    if (toolName === 'startup_seo_brief') {
+      const requested = toolClientName(toolInput).toLowerCase()
+      const client = clients.find(c => c.name.toLowerCase() === requested)
+        || clients.find(c => c.name.toLowerCase().includes(requested))
+      if (!client) return `Could not find client matching "${toolClientName(toolInput)}".`
+
+      const [
+        { data: fetchedPages },
+        { data: keywords },
+        { data: history },
+        { data: compSites },
+        { data: compPages },
+        { data: gscSample },
+      ] = await Promise.all([
+        supabase.from('site_pages').select('url,title,h1,meta_description,word_count,content_summary').eq('client_id', client.id).order('url').limit(60),
+        supabase.from('keyword_banks').select('keyword,cluster,intent,funnel_stage,monthly_volume,difficulty,current_position,content_targeting_this,priority').eq('client_id', client.id).order('priority').order('keyword').limit(80),
+        supabase.from('content_history').select('title,url,primary_keyword,summary,published_at').eq('client_id', client.id).order('published_at', { ascending: false }).limit(30),
+        supabase.from('competitor_sites').select('id,url,name').eq('client_id', client.id),
+        supabase.from('competitor_pages').select('competitor_id,url,title,h1,word_count,content_summary').eq('client_id', client.id).order('word_count', { ascending: false }).limit(80),
+        supabase.from('search_performance').select('query,position,impressions,clicks').eq('client_id', client.id).not('query', 'in', '("__total__","__page__","__device__")').order('impressions', { ascending: false }).limit(10),
+      ])
+
+      const pages = (sitePages[client.id]?.length ? sitePages[client.id] : fetchedPages) || []
+      const gscStatus = gscSample && gscSample.length > 0
+        ? `GSC has ${gscSample.length} sampled query row(s). Use analyse_gsc for performance-led opportunities if needed.`
+        : 'No GSC query rows found. Treat this as startup/no-history SEO: do not wait for Search Console data before recommending seed keywords, service pages, location pages, and trust-building content.'
+
+      const profileLines = [
+        client.industry ? `Industry: ${client.industry}` : null,
+        client.website ? `Website: ${client.website}` : null,
+        client.description ? `About: ${client.description}` : null,
+        client.icp ? `Ideal customer: ${client.icp}` : null,
+        client.usp ? `USP: ${client.usp}` : null,
+        client.service_differentiators ? `Service differentiators: ${client.service_differentiators}` : null,
+        client.location_info ? `Locations served: ${client.location_info}` : null,
+        client.target_keywords ? `Target keywords/seeds: ${client.target_keywords}` : null,
+        client.trust_signals ? `Trust signals: ${client.trust_signals}` : null,
+        client.content_goals ? `Content goals: ${client.content_goals}` : null,
+      ].filter(Boolean).join('\n') || 'No profile context saved yet.'
+
+      const pageLines = pages.length > 0
+        ? pages.slice(0, 25).map((p: any) => `- ${p.title || p.h1 || p.url} | ${p.url} | ${p.word_count || 0}w | ${p.content_summary || 'no summary'}`).join('\n')
+        : 'No crawled site pages yet. Recommend starting with core service, location, about/trust, and contact/conversion pages.'
+
+      const targetedCount = (keywords || []).filter((k: any) => k.content_targeting_this).length
+      const keywordLines = keywords && keywords.length > 0
+        ? keywords.slice(0, 40).map((k: any) => `- ${k.keyword} | ${k.intent || 'unknown intent'} | ${k.funnel_stage || 'unknown stage'} | vol ${k.monthly_volume ?? 'est needed'} | KD ${k.difficulty ?? 'est needed'} | ${k.content_targeting_this ? `targeted by ${k.content_targeting_this}` : 'not targeted'}`).join('\n')
+        : 'No keyword bank entries yet. Build seed ideas from services, locations, problems, comparisons, pricing, credentials, and competitor SERPs.'
+
+      const historyLines = history && history.length > 0
+        ? history.slice(0, 20).map((h: any) => `- ${h.title} | ${h.primary_keyword || 'no keyword'} | ${h.url || 'no URL'} | ${h.summary || 'no summary'}`).join('\n')
+        : 'No content history yet.'
+
+      const competitorLines = compSites && compSites.length > 0
+        ? compSites.map((site: any) => {
+            const pagesForSite = (compPages || []).filter((p: any) => p.competitor_id === site.id)
+            const pageSample = pagesForSite.slice(0, 5).map((p: any) => `    - ${p.title || p.h1 || p.url} | ${p.url} | ${p.content_summary || 'no summary'}`).join('\n')
+            return `- ${site.name || site.url} | ${site.url} | ${pagesForSite.length} crawled page(s)${pageSample ? `\n${pageSample}` : '\n    - No pages stored. Use this URL as a web_search seed if crawl diagnostics show blocking.'}`
+          }).join('\n')
+        : 'No competitors registered yet. Ask for 3-5 direct competitors, or use web_search to find SERP competitors for core service/location terms.'
+
+      return `Startup SEO brief for ${client.name}
+
+GSC status:
+${gscStatus}
+
+Client profile:
+${profileLines}
+
+Existing live pages (${pages.length}):
+${pageLines}
+
+Keyword bank (${keywords?.length || 0} total, ${targetedCount} targeted):
+${keywordLines}
+
+Content history:
+${historyLines}
+
+Competitors:
+${competitorLines}
+
+How to use this brief:
+- Build seed keywords from services, locations, audience problems, comparison/alternative terms, pricing/eligibility terms, and trust credentials.
+- Prioritise bottom-funnel service and location pages first, then comparison/FAQ content, then top-funnel educational posts.
+- Use web_search before giving current SERP angles or volume/difficulty estimates.
+- When a valuable seed keyword is missing from the keyword bank, call suggest_keyword before recommending it as part of a plan.
+- Be explicit when a recommendation is based on startup inference rather than historical GSC performance.`
     }
 
     // ── suggest_internal_links ─────────────────────────────────────────────────
@@ -1568,7 +1684,9 @@ export default function AgentPage() {
         .eq('client_id', client.id)
         .eq('query', '__total__')
 
-      if (!rows || rows.length === 0) return `No GSC data for ${client.name}. Run a sync from the Search Performance tab first.`
+      if (!rows || rows.length === 0) {
+        return `No GSC query data for ${client.name}. This is normal for a new site, a newly connected property, or a client with very low search history. Do not wait for GSC before helping: call startup_seo_brief, then use the client profile, live pages, keyword bank, competitors, and web_search/SERP research to build a seed SEO plan.`
+      }
 
       // Sort totals by period_start ascending → [90d, 28d, 7d]
       const sortedTotals = (totalsAll || []).sort((a: any, b: any) => new Date(a.period_start).getTime() - new Date(b.period_start).getTime())

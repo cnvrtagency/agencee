@@ -103,7 +103,37 @@ function countWords(html: string): number {
   return text.split(' ').filter(w => w.length > 0).length
 }
 
-async function fetchPage(url: string): Promise<{ html: string; finalUrl: string } | null> {
+type FetchPageSuccess = { ok: true; html: string; finalUrl: string }
+type FetchPageFailure = {
+  ok: false
+  url: string
+  finalUrl?: string
+  reason: string
+  status?: number
+  contentType?: string
+}
+type FetchPageResult = FetchPageSuccess | FetchPageFailure
+
+function describeFetchFailure(failure: FetchPageFailure): string {
+  const context = [
+    failure.status ? `status ${failure.status}` : null,
+    failure.contentType ? `content-type ${failure.contentType}` : null,
+    failure.finalUrl && failure.finalUrl !== failure.url ? `final URL ${failure.finalUrl}` : null,
+  ].filter(Boolean)
+  return `${failure.url}: ${failure.reason}${context.length > 0 ? ` (${context.join(', ')})` : ''}`
+}
+
+function noPagesDetails(input: { attempted: number; sitemapUrlCount: number; usingSitemap: boolean; failures: FetchPageFailure[] }): string {
+  const source = input.sitemapUrlCount > 0
+    ? `Found ${input.sitemapUrlCount} sitemap URL(s)${input.usingSitemap ? '' : ', but none were crawlable HTML page URLs'}.`
+    : 'No sitemap URLs found, so the crawler started from the homepage.'
+  const failures = input.failures.length > 0
+    ? ` First failures: ${input.failures.slice(0, 3).map(describeFetchFailure).join(' | ')}`
+    : ' No HTML pages were discoverable from the start URL.'
+  return `Tried ${input.attempted} URL(s). ${source}${failures}`
+}
+
+async function fetchPage(url: string): Promise<FetchPageResult> {
   try {
     const res = await fetch(url, {
       headers: {
@@ -116,12 +146,20 @@ async function fetchPage(url: string): Promise<{ html: string; finalUrl: string 
       redirect: 'follow',
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     })
-    if (!res.ok) return null
     const contentType = res.headers.get('content-type') || ''
-    if (!contentType.includes('text/html')) return null
+    if (!res.ok) {
+      return { ok: false, url, finalUrl: res.url, status: res.status, contentType, reason: `HTTP ${res.status}${res.statusText ? ` ${res.statusText}` : ''}` }
+    }
+    if (!contentType.toLowerCase().includes('text/html')) {
+      return { ok: false, url, finalUrl: res.url, status: res.status, contentType, reason: `Expected HTML but received ${contentType || 'no content type'}` }
+    }
     const html = await res.text()
-    return { html, finalUrl: res.url }
-  } catch { return null }
+    return { ok: true, html, finalUrl: res.url }
+  } catch (error) {
+    const err = error as Error
+    const timedOut = err?.name === 'TimeoutError' || err?.name === 'AbortError'
+    return { ok: false, url, reason: timedOut ? `Timed out after ${Math.round(FETCH_TIMEOUT_MS / 1000)} seconds` : err?.message || 'Request failed' }
+  }
 }
 
 async function fetchSitemapUrls(baseUrl: string): Promise<string[]> {
@@ -224,6 +262,7 @@ export async function POST(req: NextRequest) {
     if (!baseUrl) return NextResponse.json({ error: 'Competitor site URL is invalid.' }, { status: 400 })
     const visited = new Set<string>()
     const pages: any[] = []
+    const fetchFailures: FetchPageFailure[] = []
     const maxPages = 20
     // Try sitemap first
     let queue: string[] = []
@@ -248,7 +287,10 @@ export async function POST(req: NextRequest) {
       if (visited.has(url)) continue
       visited.add(url)
       const result = await fetchPage(url)
-      if (!result) continue
+      if (!result.ok) {
+        fetchFailures.push(result)
+        continue
+      }
       const { html, finalUrl } = result
       visited.add(finalUrl)
       const title = extractText(html, 'title')
@@ -264,7 +306,12 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    if (pages.length === 0) return NextResponse.json({ error: 'Could not crawl competitor site.' }, { status: 400 })
+    if (pages.length === 0) {
+      return NextResponse.json({
+        error: 'No competitor pages were crawled.',
+        details: noPagesDetails({ attempted: visited.size, sitemapUrlCount: sitemapUrls.length, usingSitemap, failures: fetchFailures }),
+      }, { status: 400 })
+    }
 
     await supabase.from('competitor_pages').delete().eq('competitor_id', competitor_id)
     const batchSize = 20
@@ -354,6 +401,7 @@ export async function POST(req: NextRequest) {
   }
   const visited = new Set<string>()
   const pages: any[] = []
+  const fetchFailures: FetchPageFailure[] = []
   const maxPages = 30
   // Try sitemap first — gives a clean URL list without link crawling
   let queue: string[] = []
@@ -379,7 +427,10 @@ export async function POST(req: NextRequest) {
     visited.add(url)
 
     const result = await fetchPage(url)
-    if (!result) continue
+    if (!result.ok) {
+      fetchFailures.push(result)
+      continue
+    }
 
     const { html, finalUrl } = result
     visited.add(finalUrl)
@@ -415,7 +466,10 @@ export async function POST(req: NextRequest) {
   }
 
   if (pages.length === 0) {
-    return NextResponse.json({ error: 'Could not crawl site. Check the URL is correct, publicly accessible, and returns HTML within 15 seconds.' }, { status: 400 })
+    return NextResponse.json({
+      error: 'Could not crawl site. Check the URL is correct, publicly accessible, and returns HTML within 15 seconds.',
+      details: noPagesDetails({ attempted: visited.size, sitemapUrlCount: sitemapUrls.length, usingSitemap, failures: fetchFailures }),
+    }, { status: 400 })
   }
 
   // Delete old crawl data

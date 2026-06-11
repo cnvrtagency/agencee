@@ -10,6 +10,30 @@ const supabase = createClient(
 const BASE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000'
 export const maxDuration = 60
 
+function splitSeedTerms(value: string | null | undefined): string[] {
+  if (!value) return []
+  return value
+    .split(/[,;\n]/)
+    .map(v => v.trim().toLowerCase())
+    .filter(v => v.length > 2)
+}
+
+function cleanKeywordCandidate(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/\s+[-|].*$/, '')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function inferSeedIntent(keyword: string): 'informational' | 'commercial' | 'transactional' {
+  if (/\b(price|cost|book|quote|buy|hire|near me)\b/i.test(keyword)) return 'transactional'
+  if (/\b(best|compare|vs|review|service|services|company|companies)\b/i.test(keyword)) return 'commercial'
+  if (/^(what|how|why|when|can|do|does)\b/i.test(keyword)) return 'informational'
+  return 'commercial'
+}
+
 function calculateNextRun(cadence: string, runDay: string | null, runHour: number): Date {
   const now = new Date()
   const next = new Date()
@@ -149,7 +173,78 @@ export async function POST(req: NextRequest) {
           )
           summary = `Discovered ${count} new keyword suggestions`
         } else {
-          summary = 'No GSC data available for keyword research'
+          const [
+            { data: clientProfile },
+            { data: existingKw },
+            { data: pendingSug },
+            { data: rejectedSug },
+            { data: compPages },
+          ] = await Promise.all([
+            supabase.from('client_profiles').select('name,industry,description,location_info,target_keywords,service_differentiators,workspace_id').eq('id', job.client_id).maybeSingle(),
+            supabase.from('keyword_banks').select('keyword').eq('client_id', job.client_id),
+            supabase.from('keyword_suggestions').select('keyword').eq('client_id', job.client_id).eq('status', 'pending'),
+            supabase.from('keyword_suggestions').select('keyword').eq('client_id', job.client_id).eq('status', 'rejected'),
+            supabase.from('competitor_pages').select('title,h1,content_summary').eq('client_id', job.client_id).order('word_count', { ascending: false }).limit(30),
+          ])
+
+          const existingSet = new Set([
+            ...(existingKw || []).map((k: any) => k.keyword.toLowerCase()),
+            ...(pendingSug || []).map((k: any) => k.keyword.toLowerCase()),
+            ...(rejectedSug || []).map((k: any) => k.keyword.toLowerCase()),
+          ])
+          const locations = splitSeedTerms(clientProfile?.location_info).slice(0, 8)
+          const seedTerms = [
+            ...splitSeedTerms(clientProfile?.target_keywords),
+            ...splitSeedTerms(clientProfile?.service_differentiators),
+            ...splitSeedTerms(clientProfile?.industry),
+          ]
+          const candidates = new Set<string>()
+
+          for (const seed of seedTerms) {
+            const cleaned = cleanKeywordCandidate(seed)
+            if (cleaned && cleaned.length <= 80) candidates.add(cleaned)
+            for (const location of locations) {
+              const loc = cleanKeywordCandidate(location)
+              if (cleaned && loc && !cleaned.includes(loc)) candidates.add(`${cleaned} ${loc}`.slice(0, 90))
+            }
+            if (cleaned && !/\bnear me\b/.test(cleaned)) candidates.add(`${cleaned} near me`)
+          }
+
+          for (const page of compPages || []) {
+            const candidate = cleanKeywordCandidate(page.title || page.h1 || '')
+            if (
+              candidate &&
+              candidate.length >= 8 &&
+              candidate.length <= 70 &&
+              !/\b(home|contact|about|privacy|terms|blog)\b/.test(candidate)
+            ) {
+              candidates.add(candidate)
+            }
+          }
+
+          const insertRows = [...candidates]
+            .filter(keyword => !existingSet.has(keyword))
+            .slice(0, 20)
+            .map(keyword => ({
+              workspace_id: job.workspace_id || clientProfile?.workspace_id || null,
+              client_id: job.client_id,
+              keyword,
+              rationale: `Startup seed suggestion generated without GSC history from client profile, services, locations, and competitor content. Validate volume and SERP fit before approving.`,
+              intent: inferSeedIntent(keyword),
+              funnel_stage: inferSeedIntent(keyword) === 'informational' ? 'tofu' : 'bofu',
+              cluster: clientProfile?.industry || 'startup seed',
+              status: 'pending',
+              suggested_by: 'ada',
+            }))
+
+          if (insertRows.length > 0) {
+            const { error } = await supabase.from('keyword_suggestions').insert(insertRows)
+            summary = error
+              ? `No GSC data available. Startup keyword seed generation found ${insertRows.length} candidates, but saving suggestions failed: ${error.message}`
+              : `No GSC data available yet. Generated ${insertRows.length} startup seed keyword suggestions from profile, locations, and competitor content.`
+          } else {
+            summary = 'No GSC data available yet, and there was not enough profile, location, service, or competitor context to generate startup seed keywords. Add target keywords/services, locations, or competitors first.'
+          }
         }
 
       } else if (job.job_type === 'content') {
