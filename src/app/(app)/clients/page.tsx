@@ -1,18 +1,33 @@
 'use client'
 import { useEffect, useState } from 'react'
+import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import { Client } from '@/lib/types'
 import Link from 'next/link'
 
-const blank = { name: '', slug: '', industry: '', website: '', description: '', icp: '', usp: '', brand_voice: '', content_goals: '' }
+const blank = { name: '', slug: '', industry: '', website: '' }
 
 export default function ClientsPage() {
+  const router = useRouter()
   const [clients, setClients] = useState<Client[]>([])
   const [open, setOpen] = useState(false)
   const [form, setForm] = useState(blank)
   const [saving, setSaving] = useState(false)
+  const [workspaceId, setWorkspaceId] = useState<string | null>(null)
+  const [userId, setUserId] = useState<string | null>(null)
+  const [saveError, setSaveError] = useState('')
 
-  useEffect(() => { load() }, [])
+  useEffect(() => {
+    load()
+    supabase.auth.getUser().then(async ({ data }) => {
+      const uid = data.user?.id ?? null
+      setUserId(uid)
+      if (uid) {
+        const { data: ws } = await supabase.from('workspaces').select('id').eq('owner_id', uid).maybeSingle()
+        if (ws) setWorkspaceId(ws.id)
+      }
+    })
+  }, [])
 
   async function load() {
     const { data } = await supabase.from('client_profiles').select('*').order('created_at', { ascending: false })
@@ -29,9 +44,26 @@ export default function ClientsPage() {
   async function save() {
     if (!form.name.trim()) return
     setSaving(true)
-    const { error } = await supabase.from('client_profiles').insert({ ...form, competitors: [] })
+    setSaveError('')
+    const { data, error } = await supabase
+      .from('client_profiles')
+      .insert({
+        ...form,
+        competitors: [],
+        workspace_id: workspaceId,
+        user_id: userId,
+      })
+      .select('id')
+      .single()
     setSaving(false)
-    if (!error) { setOpen(false); setForm(blank); load() }
+    if (error) {
+      setSaveError('Failed to save. Please try again.')
+      console.error('Client insert error:', error.message)
+      return
+    }
+    setOpen(false)
+    setForm(blank)
+    router.push(`/clients/${data.id}`)
   }
 
   const btnPrimary: React.CSSProperties = {
@@ -107,32 +139,43 @@ export default function ClientsPage() {
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50 }} onClick={() => setOpen(false)}>
           <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)', padding: 32, width: '100%', maxWidth: 560, maxHeight: '85vh', overflowY: 'auto', boxShadow: '0 16px 48px rgba(0,0,0,0.18)' }} onClick={e => e.stopPropagation()}>
             <h2 style={{ fontSize: 20, fontWeight: 600, marginBottom: 6, color: 'var(--text)', letterSpacing: '-0.3px' }}>Add client</h2>
-            <p style={{ fontSize: 13.5, color: 'var(--text-2)', marginBottom: 24 }}>The more detail you add here, the better every agent performs for this client.</p>
-            {[
-              { key: 'name', label: 'Name', type: 'input' },
-              { key: 'slug', label: 'Slug', type: 'input' },
-              { key: 'industry', label: 'Industry', type: 'input' },
-              { key: 'website', label: 'Website', type: 'input' },
-              { key: 'description', label: 'Description', type: 'textarea' },
-              { key: 'icp', label: 'Ideal customer profile', type: 'textarea' },
-              { key: 'usp', label: 'USP', type: 'textarea' },
-              { key: 'brand_voice', label: 'Brand voice', type: 'textarea' },
-              { key: 'content_goals', label: 'Content goals', type: 'textarea' },
-            ].map(({ key, label: lbl, type }) => (
-              <div key={key} style={{ marginBottom: 18 }}>
-                <label style={label}>{lbl}</label>
-                {type === 'textarea'
-                  ? <textarea rows={3} value={(form as any)[key]} onChange={e => set(key, e.target.value)} />
-                  : <input type="text" value={(form as any)[key]} onChange={e => set(key, e.target.value)} />
-                }
+            <p style={{ fontSize: 13.5, color: 'var(--text-2)', marginBottom: 24 }}>
+              Add the basics now. You can fill in brand voice, ICP, competitors and everything else on the client page.
+            </p>
+            {([
+              { key: 'name', lbl: 'Client name', required: true },
+              { key: 'website', lbl: 'Website', required: false },
+              { key: 'industry', lbl: 'Industry', required: false },
+              { key: 'slug', lbl: 'Slug', required: false },
+            ] as { key: string; lbl: string; required: boolean }[]).map(({ key, lbl, required }) => (
+              <div key={key} style={{ marginBottom: 16 }}>
+                <label style={label}>
+                  {lbl}{required && <span style={{ color: 'var(--red)', marginLeft: 3 }}>*</span>}
+                </label>
+                <input
+                  type="text"
+                  value={(form as any)[key]}
+                  onChange={e => set(key, e.target.value)}
+                  placeholder={key === 'website' ? 'https://example.com' : key === 'slug' ? 'auto-generated from name' : ''}
+                />
               </div>
             ))}
+            {saveError && (
+              <div style={{ fontSize: 13, color: 'var(--red)', background: 'var(--red-bg, rgba(220,38,38,0.08))', border: '1px solid rgba(220,38,38,0.2)', borderRadius: 'var(--radius)', padding: '8px 12px', marginBottom: 12 }}>
+                {saveError}
+              </div>
+            )}
             <div style={{ display: 'flex', gap: 10, marginTop: 8 }}>
-              <button style={btnPrimary} onClick={save} disabled={saving}
-                onMouseEnter={e => !saving && (e.currentTarget.style.background = 'var(--accent-hover)')}
+              <button
+                style={{ ...btnPrimary, opacity: (!form.name.trim() || saving) ? 0.5 : 1 }}
+                onClick={save}
+                disabled={!form.name.trim() || saving}
+                onMouseEnter={e => form.name.trim() && !saving && (e.currentTarget.style.background = 'var(--accent-hover)')}
                 onMouseLeave={e => (e.currentTarget.style.background = 'var(--accent)')}
-              >{saving ? 'Saving...' : 'Add client'}</button>
-              <button style={btnSecondary} onClick={() => setOpen(false)}>Cancel</button>
+              >
+                {saving ? 'Creating...' : 'Create client'}
+              </button>
+              <button style={btnSecondary} onClick={() => { setOpen(false); setSaveError('') }}>Cancel</button>
             </div>
           </div>
         </div>

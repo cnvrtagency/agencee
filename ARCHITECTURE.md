@@ -196,7 +196,7 @@ Exist as cards in `/marketplace` only. No agent_type, tools, or system prompt.
 | Route | What it does |
 |---|---|
 | `/` | Dashboard. Briefing room (AI opportunity cards, expand/collapse, Act/Dismiss). Stat cards (Clients, Queued, Running, Needs review — mono font, 36px number). What needs attention panel. Token usage (by agent + 5-week activity calendar). Pending review (inline approve/delete). Queue activity. |
-| `/clients` | Client list table. Add client modal (name, slug, industry, website, description, ICP, USP, brand voice, content goals). |
+| `/clients` | Client list table. Add client modal (name, website, industry, slug — minimal). Saves immediately, redirects to client detail page to complete profile. |
 | `/clients/[id]` | 9 tabs: Profile, Keywords, Pages, Codebase, Connections, Schedule, Competitors, Search, Reports. AI overview panel (Haiku, 24h cache). Crawl button. GSC sync button. Refresh knowledge panel button (crawl + GSC sync + backfill-targeting in parallel). |
 | `/clients/[id]/gsc-setup` | Google OAuth for GSC connection |
 | `/outputs` | Global outputs — Drafts/Approved/Published tabs. Thumbnail, title, client, keyword, agent, word count, date, status pill, action buttons (Approve, Review, Publish, View live). |
@@ -489,6 +489,8 @@ GET /api/schedule/check
 | microsuction-near-me-north-east.mdx missing image frontmatter | Low | GitHub repo | Open — repair route needs running |
 | Suggested replies `<suggestions>` tags not always stripped cleanly | Low | agents/[id]/page.tsx | Open |
 | Token usage not recording (tokens_used always 0 in agent_activity) | High | agents/[id]/page.tsx | **Fixed 11 Jun 2026** — totalTokensUsed accumulator + increment_token_usage RPC after loop |
+| keyword approve funnel_stage check constraint violation | High | api/keywords/approve/route.ts | **Fixed 11 Jun 2026** — changed 'top'/'middle'/'bottom' to 'tofu'/'mofu'/'bofu' |
+| Client insert 403 (RLS violation) | High | clients/page.tsx | **Fixed 11 Jun 2026** — workspace_id and user_id now loaded and passed on insert |
 
 ---
 
@@ -589,3 +591,9 @@ GET /api/schedule/check
 - Task log thoughts render block removed (raw AI reasoning no longer shown to user in task log panel)
 - Token tracking: totalTokensUsed accumulator wired into send() loop + increment_token_usage RPC called after loop
 - run-task upgraded: parallel context load (knowledge panel, content history, site pages, keyword bank) + full system prompt with client context + max_tokens raised to 12000
+
+### 11 June 2026 (session 3)
+**Fixed:**
+- keyword approve funnel_stage constraint violation — 'top'/'middle'/'bottom' changed to 'tofu'/'mofu'/'bofu' in approve route
+- Client insert 403 — workspace_id and user_id now loaded on mount and passed on insert
+- Add client modal simplified to 4 fields (name, website, industry, slug); saves immediately and redirects to client detail page to complete profile

@@ -23,7 +23,7 @@ export async function POST(req: NextRequest) {
   const isInformational = /^(what|how|why|when|does|is|are|can|should|do)\b/.test(keyword)
   const isLocal = /near me|near you|\bnearby\b|\blocal\b|\bnear\b/.test(keyword)
   const intent = isInformational ? 'informational' : 'commercial'
-  const funnel_stage = isInformational ? 'top' : isLocal ? 'bottom' : 'middle'
+  const funnel_stage = isInformational ? 'tofu' : isLocal ? 'bofu' : 'mofu'
 
   const meta = suggestion.metadata as any
   const position = meta?.position || null
