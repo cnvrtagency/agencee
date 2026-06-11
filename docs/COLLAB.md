@@ -478,6 +478,26 @@ Fonts: `--font-display` (Instrument Serif italic), `--font-sans` (Inter), `--fon
 
 ## Session Change Log
 
+### 2026-06-11 — Frontmatter Image Fix
+
+**Files changed:**
+- `src/app/api/connections/publish/route.ts` — 2 changes
+- `src/app/api/repair/frontmatter-images/route.ts` — new file
+
+**What changed and why:**
+
+| Section | Change | Why |
+|---|---|---|
+| Publish route — image frontmatter | Replaced single backup regex with 3-step guard that handles: URL mismatch (existing), empty/wrong value, missing field entirely | Confirmed `microsuction-near-me-...mdx` published with no `image:` field — Ada sometimes writes frontmatter without it; old regex only fixed URLs that were already there |
+| Publish route — `platform_output` | Added `hero_image_path: "/assets/<filename>"` to the `platform_output` jsonb saved on publish | Field was missing; output detail page had no way to show the resolved `/assets/` path post-publish |
+| Repair route — one-off fix | `GET /api/repair/frontmatter-images?dry_run=true` audits all published GitHub posts; `POST /api/repair/frontmatter-images` patches affected MDX files in-place via atomic commit | Required to fix `microsuction-near-me-...mdx` and any other posts published before this fix |
+
+**To run the one-off repair:**
+1. `GET /api/repair/frontmatter-images` — dry run, returns list of posts that would be patched
+2. `POST /api/repair/frontmatter-images` — commits the fix to GitHub for each affected post
+
+---
+
 ### 2026-06-11 — UX Fixes Pass
 
 **Files changed:**
@@ -516,3 +536,4 @@ Fonts: `--font-display` (Instrument Serif italic), `--font-sans` (Inter), `--fon
 - `analyse_gsc` thresholds in `agents/[id]/page.tsx` differ slightly from GSC sync thresholds (positions 5–15 in tool vs 3–20 in sync) — not a bug but worth noting
 - `agents/[id]/outputs/page.tsx` still exists as a route (not removed) — now orphaned since nav link is gone
 - No per-tool `conversation_id` logging in `agent_activity` (task log lives only in message `__META__` encoding)
+- One-off repair still needed for already-published posts: `POST /api/repair/frontmatter-images` (safe, idempotent — skips posts that already have `image: /assets/...`)

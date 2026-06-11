@@ -150,13 +150,41 @@ export async function POST(req: NextRequest) {
         publishContent = publishContent.split(img.url).join(`/assets/${img.filename}`)
       }
 
-      // Explicitly fix frontmatter image: field if it still contains a non-local URL
-      // (catches cases where the URL in frontmatter didn't match img.url verbatim)
+      // Ensure frontmatter has correct image: and image_alt: fields.
+      // Handles four failure modes: URL mismatch, empty value, wrong URL, missing field.
       if (images[0]?.filename) {
+        const heroPath = `/assets/${images[0].filename}`
+        const heroAlt = (images[0].alt_text || output.title || '').replace(/"/g, '\\"')
+
+        // 1. Replace any remaining https:// value on the image: line (URL mismatch from split/join above)
         publishContent = publishContent.replace(
           /^(image:\s*["']?)https?:\/\/[^\s"'\n]+(["']?)$/m,
-          `$1/assets/${images[0].filename}$2`
+          `$1${heroPath}$2`
         )
+
+        // 2. If image: still doesn't resolve to a local /assets/ path, fix or inject it
+        if (!/^image:\s*["']?\/assets\//m.test(publishContent)) {
+          if (/^image:/m.test(publishContent)) {
+            // Field exists but is empty or still wrong — replace the whole line
+            publishContent = publishContent.replace(/^image:.*$/m, `image: "${heroPath}"`)
+          } else if (/^date:/m.test(publishContent)) {
+            // Field is missing — inject after the date: line
+            publishContent = publishContent.replace(/^(date:[^\n]*)/m, `$1\nimage: "${heroPath}"`)
+          } else {
+            // No date: anchor — inject before the closing --- of the frontmatter block
+            publishContent = publishContent.replace(/^(---\n[\s\S]*?)(---)/, `$1image: "${heroPath}"\n$2`)
+          }
+        }
+
+        // 3. Ensure image_alt: is present and non-empty
+        if (!/^image_alt:\s*["']?\S/m.test(publishContent)) {
+          if (/^image_alt:/m.test(publishContent)) {
+            publishContent = publishContent.replace(/^image_alt:.*$/m, `image_alt: "${heroAlt}"`)
+          } else {
+            // Inject on the line immediately after image:
+            publishContent = publishContent.replace(/^(image:[^\n]*)/m, `$1\nimage_alt: "${heroAlt}"`)
+          }
+        }
       }
 
       const contentPath: string = config.content_path || 'next-public/content/posts'
@@ -285,11 +313,17 @@ export async function POST(req: NextRequest) {
     }
 
     // 6. Record success
+    const heroImagePath = images[0]?.filename ? `/assets/${images[0].filename}` : undefined
     await supabase
       .from('content_outputs')
       .update({
         published_url,
-        platform_output: { platform, publish_id, committed_at: new Date().toISOString() },
+        platform_output: {
+          platform,
+          publish_id,
+          committed_at: new Date().toISOString(),
+          ...(heroImagePath && { hero_image_path: heroImagePath }),
+        },
       })
       .eq('id', output_id)
 
