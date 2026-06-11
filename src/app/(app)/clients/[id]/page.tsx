@@ -152,6 +152,7 @@ export default function ClientDetail() {
   const [crawlingComp, setCrawlingComp] = useState<string | null>(null)
   const [compPages, setCompPages] = useState<Record<string, any[]>>({})
   const [compCrawlErrors, setCompCrawlErrors] = useState<Record<string, string>>({})
+  const [compCrawlMessages, setCompCrawlMessages] = useState<Record<string, { kind: 'success' | 'warning'; text: string }>>({})
   const [expandedComp, setExpandedComp] = useState<string | null>(null)
   const [justAddedCompId, setJustAddedCompId] = useState<string | null>(null)
 
@@ -612,6 +613,11 @@ export default function ClientDetail() {
       delete next[compId]
       return next
     })
+    setCompCrawlMessages(prev => {
+      const next = { ...prev }
+      delete next[compId]
+      return next
+    })
     try {
       const res = await fetch('/api/crawl', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client_id: id, website: url, competitor_id: compId }) })
       const data = await res.json()
@@ -619,6 +625,10 @@ export default function ClientDetail() {
         setCompCrawlErrors(prev => ({ ...prev, [compId]: [data.error, data.details].filter(Boolean).join(' ') }))
         loadCompetitors(); loadCompPages(compId)
       } else {
+        const text = data.storage_warning
+          ? `${data.storage_warning} Crawled ${data.pages_crawled ?? 0} page(s).`
+          : `Crawled ${data.pages_crawled ?? 0} page(s). Found ${data.sitemap_pages_found ?? 0} sitemap URL(s) across ${data.sitemaps_checked ?? 0} sitemap(s).`
+        setCompCrawlMessages(prev => ({ ...prev, [compId]: { kind: data.storage_warning ? 'warning' : 'success', text } }))
         loadCompetitors(); loadCompPages(compId)
       }
     } catch {
@@ -1186,6 +1196,7 @@ export default function ClientDetail() {
                   const pages = compPages[c.id] || []
                   const isExpanded = expandedComp === c.id
                   const crawlError = compCrawlErrors[c.id]
+                  const crawlMessage = compCrawlMessages[c.id]
                   return (
                     <div key={c.id} style={{ borderBottom: i < competitors.length - 1 ? '1px solid var(--border)' : 'none' }}>
                       <div style={{ padding: '16px 20px', display: 'flex', alignItems: 'center', gap: 14, cursor: 'pointer' }}
@@ -1198,6 +1209,7 @@ export default function ClientDetail() {
                           <a href={c.url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} style={{ fontSize: 12, color: 'var(--accent)', fontFamily: 'var(--font-mono)' }}>{c.url}</a>
                           {c.last_crawled_at && <span style={{ fontSize: 11, color: 'var(--text-dim)', marginLeft: 10 }}>Crawled {new Date(c.last_crawled_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}</span>}
                           {crawlError && <div style={{ fontSize: 12, color: 'var(--red)', marginTop: 6, lineHeight: 1.5 }}>{crawlError}</div>}
+                          {crawlMessage && <div style={{ fontSize: 12, color: crawlMessage.kind === 'warning' ? 'var(--amber)' : 'var(--green)', marginTop: 6, lineHeight: 1.5 }}>{crawlMessage.text}</div>}
                           {(() => {
                             const pages = compPages[c.id] || []
                             const withSummary = pages.filter((p: any) => p.content_summary)

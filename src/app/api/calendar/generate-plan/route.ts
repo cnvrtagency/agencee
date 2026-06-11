@@ -61,7 +61,7 @@ export async function POST(req: NextRequest) {
       const compPageResults = await Promise.all(
         compSites.map((site: any) =>
           supabase.from('competitor_pages')
-            .select('url,title,content_summary,word_count')
+            .select('url,title,meta_description,content_summary,word_count')
             .eq('competitor_id', site.id)
             .not('content_summary', 'is', null)
             .order('word_count', { ascending: false })
@@ -71,7 +71,7 @@ export async function POST(req: NextRequest) {
       const compLines = compSites.map((site: any, i: number) => {
         const pages = compPageResults[i].data || []
         if (pages.length === 0) return `${site.name || site.url}: not yet crawled`
-        return `${site.name || site.url}:\n${pages.map((p: any) => `  "${p.title || p.url}" — ${p.content_summary || ''}`).join('\n')}`
+        return `${site.name || site.url}:\n${pages.map((p: any) => `  "${p.title || p.url}" — ${p.meta_description || p.content_summary || ''}`).join('\n')}`
       })
       competitorContext = compLines.join('\n\n')
     }

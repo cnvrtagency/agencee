@@ -11,19 +11,51 @@ const supabase = createClient(
 )
 
 export const maxDuration = 60
-const FETCH_TIMEOUT_MS = 15_000
+const FETCH_TIMEOUT_MS = 12_000
+const SITEMAP_FETCH_TIMEOUT_MS = 25_000
+const CRAWL_CONCURRENCY = 5
+const CLIENT_MAX_PAGES = 50
+const COMPETITOR_MAX_PAGES = 40
+const MAX_SITEMAPS_TO_CHECK = 30
+const MAX_SITEMAP_URLS = 500
+
+const PAGE_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+  'Accept-Language': 'en-GB,en;q=0.9',
+  'Accept-Encoding': 'gzip, deflate, br',
+  'Cache-Control': 'no-cache',
+}
+
+const SITEMAP_HEADERS = {
+  ...PAGE_HEADERS,
+  'Accept': 'application/xml,text/xml,text/plain,text/html,*/*',
+}
 
 function normaliseUrl(href: string, base: string): string | null {
   try {
     const url = new URL(href, base)
     const baseHost = new URL(base).hostname
-    if (url.hostname !== baseHost) return null
+    if (!sameSiteHost(url.hostname, baseHost)) return null
     if (url.protocol !== 'http:' && url.protocol !== 'https:') return null
-    if (url.pathname.match(/\.(pdf|jpg|jpeg|png|gif|svg|webp|css|js|ico|xml|txt)$/i)) return null
+    if (!isCrawlablePageUrl(url.toString())) return null
     url.hash = ''
     const clean = url.toString().replace(/\/$/, '') || url.origin
     return clean
   } catch { return null }
+}
+
+function stripWww(hostname: string): string {
+  return hostname.toLowerCase().replace(/^www\./, '')
+}
+
+function sameSiteHost(a: string, b: string): boolean {
+  return stripWww(a) === stripWww(b)
+}
+
+function siteOrigin(value: string): string {
+  const url = new URL(value)
+  return url.origin
 }
 
 function normaliseBaseUrl(value: string): string | null {
@@ -36,6 +68,77 @@ function normaliseBaseUrl(value: string): string | null {
   } catch {
     return null
   }
+}
+
+function decodeEntities(value: string): string {
+  return value
+    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&#039;/g, "'")
+    .replace(/&quot;/g, '"')
+    .trim()
+}
+
+function isAssetUrl(value: string): boolean {
+  try {
+    const url = new URL(value)
+    return /\.(pdf|jpg|jpeg|png|gif|svg|webp|avif|css|js|ico|xml|txt|zip|mp4|mp3|mov|woff|woff2|ttf)$/i.test(url.pathname)
+  } catch {
+    return /\.(pdf|jpg|jpeg|png|gif|svg|webp|avif|css|js|ico|xml|txt|zip|mp4|mp3|mov|woff|woff2|ttf)(?:$|\?)/i.test(value)
+  }
+}
+
+function isCrawlablePageUrl(value: string): boolean {
+  try {
+    const url = new URL(value)
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return false
+    if (isAssetUrl(value)) return false
+    const path = url.pathname.toLowerCase()
+    if (/\/(wp-json|feed|tag|author|cart|checkout|my-account|account|login|privacy-policy|terms|cookie-policy)(\/|$)/.test(path)) return false
+    if (/[?&](replytocom|share|add-to-cart)=/i.test(url.search)) return false
+    return true
+  } catch {
+    return false
+  }
+}
+
+function extractXmlLocs(xml: string): string[] {
+  const locs: string[] = []
+  const regex = /<loc\b[^>]*>([\s\S]*?)<\/loc>/gi
+  let match
+  while ((match = regex.exec(xml)) !== null) {
+    const loc = decodeEntities(match[1])
+    if (loc && !locs.includes(loc)) locs.push(loc)
+  }
+  return locs
+}
+
+function uniqueUrls(urls: string[]): string[] {
+  return [...new Set(urls.filter(Boolean))]
+}
+
+function prioritiseUrls(urls: string[], startUrl: string, max: number): string[] {
+  const origin = siteOrigin(startUrl)
+  const scored = uniqueUrls(urls).map(url => {
+    let score = 0
+    try {
+      const parsed = new URL(url)
+      const path = parsed.pathname.toLowerCase()
+      if (parsed.origin === origin && (path === '/' || path === '')) score += 100
+      if (/\/(services?|solutions?|products?|locations?|areas?|pricing|about|contact)(\/|$)/.test(path)) score += 25
+      if (/\b(service|solution|pricing|cost|near-me|nearby|location|city|town)\b/.test(path)) score += 15
+      if (/\/(blog|news|guides?|advice|articles?|resources?)(\/|$)/.test(path)) score += 8
+      if (/\/(category|tag|author|page)\/|\/page\/\d+/i.test(path)) score -= 20
+      if (/privacy|terms|cookie|login|checkout|cart|account/i.test(path)) score -= 50
+      score -= Math.max(parsed.pathname.split('/').filter(Boolean).length - 3, 0)
+    } catch {
+      score -= 100
+    }
+    return { url, score }
+  })
+  return scored.sort((a, b) => b.score - a.score).slice(0, max).map(item => item.url)
 }
 
 function extractText(html: string, tag: string): string | null {
@@ -113,6 +216,11 @@ type FetchPageFailure = {
   contentType?: string
 }
 type FetchPageResult = FetchPageSuccess | FetchPageFailure
+type SitemapDiscovery = {
+  urls: string[]
+  checked: string[]
+  failures: FetchPageFailure[]
+}
 
 function describeFetchFailure(failure: FetchPageFailure): string {
   const context = [
@@ -136,13 +244,7 @@ function noPagesDetails(input: { attempted: number; sitemapUrlCount: number; usi
 async function fetchPage(url: string): Promise<FetchPageResult> {
   try {
     const res = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-GB,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Cache-Control': 'no-cache',
-      },
+      headers: PAGE_HEADERS,
       redirect: 'follow',
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     })
@@ -162,47 +264,172 @@ async function fetchPage(url: string): Promise<FetchPageResult> {
   }
 }
 
-async function fetchSitemapUrls(baseUrl: string): Promise<string[]> {
-  const candidates = [
-    `${baseUrl}/sitemap.xml`,
-    `${baseUrl}/sitemap_index.xml`,
-    `${baseUrl}/sitemap/`,
-    `${baseUrl}/sitemap`,
-  ]
-  for (const sitemapUrl of candidates) {
-    try {
-      const res = await fetch(sitemapUrl, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          'Accept': 'text/html,application/xml,application/xhtml+xml,text/xml,*/*',
-        },
-        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-      })
-      if (!res.ok) continue
-      const text = await res.text()
-      if (!text.includes('<urlset') && !text.includes('<sitemapindex')) continue
-      if (text.includes('<sitemapindex')) {
-        const subSitemapUrls = [...text.matchAll(/<loc>([^<]+)<\/loc>/g)].map(m => m[1].trim())
-        const allUrls: string[] = []
-        for (const subUrl of subSitemapUrls.slice(0, 5)) {
-          try {
-            const subRes = await fetch(subUrl, {
-              headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' },
-              signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-            })
-            if (!subRes.ok) continue
-            const subText = await subRes.text()
-            const urls = [...subText.matchAll(/<loc>([^<]+)<\/loc>/g)].map(m => m[1].trim())
-            allUrls.push(...urls)
-          } catch { continue }
-        }
-        return allUrls
-      }
-      const urls = [...text.matchAll(/<loc>([^<]+)<\/loc>/g)].map(m => m[1].trim())
-      return urls
-    } catch { continue }
+async function fetchText(url: string): Promise<{ ok: true; text: string; finalUrl: string; contentType: string } | FetchPageFailure> {
+  try {
+    const res = await fetch(url, {
+      headers: SITEMAP_HEADERS,
+      redirect: 'follow',
+      signal: AbortSignal.timeout(SITEMAP_FETCH_TIMEOUT_MS),
+    })
+    const contentType = res.headers.get('content-type') || ''
+    if (!res.ok) {
+      return { ok: false, url, finalUrl: res.url, status: res.status, contentType, reason: `HTTP ${res.status}${res.statusText ? ` ${res.statusText}` : ''}` }
+    }
+    return { ok: true, text: await res.text(), finalUrl: res.url, contentType }
+  } catch (error) {
+    const err = error as Error
+    const timedOut = err?.name === 'TimeoutError' || err?.name === 'AbortError'
+    return { ok: false, url, reason: timedOut ? `Timed out after ${Math.round(SITEMAP_FETCH_TIMEOUT_MS / 1000)} seconds` : err?.message || 'Request failed' }
   }
-  return []
+}
+
+async function fetchRobotsSitemaps(origin: string): Promise<string[]> {
+  const result = await fetchText(`${origin}/robots.txt`)
+  if (!result.ok) return []
+  return result.text
+    .split(/\n/)
+    .map(line => line.match(/^\s*sitemap:\s*(.+)\s*$/i)?.[1]?.trim())
+    .filter((value): value is string => Boolean(value))
+}
+
+async function fetchSitemapUrls(baseUrl: string): Promise<SitemapDiscovery> {
+  const origin = siteOrigin(baseUrl)
+  const robotsSitemaps = await fetchRobotsSitemaps(origin)
+  const candidates = uniqueUrls([
+    ...robotsSitemaps,
+    `${origin}/sitemap.xml`,
+    `${origin}/sitemap_index.xml`,
+    `${origin}/sitemap-index.xml`,
+    `${origin}/wp-sitemap.xml`,
+    `${origin}/page-sitemap.xml`,
+    `${origin}/post-sitemap.xml`,
+    `${origin}/sitemap/`,
+    `${origin}/sitemap`,
+  ])
+  const queue = [...candidates]
+  const checked: string[] = []
+  const failures: FetchPageFailure[] = []
+  const pageUrls: string[] = []
+  const baseHost = new URL(baseUrl).hostname
+
+  while (queue.length > 0 && checked.length < MAX_SITEMAPS_TO_CHECK && pageUrls.length < MAX_SITEMAP_URLS) {
+    const sitemapUrl = queue.shift()!
+    if (checked.includes(sitemapUrl)) continue
+    checked.push(sitemapUrl)
+
+    const result = await fetchText(sitemapUrl)
+    if (!result.ok) {
+      failures.push(result)
+      continue
+    }
+
+    const locs = extractXmlLocs(result.text)
+    if (locs.length === 0) continue
+
+    const isIndex = /<sitemapindex[\s>]/i.test(result.text)
+    for (const loc of locs) {
+      try {
+        const parsed = new URL(loc)
+        if (!sameSiteHost(parsed.hostname, baseHost)) continue
+        if (isIndex || parsed.pathname.toLowerCase().endsWith('.xml')) {
+          if (!checked.includes(loc) && !queue.includes(loc)) queue.push(loc)
+          continue
+        }
+        if (isCrawlablePageUrl(loc)) pageUrls.push(loc)
+      } catch {
+        continue
+      }
+    }
+  }
+
+  return { urls: uniqueUrls(pageUrls).slice(0, MAX_SITEMAP_URLS), checked, failures }
+}
+
+async function crawlPageQueue(input: {
+  initialQueue: string[]
+  maxPages: number
+  usingSitemap: boolean
+  buildPage: (args: {
+    html: string
+    finalUrl: string
+    title: string | null
+    h1: string | null
+    metaDesc: string | null
+    wordCount: number
+    links: string[]
+    headings: string[]
+    content: string
+    summary: string
+  }) => any
+}): Promise<{ pages: any[]; failures: FetchPageFailure[]; attempted: number }> {
+  const visited = new Set<string>()
+  const pages: any[] = []
+  const failures: FetchPageFailure[] = []
+  const queue = uniqueUrls(input.initialQueue)
+
+  while (queue.length > 0 && pages.length < input.maxPages && visited.size < input.maxPages * 6) {
+    const batch: string[] = []
+    while (queue.length > 0 && batch.length < CRAWL_CONCURRENCY && pages.length + batch.length < input.maxPages) {
+      const url = queue.shift()!
+      if (visited.has(url)) continue
+      visited.add(url)
+      batch.push(url)
+    }
+    if (batch.length === 0) break
+
+    const results = await Promise.all(batch.map(url => fetchPage(url)))
+    for (const result of results) {
+      if (!result.ok) {
+        failures.push(result)
+        continue
+      }
+
+      const { html, finalUrl } = result
+      visited.add(finalUrl)
+
+      const title = extractText(html, 'title')
+      const h1 = extractText(html, 'h1')
+      const metaDesc = extractMeta(html, 'description')
+      const wordCount = countWords(html)
+      const links = extractLinks(html, finalUrl)
+      const content = extractContent(html)
+      const headings = extractHeadings(html)
+      const summary = buildSummary(title, h1, headings, content)
+
+      pages.push(input.buildPage({ html, finalUrl, title, h1, metaDesc, wordCount, links, headings, content, summary }))
+
+      if (!input.usingSitemap) {
+        const nextLinks = prioritiseUrls(links, finalUrl, 120)
+        for (const link of nextLinks) {
+          if (!visited.has(link) && !queue.includes(link)) queue.push(link)
+        }
+      }
+    }
+  }
+
+  return { pages, failures, attempted: visited.size }
+}
+
+async function insertCompetitorPages(pages: any[], competitorId: string): Promise<string | null> {
+  const { error: deleteError } = await supabase.from('competitor_pages').delete().eq('competitor_id', competitorId)
+  if (deleteError) throw new Error(`Failed to clear old competitor pages: ${deleteError.message}`)
+
+  const batchSize = 20
+  let storageWarning: string | null = null
+  for (let i = 0; i < pages.length; i += batchSize) {
+    const batch = pages.slice(i, i + batchSize)
+    const { error } = await supabase.from('competitor_pages').insert(batch)
+    if (!error) continue
+
+    const canFallback = /column .* does not exist|Could not find .* column|schema cache/i.test(error.message)
+    if (!canFallback) throw new Error(`Competitor page insert failed at batch ${i / batchSize}: ${error.message}`)
+
+    const legacyBatch = batch.map(({ meta_description, content, headings, internal_links, source, ...page }) => page)
+    const { error: legacyError } = await supabase.from('competitor_pages').insert(legacyBatch)
+    if (legacyError) throw new Error(`Competitor page insert failed at batch ${i / batchSize}: ${legacyError.message}`)
+    storageWarning = 'Competitor pages were stored with legacy fields only. Apply the competitor crawl SQL migration so Ada can retain meta descriptions, headings, internal links, and full page content.'
+  }
+  return storageWarning
 }
 
 export async function POST(req: NextRequest) {
@@ -260,63 +487,47 @@ export async function POST(req: NextRequest) {
 
     const baseUrl = normaliseBaseUrl(comp.url)
     if (!baseUrl) return NextResponse.json({ error: 'Competitor site URL is invalid.' }, { status: 400 })
-    const visited = new Set<string>()
-    const pages: any[] = []
-    const fetchFailures: FetchPageFailure[] = []
-    const maxPages = 20
-    // Try sitemap first
-    let queue: string[] = []
-    let usingSitemap = false
-    const sitemapUrls = await fetchSitemapUrls(baseUrl)
-    if (sitemapUrls.length > 0) {
-      const host = new URL(baseUrl).hostname
-      queue = sitemapUrls
-        .filter(u => {
-          try {
-            const parsed = new URL(u)
-            return parsed.hostname === host && !u.match(/\.(pdf|jpg|jpeg|png|gif|svg|webp|css|js|ico|xml|txt)$/i)
-          } catch { return false }
-        })
-        .slice(0, maxPages)
-      usingSitemap = queue.length > 0
-    }
-    if (!usingSitemap) queue = [baseUrl]
-
-    while (queue.length > 0 && pages.length < maxPages) {
-      const url = queue.shift()!
-      if (visited.has(url)) continue
-      visited.add(url)
-      const result = await fetchPage(url)
-      if (!result.ok) {
-        fetchFailures.push(result)
-        continue
-      }
-      const { html, finalUrl } = result
-      visited.add(finalUrl)
-      const title = extractText(html, 'title')
-      const h1 = extractText(html, 'h1')
-      const metaDesc = extractMeta(html, 'description')
-      const wordCount = countWords(html)
-      const content = extractContent(html)
-      pages.push({ workspace_id: compWorkspaceId, competitor_id, client_id: competitorClientId, url: finalUrl, title, h1, meta_description: metaDesc, word_count: wordCount, content, crawled_at: new Date().toISOString() })
-      if (!usingSitemap) {
-        for (const link of extractLinks(html, finalUrl)) {
-          if (!visited.has(link) && !queue.includes(link)) queue.push(link)
-        }
-      }
-    }
+    const sitemapDiscovery = await fetchSitemapUrls(baseUrl)
+    const sitemapUrls = prioritiseUrls(sitemapDiscovery.urls, baseUrl, COMPETITOR_MAX_PAGES - 1)
+    const usingSitemap = sitemapUrls.length > 0
+    const queue = usingSitemap ? uniqueUrls([baseUrl, ...sitemapUrls]) : [baseUrl]
+    const crawlResult = await crawlPageQueue({
+      initialQueue: queue,
+      maxPages: COMPETITOR_MAX_PAGES,
+      usingSitemap,
+      buildPage: ({ finalUrl, title, h1, metaDesc, wordCount, links, headings, content, summary }) => ({
+        workspace_id: compWorkspaceId,
+        competitor_id,
+        client_id: competitorClientId,
+        url: finalUrl,
+        title,
+        h1,
+        meta_description: metaDesc,
+        word_count: wordCount,
+        content,
+        content_summary: summary,
+        headings,
+        internal_links: links.slice(0, 30),
+        source: usingSitemap ? 'sitemap' : 'crawl',
+        crawled_at: new Date().toISOString(),
+      }),
+    })
+    const pages = crawlResult.pages
+    const fetchFailures = [...crawlResult.failures, ...sitemapDiscovery.failures]
 
     if (pages.length === 0) {
       return NextResponse.json({
         error: 'No competitor pages were crawled.',
-        details: noPagesDetails({ attempted: visited.size, sitemapUrlCount: sitemapUrls.length, usingSitemap, failures: fetchFailures }),
+        details: noPagesDetails({ attempted: crawlResult.attempted, sitemapUrlCount: sitemapDiscovery.urls.length, usingSitemap, failures: fetchFailures }),
       }, { status: 400 })
     }
 
-    await supabase.from('competitor_pages').delete().eq('competitor_id', competitor_id)
-    const batchSize = 20
-    for (let i = 0; i < pages.length; i += batchSize) {
-      await supabase.from('competitor_pages').insert(pages.slice(i, i + batchSize))
+    let storageWarning: string | null = null
+    try {
+      storageWarning = await insertCompetitorPages(pages, competitor_id)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to store competitor pages.'
+      return NextResponse.json({ error: message }, { status: 500 })
     }
     await supabase.from('competitor_sites').update({ last_crawled_at: new Date().toISOString() }).eq('id', competitor_id)
 
@@ -374,7 +585,14 @@ export async function POST(req: NextRequest) {
       })
     }
 
-    return NextResponse.json({ success: true, pages_crawled: pages.length, competitor: comp.name })
+    return NextResponse.json({
+      success: true,
+      pages_crawled: pages.length,
+      sitemap_pages_found: sitemapDiscovery.urls.length,
+      sitemaps_checked: sitemapDiscovery.checked.length,
+      storage_warning: storageWarning,
+      competitor: comp.name,
+    })
   }
 
   // Normal site crawl mode
@@ -399,52 +617,15 @@ export async function POST(req: NextRequest) {
   if (!baseUrl) {
     return NextResponse.json({ error: 'Website URL is invalid.' }, { status: 400 })
   }
-  const visited = new Set<string>()
-  const pages: any[] = []
-  const fetchFailures: FetchPageFailure[] = []
-  const maxPages = 30
-  // Try sitemap first — gives a clean URL list without link crawling
-  let queue: string[] = []
-  let usingSitemap = false
-  const sitemapUrls = await fetchSitemapUrls(baseUrl)
-  if (sitemapUrls.length > 0) {
-    const host = new URL(baseUrl).hostname
-    queue = sitemapUrls
-      .filter(u => {
-        try {
-          const parsed = new URL(u)
-          return parsed.hostname === host && !u.match(/\.(pdf|jpg|jpeg|png|gif|svg|webp|css|js|ico|xml|txt)$/i)
-        } catch { return false }
-      })
-      .slice(0, maxPages)
-    usingSitemap = queue.length > 0
-  }
-  if (!usingSitemap) queue = [baseUrl]
-
-  while (queue.length > 0 && pages.length < maxPages) {
-    const url = queue.shift()!
-    if (visited.has(url)) continue
-    visited.add(url)
-
-    const result = await fetchPage(url)
-    if (!result.ok) {
-      fetchFailures.push(result)
-      continue
-    }
-
-    const { html, finalUrl } = result
-    visited.add(finalUrl)
-
-    const title = extractText(html, 'title')
-    const h1 = extractText(html, 'h1')
-    const metaDesc = extractMeta(html, 'description')
-    const wordCount = countWords(html)
-    const links = extractLinks(html, finalUrl)
-    const content = extractContent(html)
-    const headings = extractHeadings(html)
-    const summary = buildSummary(title, h1, headings, content)
-
-    pages.push({
+  const sitemapDiscovery = await fetchSitemapUrls(baseUrl)
+  const sitemapUrls = prioritiseUrls(sitemapDiscovery.urls, baseUrl, CLIENT_MAX_PAGES - 1)
+  const usingSitemap = sitemapUrls.length > 0
+  const queue = usingSitemap ? uniqueUrls([baseUrl, ...sitemapUrls]) : [baseUrl]
+  const crawlResult = await crawlPageQueue({
+    initialQueue: queue,
+    maxPages: CLIENT_MAX_PAGES,
+    usingSitemap,
+    buildPage: ({ finalUrl, title, h1, metaDesc, wordCount, links, content, summary }) => ({
       workspace_id: workspaceId,
       client_id,
       url: finalUrl,
@@ -456,19 +637,15 @@ export async function POST(req: NextRequest) {
       content,
       content_summary: summary,
       crawled_at: new Date().toISOString(),
-    })
-
-    if (!usingSitemap) {
-      for (const link of links) {
-        if (!visited.has(link) && !queue.includes(link)) queue.push(link)
-      }
-    }
-  }
+    }),
+  })
+  const pages = crawlResult.pages
+  const fetchFailures = [...crawlResult.failures, ...sitemapDiscovery.failures]
 
   if (pages.length === 0) {
     return NextResponse.json({
-      error: 'Could not crawl site. Check the URL is correct, publicly accessible, and returns HTML within 15 seconds.',
-      details: noPagesDetails({ attempted: visited.size, sitemapUrlCount: sitemapUrls.length, usingSitemap, failures: fetchFailures }),
+      error: 'Could not crawl site. Check the URL is correct, publicly accessible, and returns HTML within 12 seconds.',
+      details: noPagesDetails({ attempted: crawlResult.attempted, sitemapUrlCount: sitemapDiscovery.urls.length, usingSitemap, failures: fetchFailures }),
     }, { status: 400 })
   }
 

@@ -184,7 +184,7 @@ export async function POST(req: NextRequest) {
             supabase.from('keyword_banks').select('keyword').eq('client_id', job.client_id),
             supabase.from('keyword_suggestions').select('keyword').eq('client_id', job.client_id).eq('status', 'pending'),
             supabase.from('keyword_suggestions').select('keyword').eq('client_id', job.client_id).eq('status', 'rejected'),
-            supabase.from('competitor_pages').select('title,h1,content_summary').eq('client_id', job.client_id).order('word_count', { ascending: false }).limit(30),
+            supabase.from('competitor_pages').select('title,h1,meta_description,content_summary').eq('client_id', job.client_id).order('word_count', { ascending: false }).limit(30),
           ])
 
           const existingSet = new Set([
@@ -211,7 +211,7 @@ export async function POST(req: NextRequest) {
           }
 
           for (const page of compPages || []) {
-            const candidate = cleanKeywordCandidate(page.title || page.h1 || '')
+            const candidate = cleanKeywordCandidate(page.title || page.h1 || page.meta_description || '')
             if (
               candidate &&
               candidate.length >= 8 &&

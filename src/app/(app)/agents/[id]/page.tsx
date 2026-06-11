@@ -1474,7 +1474,7 @@ export default function AgentPage() {
       if (!client) return `Could not find client matching "${toolInput.client_name}".`
       const { data: compSites } = await supabase.from('competitor_sites').select('id,url,name').eq('client_id', client.id)
       if (!compSites || compSites.length === 0) return `No competitors registered for ${client.name}. Add them in the Competitors tab on the client page.`
-      const { data: compPages } = await supabase.from('competitor_pages').select('url,title,h1,word_count,keywords,content_summary,competitor_id').eq('client_id', client.id).order('word_count', { ascending: false }).limit(50)
+      const { data: compPages } = await supabase.from('competitor_pages').select('url,title,h1,meta_description,word_count,keywords,content,content_summary,competitor_id').eq('client_id', client.id).order('word_count', { ascending: false }).limit(50)
 
       const { data: clientPages } = await supabase
         .from('site_pages')
@@ -1503,7 +1503,7 @@ export default function AgentPage() {
         })
 
         const pageList = pages.slice(0, 15).map((p: any) =>
-          `  ${p.url.replace(/^https?:\/\/[^/]+/, '') || '/'} | ${p.word_count || 0}w | ${p.content_summary || 'no summary'}`
+          `  ${p.url.replace(/^https?:\/\/[^/]+/, '') || '/'} | ${p.word_count || 0}w | ${p.title || p.h1 || 'untitled'} | ${p.meta_description || p.content_summary || 'no summary'}`
         ).join('\n')
 
         const gapList = gaps.slice(0, 8).map((p: any) =>
@@ -1567,7 +1567,7 @@ export default function AgentPage() {
         supabase.from('keyword_banks').select('keyword,cluster,intent,funnel_stage,monthly_volume,difficulty,current_position,content_targeting_this,priority').eq('client_id', client.id).order('priority').order('keyword').limit(80),
         supabase.from('content_history').select('title,url,primary_keyword,summary,published_at').eq('client_id', client.id).order('published_at', { ascending: false }).limit(30),
         supabase.from('competitor_sites').select('id,url,name').eq('client_id', client.id),
-        supabase.from('competitor_pages').select('competitor_id,url,title,h1,word_count,content_summary').eq('client_id', client.id).order('word_count', { ascending: false }).limit(80),
+        supabase.from('competitor_pages').select('competitor_id,url,title,h1,meta_description,word_count,content_summary').eq('client_id', client.id).order('word_count', { ascending: false }).limit(80),
         supabase.from('search_performance').select('query,position,impressions,clicks').eq('client_id', client.id).not('query', 'in', '("__total__","__page__","__device__")').order('impressions', { ascending: false }).limit(10),
       ])
 
@@ -1605,7 +1605,7 @@ export default function AgentPage() {
       const competitorLines = compSites && compSites.length > 0
         ? compSites.map((site: any) => {
             const pagesForSite = (compPages || []).filter((p: any) => p.competitor_id === site.id)
-            const pageSample = pagesForSite.slice(0, 5).map((p: any) => `    - ${p.title || p.h1 || p.url} | ${p.url} | ${p.content_summary || 'no summary'}`).join('\n')
+            const pageSample = pagesForSite.slice(0, 5).map((p: any) => `    - ${p.title || p.h1 || p.url} | ${p.url} | ${p.meta_description || p.content_summary || 'no summary'}`).join('\n')
             return `- ${site.name || site.url} | ${site.url} | ${pagesForSite.length} crawled page(s)${pageSample ? `\n${pageSample}` : '\n    - No pages stored. Use this URL as a web_search seed if crawl diagnostics show blocking.'}`
           }).join('\n')
         : 'No competitors registered yet. Ask for 3-5 direct competitors, or use web_search to find SERP competitors for core service/location terms.'

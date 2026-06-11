@@ -187,8 +187,14 @@ export type CompetitorPage = {
   url: string
   title: string | null
   h1: string | null
+  meta_description?: string | null
   word_count: number | null
   keywords: string[] | null
+  content?: string | null
   content_summary: string | null
+  headings?: string[] | null
+  internal_links?: string[] | null
+  source?: string | null
+  lastmod?: string | null
   crawled_at: string
 }
