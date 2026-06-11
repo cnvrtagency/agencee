@@ -1,7 +1,7 @@
 # Agencee — Master Architecture Document
 
 **Living document. Update at the end of every build session.**
-Last updated: 11 June 2026. Session: Duplicate write_content fix, session token reset fix, all 6 automations corrected, agent_activity unconditional insert, schedule editing UI.
+Last updated: 11 June 2026. Session: Conversation persistence, revision image guard, GSC status fix, crawl validation, Gemini graceful degradation.
 
 ---
 
@@ -682,6 +682,20 @@ CREATE TABLE IF NOT EXISTS agent_knowledge (
 - Schedule editing UI — inline editor on automations page. "Schedule" button per row opens/closes a panel below the card (card border-radius adjusts). Panel has cadence pill row (daily/weekly/monthly), day-of-week pill row (weekly only), hour dropdown (UTC), "Save schedule" button. Saves to `agent_automations` and recomputes `next_run_at`.
 
 **Token waste note:** The duplicate write_content bug was responsible for most unexpectedly high session costs. Each duplicate invocation costs ~10-25k tokens for the write + image generation. With 9 drafts per session this was estimated at ~120k tokens (~$0.50+) per affected conversation.
+
+### 11 June 2026 (session 9)
+**Fixed:**
+- Messages disappearing on navigation — `loadMessages()` now calls `localStorage.setItem('agencee_last_conv_${agentId}', convId)`. On mount, URL param falls back to `localStorage.getItem(...)` if no `?conversation=` param. `newConversation()` removes the key. Conversations now survive page refresh and navigation without requiring a URL parameter.
+- Ada generating images on revision requests — `write_content` tool schema now includes `is_revision: boolean`. Handler short-circuits with a "do NOT call generate_images" response before Ada can proceed to image generation. `buildSystemPrompt` IMAGE GENERATION section reinforced with 3 explicit rules: revisions set `is_revision: true`, if `is_revision` is true skip `generate_images`, proceed directly to `suggest_internal_links` instead.
+- GSC sync 400 "Connection not found" — `google_connections.status` is saved as `'connected'` by the OAuth callback, but both `gsc/sync/route.ts` and `run-automation/route.ts` were filtering for `'active'` only. Changed `.eq('status', 'active')` to `.in('status', ['active', 'connected'])` in both files. **Note:** `google_connections.status` can be either `'active'` or `'connected'` — both are valid.
+- Crawl silent 400 — Added explicit early validation at the top of `api/crawl/route.ts` before the competitor branch: returns 400 if `client_id` is missing (non-competitor path), 400 if `website` is missing for a client crawl. Previous validation at line ~275 came too late (after competitor branch).
+- Image generation 500 (Gemini API) — GEMINI_API_KEY missing now returns 200 with `skipped: true` instead of 500. All internal error paths return 200 with `skipped: true` so Ada doesn't retry in a burning loop. Added model fallback array: `['gemini-3-pro-image', 'gemini-2.0-flash-preview-image-generation', 'imagen-3.0-generate-002']` — tries each in order, logs failures as warnings, only errors out (gracefully) if all three fail.
+
+**Reminder — Vercel env vars to check:**
+- `GEMINI_API_KEY` — required for image generation
+- `ENCRYPTION_KEY` — required for GitHub integration (32-byte base64)
+- `GOOGLE_REDIRECT_URI` — must match Google Cloud Console exactly
+- `NEXT_PUBLIC_SITE_URL` — used in cron sub-requests
 
 ### 11 June 2026 (session 4)
 **Built:**

@@ -258,6 +258,9 @@ Use publish_content with the output_id to publish approved drafts. Always confir
   parts.push(`IMAGE GENERATION:
 Always use generate_images in a single call with an array — never separate calls per image.
 Generate images AFTER writing the content, not before. Prompts must be derived from the actual post content.
+- Only call generate_images for NEW content, never for revisions
+- If the user asks you to revise, edit, expand or rewrite existing content, always set is_revision: true in write_content and skip generate_images entirely
+- If is_revision is true in your write_content call, do NOT call generate_images — proceed directly to suggest_internal_links
 
 Use the SCHEMA methodology for every prompt (Structured Components for Harmonized Engineered Modular Architecture):
 - SUBJECT: Who or what is the main focus. Specific — not "a person" but "a woman in her 60s seated in a living room armchair"
@@ -347,7 +350,11 @@ Required frontmatter fields:
         slug: { type: 'string' },
         primary_keyword: { type: 'string' },
         meta_description: { type: 'string' },
-        word_count: { type: 'number' }
+        word_count: { type: 'number' },
+        is_revision: {
+          type: 'boolean',
+          description: 'Set to true if this is a revision of existing content, not a new draft. When true, images will NOT be generated automatically.',
+        },
       },
       required: ['client_name', 'content', 'title', 'slug', 'primary_keyword']
     },
@@ -740,6 +747,7 @@ export default function AgentPage() {
     loadAgent(); loadClients(); loadConversations(); loadPlannedTasks(); loadDigest()
     const params = new URLSearchParams(window.location.search)
     const convParam = params.get('conversation')
+      || localStorage.getItem(`agencee_last_conv_${id}`)
     if (convParam) loadMessages(convParam)
     const prefill = params.get('draft')
     const autoSend = params.get('send') === '1'
@@ -873,6 +881,7 @@ export default function AgentPage() {
       if (uid) setUserId(uid)
     }
     setSessionTokens(0); setSessionCost(0); sessionTokensRef.current = 0
+    localStorage.removeItem(`agencee_last_conv_${id}`)
     const { data } = await supabase.from('conversations').insert({ agent_id: id, title: 'New conversation', user_id: uid }).select().single()
     if (data) { setConversations(prev => [data, ...prev]); setActiveConv(data.id); setMessages([]) }
   }
@@ -888,6 +897,7 @@ export default function AgentPage() {
 
   async function loadMessages(convId: string) {
     setActiveConv(convId)
+    localStorage.setItem(`agencee_last_conv_${id}`, convId)
     const url = new URL(window.location.href)
     url.searchParams.set('conversation', convId)
     window.history.replaceState(null, '', url.toString())
@@ -999,6 +1009,16 @@ export default function AgentPage() {
           review_url: `/outputs/${output.id}`,
         }
         draftSavedRef.current = true
+
+        if (toolInput.is_revision) {
+          return JSON.stringify({
+            success: true,
+            output_id: output.id,
+            message: 'Revised draft saved at /outputs/' + output.id + '. Do NOT call generate_images — this is a revision. Call suggest_internal_links instead.',
+            review_url: '/outputs/' + output.id,
+            is_revision: true,
+          })
+        }
 
         return JSON.stringify({ success: true, output_id: output.id, message: 'Draft saved successfully. Title: "' + toolInput.title + '". It is now in your Outputs queue for review at /outputs/' + output.id + '.', review_url: '/outputs/' + output.id })
       } catch (e: any) { return JSON.stringify({ success: false, error: e?.message || 'Failed to save draft.' }) }

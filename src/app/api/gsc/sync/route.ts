@@ -62,7 +62,7 @@ export async function POST(req: NextRequest) {
   try {
   const { connection_id, client_id } = await req.json().catch(() => ({}))
 
-  let connQuery = supabase.from('google_connections').select('*').eq('status', 'active')
+  let connQuery = supabase.from('google_connections').select('*').in('status', ['active', 'connected'])
   if (connection_id) connQuery = connQuery.eq('id', connection_id) as any
   else if (client_id) connQuery = connQuery.eq('client_id', client_id) as any
   else return NextResponse.json({ error: 'connection_id or client_id required' }, { status: 400 })

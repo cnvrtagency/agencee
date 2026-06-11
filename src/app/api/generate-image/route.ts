@@ -18,50 +18,69 @@ export async function POST(req: NextRequest) {
   const outputSize = resolutionMap[resolution] || '1024x1024'
 
   const apiKey = process.env.GEMINI_API_KEY
-  if (!apiKey) return NextResponse.json({ error: 'GEMINI_API_KEY not set' }, { status: 500 })
+  if (!apiKey) {
+    console.error('[generate-image] GEMINI_API_KEY not set')
+    return NextResponse.json({
+      error: 'Image generation not configured. Set GEMINI_API_KEY in Vercel environment variables.',
+      skipped: true,
+    }, { status: 200 })
+  }
 
-  let imageBase64: string
-  let imageMimeType: string
+  let imageBase64: string = ''
+  let imageMimeType: string = 'image/jpeg'
+  let lastError = ''
 
-  try {
-    const geminiRes = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-pro-image:generateContent?key=${apiKey}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: {
-            responseModalities: ['IMAGE', 'TEXT'],
-            imageGenerationConfig: {
-              outputOptions: { mimeType: 'image/jpeg', compressionQuality: 85 },
-              numberOfImages: 1,
+  const models = ['gemini-3-pro-image', 'gemini-2.0-flash-preview-image-generation', 'imagen-3.0-generate-002']
+  for (const model of models) {
+    try {
+      const geminiRes = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: {
+              responseModalities: ['IMAGE', 'TEXT'],
+              imageGenerationConfig: {
+                outputOptions: { mimeType: 'image/jpeg', compressionQuality: 85 },
+                numberOfImages: 1,
+              },
             },
-          },
-        }),
-      },
-    )
+          }),
+        },
+      )
 
-    const geminiData = await geminiRes.json()
+      const geminiData = await geminiRes.json()
 
-    if (!geminiRes.ok) {
-      console.error('[generate-image] Gemini error:', geminiData.error)
-      return NextResponse.json({ error: `Gemini API error: ${geminiData.error?.message}` }, { status: 500 })
+      if (!geminiRes.ok) {
+        lastError = `${model}: ${geminiData.error?.message || `HTTP ${geminiRes.status}`}`
+        console.warn('[generate-image] Model failed:', lastError)
+        continue
+      }
+
+      const parts = geminiData.candidates?.[0]?.content?.parts || []
+      const imagePart = parts.find((p: any) => p.inlineData)
+
+      if (!imagePart?.inlineData?.data) {
+        lastError = `${model}: no image data in response`
+        console.warn('[generate-image] No image part:', JSON.stringify(geminiData).slice(0, 200))
+        continue
+      }
+
+      imageBase64 = imagePart.inlineData.data
+      imageMimeType = imagePart.inlineData.mimeType || 'image/jpeg'
+      break
+    } catch (err: any) {
+      lastError = `${model}: ${err.message}`
+      console.warn('[generate-image] Model exception:', lastError)
+      continue
     }
+  }
 
-    const parts = geminiData.candidates?.[0]?.content?.parts || []
-    const imagePart = parts.find((p: any) => p.inlineData)
-
-    if (!imagePart?.inlineData?.data) {
-      console.error('[generate-image] No image in response:', JSON.stringify(geminiData).slice(0, 200))
-      return NextResponse.json({ error: 'No image returned from Gemini' }, { status: 500 })
-    }
-
-    imageBase64 = imagePart.inlineData.data
-    imageMimeType = imagePart.inlineData.mimeType || 'image/jpeg'
-  } catch (err: any) {
-    console.error('[generate-image] Fetch error:', err.message)
-    return NextResponse.json({ error: `Image generation failed: ${err.message}` }, { status: 500 })
+  if (!imageBase64) {
+    console.error('[generate-image] All models failed. Last error:', lastError)
+    return NextResponse.json({ error: lastError || 'All image models failed', skipped: true }, { status: 200 })
   }
 
   // Upload to Supabase Storage (bucket: blog-images, public)

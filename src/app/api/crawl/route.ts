@@ -153,6 +153,13 @@ export async function POST(req: NextRequest) {
   try { body = await req.json() } catch { return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 }) }
   const { client_id, website, competitor_id } = body
 
+  if (!competitor_id && !client_id) {
+    return NextResponse.json({ error: 'client_id is required' }, { status: 400 })
+  }
+  if (!competitor_id && !website) {
+    return NextResponse.json({ error: 'website is required for client crawl' }, { status: 400 })
+  }
+
   // Competitor crawl mode
   if (competitor_id) {
     const { data: comp } = await supabase.from('competitor_sites').select('url, name').eq('id', competitor_id).single()

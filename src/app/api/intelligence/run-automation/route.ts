@@ -72,7 +72,7 @@ export async function POST(req: NextRequest) {
         const { data: connections } = await supabase
           .from('google_connections')
           .select('id, client_id')
-          .eq('status', 'active')
+          .in('status', ['active', 'connected'])
 
         if (!connections?.length) {
           summary = 'No active GSC connections. Connect Google Search Console from the client Connections tab.'
