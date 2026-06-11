@@ -36,6 +36,7 @@ export default function AgentOverviewPage() {
     const [
       { data: agentData },
       { data: activityData },
+      { data: allTokensData },
       { data: weekActivity },
       { data: monthActivity },
       convData,
@@ -47,10 +48,11 @@ export default function AgentOverviewPage() {
     ] = await Promise.all([
       supabase.from('agents').select('*').eq('id', agentId).single(),
       supabase.from('agent_activity').select('id,tokens_used,action,detail,created_at').eq('agent_id', agentId).order('created_at', { ascending: false }).limit(20),
+      supabase.from('agent_activity').select('tokens_used').eq('agent_id', agentId),
       supabase.from('agent_activity').select('tokens_used').eq('agent_id', agentId).gte('created_at', weekAgo),
       supabase.from('agent_activity').select('tokens_used').eq('agent_id', agentId).gte('created_at', monthAgo),
       supabase.from('conversations').select('id', { count: 'exact', head: true }).eq('agent_id', agentId),
-      supabase.from('content_outputs').select('id', { count: 'exact', head: true }).eq('agent_type', 'seo'),
+      supabase.from('agent_activity').select('id', { count: 'exact', head: true }).eq('agent_id', agentId).eq('action', 'content_created'),
       supabase.from('keyword_suggestions').select('id', { count: 'exact', head: true }).eq('suggested_by', agentId),
       supabase.from('client_profiles').select('id,name,website').order('name'),
       supabase.from('agent_knowledge').select('summary,week_of,created_at').eq('agent_type', 'seo').order('week_of', { ascending: false }).limit(1).maybeSingle(),
@@ -63,7 +65,7 @@ export default function AgentOverviewPage() {
     setDigest(digestData)
     setAutomations(automationData || [])
 
-    const totalTokens = (activityData || []).reduce((a: number, r: any) => a + (r.tokens_used || 0), 0)
+    const totalTokens = (allTokensData || []).reduce((a: number, r: any) => a + (r.tokens_used || 0), 0)
     const weekTokens = (weekActivity || []).reduce((a: number, r: any) => a + (r.tokens_used || 0), 0)
     const monthTokens = (monthActivity || []).reduce((a: number, r: any) => a + (r.tokens_used || 0), 0)
 
@@ -134,7 +136,7 @@ export default function AgentOverviewPage() {
             {[
               { num: stats.totalConversations.toLocaleString(), label: 'Conversations' },
               { num: stats.totalContent.toLocaleString(), label: 'Drafts written' },
-              { num: stats.totalKeywords.toLocaleString(), label: 'Keywords suggested' },
+              { num: stats.totalKeywords > 0 ? stats.totalKeywords.toLocaleString() : 'n/a', label: 'Keywords suggested' },
               { num: `${(stats.thisWeekTokens / 1000).toFixed(0)}k`, label: 'Tokens this week' },
               { num: `${(stats.thisMonthTokens / 1000).toFixed(0)}k`, label: 'Tokens this month' },
               { num: `$${stats.totalCost.toFixed(2)}`, label: 'Total cost (est.)' },

@@ -27,7 +27,7 @@ export async function POST(req: NextRequest) {
   // Load all clients for this workspace so automation handlers can pick the right one
   const { data: clients } = await supabase
     .from('client_profiles')
-    .select('id, name, website, competitors')
+    .select('id, name, website, competitors, workspace_id')
     .order('name')
 
   const clientList = clients || []
@@ -54,6 +54,7 @@ export async function POST(req: NextRequest) {
 
             await supabase.from('briefing_items').upsert({
               client_id: client.id,
+              workspace_id: client.workspace_id || null,
               type: 'opportunity',
               title: `Keyword gap: "${top.keyword}"`,
               body: `${keywords.length} untargeted keywords found. Top opportunity: "${top.keyword}" — ${top.monthly_volume || '?'} searches/month, KD ${top.difficulty || '?'}${top.current_position ? `, currently ranking #${Math.round(top.current_position)}` : ', not ranking'}. No content targeting this keyword yet.`,
@@ -118,6 +119,7 @@ export async function POST(req: NextRequest) {
 
             await supabase.from('briefing_items').upsert({
               client_id: client.id,
+              workspace_id: client.workspace_id || null,
               type: 'opportunity',
               title: `Internal link gaps: ${orphans.length} underlinked pages`,
               body: `${orphans.length} pages have fewer than 2 internal links pointing to them. These pages are losing link equity. Top candidates: ${orphans.slice(0, 5).map((p: any) => p.url).join(', ')}`,
@@ -166,6 +168,7 @@ export async function POST(req: NextRequest) {
           if (issues.length > 0) {
             await supabase.from('briefing_items').upsert({
               client_id: client.id,
+              workspace_id: client.workspace_id || null,
               type: 'opportunity',
               title: `Site audit: ${issues.length} issue type${issues.length > 1 ? 's' : ''} found`,
               body: `Site audit complete (${pages.length} pages). Issues: ${issues.join('; ')}. Review the Pages tab for details.`,

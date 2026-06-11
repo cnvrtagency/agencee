@@ -150,7 +150,20 @@ General questions (how does X work, what is Y) can be answered without specifyin
         kParts.push(`KNOWLEDGE DOCUMENTS — read and apply these on every response:\n${docsText}`)
       }
     }
-    if (k.agent_notes?.[agent.slug]) kParts.push(`Your notes on this client:\n${k.agent_notes[agent.slug]}`)
+    const agentSlug = agent.slug || agent.name?.toLowerCase() || 'ada'
+    const agentNotes = k.agent_notes?.[agentSlug]
+    if (agentNotes) {
+      const noteParts: string[] = []
+      if (typeof agentNotes === 'string') {
+        noteParts.push(agentNotes)
+      } else {
+        if (agentNotes.last_conversation?.summary) noteParts.push(`Last session: ${agentNotes.last_conversation.summary}`)
+        if (agentNotes.last_conversation?.recommendations?.length) noteParts.push(`Recommendations pending: ${agentNotes.last_conversation.recommendations.join('; ')}`)
+        if (agentNotes.last_conversation?.pending?.length) noteParts.push(`Outstanding items: ${agentNotes.last_conversation.pending.join('; ')}`)
+        if (agentNotes.history?.length > 1) noteParts.push(`Previous sessions: ${(agentNotes.history as any[]).slice(-3).map((h: any) => h.summary).filter(Boolean).join(' | ')}`)
+      }
+      if (noteParts.length > 0) kParts.push(`Your notes on this client:\n${noteParts.join('\n')}`)
+    }
 
     if (k.agent_notes?.competitor_analysis) {
       const ca = k.agent_notes.competitor_analysis
@@ -1574,8 +1587,9 @@ export default function AgentPage() {
         .eq('client_id', client.id)
         .maybeSingle()
 
-      const currentNotes = ((existing?.agent_notes as Record<string, string>) || {})
-      currentNotes[agent?.slug ?? 'agent'] = toolInput.notes
+      const currentNotes = ((existing?.agent_notes as Record<string, any>) || {})
+      const noteSlug = agent?.slug || agent?.name?.toLowerCase() || 'ada'
+      currentNotes[noteSlug] = toolInput.notes
 
       const { error } = await supabase
         .from('client_knowledge')
@@ -1848,6 +1862,50 @@ export default function AgentPage() {
       if (!savedReply) {
         await saveReply('Working... loop limit reached. Reply to continue.')
       }
+      // Auto debrief — only for SEO agents after significant tool use (draft saved or GSC analysed)
+      const hadSignificantAction = taskLogRef.current.some(t =>
+        ['Saving draft', 'Loading keyword bank', 'Analysing GSC', 'Checking content history'].some(label =>
+          t.label?.includes(label)
+        )
+      )
+      if (agent.agent_type === 'seo' && taskLogRef.current.length > 0 && hadSignificantAction) {
+        // Fire-and-forget — non-critical, never blocks the UI
+        void (async () => {
+          try {
+            const activeClient = clients.length === 1 ? clients[0] : null
+            if (!activeClient) return
+            const { data: existing } = await supabase.from('client_knowledge').select('agent_notes').eq('client_id', activeClient.id).maybeSingle()
+            const currentNotes = ((existing?.agent_notes as Record<string, any>) || {})
+            const slug = agent.slug || agent.name?.toLowerCase() || 'ada'
+            const existingHistory: any[] = currentNotes[slug]?.history || []
+            const debriefRes = await fetch('/api/chat', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                model: 'claude-haiku-4-5-20251001',
+                max_tokens: 400,
+                messages: [{
+                  role: 'user',
+                  content: `You are ${agent.name}. Summarise this conversation in JSON with keys: summary (1 sentence), recommendations (string[]), pending (string[]). Tasks done: ${taskLogRef.current.map(t => t.label?.replace('…', '')).filter(Boolean).join(', ')}. Reply with JSON only.`,
+                }],
+              }),
+            })
+            const debriefData = await debriefRes.json()
+            const raw = (debriefData.content || []).filter((b: any) => b.type === 'text').map((b: any) => b.text).join('').trim()
+            let parsed: any = {}
+            try { parsed = JSON.parse(raw.replace(/^```json\n?/, '').replace(/\n?```$/, '')) } catch { return }
+            const newEntry = { date: new Date().toISOString(), ...parsed }
+            const updatedHistory = [...existingHistory.slice(-9), newEntry]
+            await supabase.from('client_knowledge').upsert({
+              client_id: activeClient.id,
+              workspace_id: workspaceId,
+              agent_notes: { ...currentNotes, [slug]: { last_conversation: parsed, history: updatedHistory } },
+              updated_at: new Date().toISOString(),
+            }, { onConflict: 'client_id' })
+          } catch { /* non-critical */ }
+        })()
+      }
+
       // Increment workspace token usage counter
       if (totalTokensUsed > 0) {
         const { data: { user } } = await supabase.auth.getUser()

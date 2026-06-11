@@ -1,7 +1,7 @@
 # Agencee — Master Architecture Document
 
 **Living document. Update at the end of every build session.**
-Last updated: 11 June 2026. Session: Conversation persistence, revision image guard, GSC status fix, crawl validation, Gemini graceful degradation.
+Last updated: 11 June 2026. Session: Platform stability sweep — briefing workspace_id, overview stats accuracy, agent notes format, auto debrief threshold.
 
 ---
 
@@ -238,7 +238,8 @@ Exist as cards in `/marketplace` only. No agent_type, tools, or system prompt.
 |---|---|---|---|
 | `/api/chat` | POST | Anthropic API proxy. Accepts model, messages, tools, system. | All agent tool calls go through here. |
 | `/api/run-task` | POST | Autonomous content gen for queued items. Single Sonnet call, no tools. Loads knowledge panel, content history, site pages, keyword bank in parallel before calling Sonnet. | Full system prompt with client context, GSC snapshot, live pages, keyword bank, and content history. max_tokens: 12000. |
-| `/api/generate-image` | POST | Nano Banana Pro image gen → Supabase Storage blog-images bucket. Default 1K. | Returns url, filename, storage_path, mime_type. |
+| `/api/generate-image` | POST | Image gen → Supabase Storage blog-images bucket. Default 1K. Model fallback: `gemini-3-pro-image` → `gemini-2.0-flash-preview-image-generation` → `imagen-3.0-generate-002`. Missing GEMINI_API_KEY returns 200 `skipped:true` instead of 500. | Returns url, filename, storage_path, mime_type. |
+| `/api/intelligence/ada-briefing` | POST | Ada creates proactive briefing items after analysis. Body: `{ client_id, agent_id?, items: [{ type, title, body, priority }] }`. Loads workspace_id from client_profiles, upserts briefing_items with workspace_id, logs agent_activity. |
 
 ### Scheduling and jobs
 
@@ -315,7 +316,7 @@ Exist as cards in `/marketplace` only. No agent_type, tools, or system prompt.
 | `workspaces` | id, owner_id, name | One per account |
 | `workspace_settings` | user_id, anthropic_api_key, gemini_api_key, monthly_token_budget, tokens_used_this_month | API keys + usage |
 | `client_profiles` | id, name, slug, website, description, icp, usp, brand_voice, content_goals, content_tone, location_info, competitors[], github_repo, content_autonomy, pricing_info, team_info, trust_signals, service_differentiators, target_keywords, avoid_topics, cta_approach, schema_type, ai_overview, ai_overview_updated_at | All client context |
-| `client_knowledge` | client_id, site_pages jsonb, site_pages_updated_at, site_summary, gsc_snapshot jsonb, gsc_snapshot_updated_at, content_summary, content_updated_at, docs jsonb, agent_notes jsonb | Persistent client brain |
+| `client_knowledge` | client_id, site_pages jsonb, site_pages_updated_at, site_summary, gsc_snapshot jsonb, gsc_snapshot_updated_at, content_summary, content_updated_at, docs jsonb, agent_notes jsonb | Persistent client brain. `agent_notes[slug]` is a structured object: `{ last_conversation: { summary, recommendations, pending }, history: [{ date, summary, recommendations, pending }] }` (max 10 history entries). Also has `competitor_analysis: { updated_at, result }` key. |
 | `client_schedules` | client_id, agent_id, cadence, content_types[], target_word_count, next_run_at, last_run_at | Recurring content schedules |
 | `agents` | id, name, role, slug, agent_type, avatar_initials, instructions, backstory, expertise, personality, communication_style, working_style, boundaries, nav_items, active | Agent config |
 | `conversations` | id, agent_id, title, updated_at, user_id | Chat sessions |
@@ -514,6 +515,14 @@ GET /api/schedule/check
 | Client profile top panel not editable | Medium | clients/[id]/page.tsx | **Fixed 11 Jun 2026** — profileFields rendered as textareas with onBlur save |
 | Collapsible sections (Brand, Business, SEO) closed by default | Low | clients/[id]/page.tsx | **Fixed 11 Jun 2026** — all three sections open by default |
 | GSC redirect_uri_mismatch | High | Google Cloud Console config | Open — needs redirect URI added: https://agencee.vercel.app/api/auth/google/callback (manual config fix) |
+| Briefing items missing workspace_id | High | api/intelligence/run-automation + ada-briefing | **Fixed 11 Jun 2026** — workspace_id added to client_profiles select; all briefing_items upserts now include workspace_id |
+| Overview page content count global (not per-agent) | Medium | agents/[id]/overview/page.tsx | **Fixed 11 Jun 2026** — counts via agent_activity.action='content_created' for this agent_id instead of content_outputs with agent_type filter |
+| Overview page totalTokens only counted last 20 activity rows | High | agents/[id]/overview/page.tsx | **Fixed 11 Jun 2026** — separate full query for all-time tokens; limit(20) slice used only for activity feed display |
+| Overview keyword count showing 0 instead of n/a | Low | agents/[id]/overview/page.tsx | **Fixed 11 Jun 2026** — shows 'n/a' when count is 0 |
+| Agent notes slug mismatch (notes written to 'agent', read from 'ada') | High | agents/[id]/page.tsx | **Fixed 11 Jun 2026** — slug fallback: agent.slug \|\| agent.name.toLowerCase() \|\| 'ada' in both update_agent_notes handler and buildSystemPrompt |
+| Agent notes injected as raw JSON object | Medium | agents/[id]/page.tsx buildSystemPrompt | **Fixed 11 Jun 2026** — structured object formatted into readable lines (last session, recommendations, pending, history) |
+| Auto debrief threshold too broad (triggered on 'improve' keyword) | Medium | agents/[id]/page.tsx | **Fixed 11 Jun 2026** — debrief only fires when task log contains 'Saving draft', 'Loading keyword bank', 'Analysing GSC', or 'Checking content history' labels |
+| Schedule/check cron GSC sync filtering on 'active' only | High | api/schedule/check/route.ts | **Fixed 11 Jun 2026** — changed .eq('status','active') to .in('status',['active','connected']) |
 | Duplicate write_content — 9 drafts from one conversation (~120k tokens wasted) | Critical | agents/[id]/page.tsx | **Fixed 11 Jun 2026** — 30min dedup check in write_content handler returns already_existed=true; loop exits via Haiku wrap turn after draftSavedRef set + loopCount>=3 |
 | Session token counter reset on every message | High | agents/[id]/page.tsx | **Fixed 11 Jun 2026** — removed reset from send(); only resets in newConversation() |
 | All 6 automations broken (wrong column names, wrong tables, no output) | Critical | api/intelligence/run-automation/route.ts | **Fixed 11 Jun 2026** — weekly_keyword_scan uses monthly_volume+opportunity_score; internal_link_audit uses internal_links jsonb array; competitor_analysis uses competitor_sites table; site_audit analyses crawled pages; monthly_content_plan calls generate-plan route; all create briefing_items |
@@ -682,6 +691,18 @@ CREATE TABLE IF NOT EXISTS agent_knowledge (
 - Schedule editing UI — inline editor on automations page. "Schedule" button per row opens/closes a panel below the card (card border-radius adjusts). Panel has cadence pill row (daily/weekly/monthly), day-of-week pill row (weekly only), hour dropdown (UTC), "Save schedule" button. Saves to `agent_automations` and recomputes `next_run_at`.
 
 **Token waste note:** The duplicate write_content bug was responsible for most unexpectedly high session costs. Each duplicate invocation costs ~10-25k tokens for the write + image generation. With 9 drafts per session this was estimated at ~120k tokens (~$0.50+) per affected conversation.
+
+### 11 June 2026 (session 10 — platform stability sweep)
+**Fixed:**
+- Briefing items missing workspace_id — added `workspace_id` to `client_profiles` select in `run-automation/route.ts`; all three `briefing_items` upserts (weekly_keyword_scan, internal_link_audit, site_audit) now include `workspace_id: client.workspace_id || null`
+- New `/api/intelligence/ada-briefing` route — POST endpoint for Ada to create proactive briefing items. Loads workspace_id from client_profiles, upserts with workspace_id, logs agent_activity
+- Overview content count was global (all SEO outputs) — now queries `agent_activity.action='content_created'` filtered by agent_id for accurate per-agent count
+- Overview totalTokens used only last 20 activity rows — added full `agent_activity.tokens_used` query (no limit) for the stat; limit(20) slice remains for the feed display
+- Overview keyword count showing 0 — now shows 'n/a' when count is 0 (suggested_by may not be populated for older rows)
+- Agent notes slug mismatch — `update_agent_notes` handler and `buildSystemPrompt` both now use `agent.slug || agent.name.toLowerCase() || 'ada'` fallback so notes written by the tool are always read back correctly
+- Agent notes injected as raw JSON — `buildSystemPrompt` now formats the structured `{ last_conversation, history }` object into readable lines (last session summary, recommendations, pending items, prior session summaries). Handles both old string format and new object format gracefully
+- Auto debrief threshold too broad — debrief now only fires when task log contains a significant label ('Saving draft', 'Loading keyword bank', 'Analysing GSC', 'Checking content history'). Fires for SEO agents only. Writes structured `{ last_conversation, history }` to `client_knowledge.agent_notes[slug]` via Haiku call post-loop (fire-and-forget, non-blocking)
+- Schedule/check cron GSC status filter — changed `.eq('status','active')` to `.in('status',['active','connected'])` so cron syncs connections saved by OAuth callback
 
 ### 11 June 2026 (session 9)
 **Fixed:**

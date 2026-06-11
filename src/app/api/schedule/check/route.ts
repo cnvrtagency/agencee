@@ -57,7 +57,7 @@ export async function GET(req: NextRequest) {
   const { data: connections } = await supabase
     .from('google_connections')
     .select('id, client_id')
-    .eq('status', 'active')
+    .in('status', ['active', 'connected'])
     .lt('last_synced_at', new Date(Date.now() - 23 * 60 * 60 * 1000).toISOString())
 
   for (const conn of connections ?? []) {
