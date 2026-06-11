@@ -39,7 +39,7 @@ type Client = {
   id: string; name: string; description: string; icp: string; usp: string;
   brand_voice: string; content_goals: string; competitors: string[];
   file_tree: string | null; github_repo: string | null; slug: string | null;
-  // new fields
+  industry?: string | null; website?: string | null;
   pricing_info?: string; team_info?: string; trust_signals?: string;
   service_differentiators?: string; location_info?: string; target_keywords?: string;
   content_tone?: string; avoid_topics?: string; cta_approach?: string; schema_type?: string;
@@ -48,75 +48,185 @@ type PlannedTask = { id: string; primary_keyword: string; content_type: string; 
 type SitePage = { url: string; title: string | null; h1: string | null; meta_description: string | null; word_count: number | null; content_summary: string | null }
 type GscRow = { query: string; page: string; position: number; impressions: number; clicks: number; ctr: number; period_start?: string; period_end?: string }
 
-function buildSystemPrompt(agent: Agent, clients: Client[]): string {
+function buildSystemPrompt(agent: Agent, clients: Client[], knowledgePanels: Record<string, any> = {}): string {
   const parts: string[] = []
-  parts.push(`You are ${agent.name}, ${agent.role}.`)
-  if (agent.backstory?.trim()) parts.push(`BACKGROUND:\n${agent.backstory}`)
-  if (agent.expertise?.trim()) parts.push(`EXPERTISE:\n${agent.expertise}`)
-  if (agent.personality?.trim()) parts.push(`PERSONALITY:\n${agent.personality}`)
-  if (agent.communication_style?.trim()) parts.push(`HOW YOU COMMUNICATE:\n${agent.communication_style}`)
-  if (agent.working_style?.trim()) parts.push(`HOW YOU WORK:\n${agent.working_style}`)
-  if (agent.boundaries?.trim()) parts.push(`WHAT YOU NEVER DO:\n${agent.boundaries}`)
-  if (agent.instructions?.trim()) parts.push(`ADDITIONAL INSTRUCTIONS:\n${agent.instructions}`)
 
-  const isSeo = agent.agent_type === 'seo'
+  // Identity
+  parts.push(`You are ${agent.name}, ${agent.role}.`)
+  if (agent.backstory?.trim())           parts.push(`BACKGROUND:\n${agent.backstory}`)
+  if (agent.expertise?.trim())           parts.push(`EXPERTISE:\n${agent.expertise}`)
+  if (agent.personality?.trim())         parts.push(`PERSONALITY:\n${agent.personality}`)
+  if (agent.communication_style?.trim()) parts.push(`HOW YOU COMMUNICATE:\n${agent.communication_style}`)
+  if (agent.working_style?.trim())       parts.push(`HOW YOU WORK:\n${agent.working_style}`)
+  if (agent.boundaries?.trim())          parts.push(`WHAT YOU NEVER DO:\n${agent.boundaries}`)
+  if (agent.instructions?.trim())        parts.push(`ADDITIONAL INSTRUCTIONS:\n${agent.instructions}`)
+
+  // Universal working principles
+  parts.push(`WORKING PRINCIPLES:
+You are an expert professional, not a passive assistant. You have access to a full tool set — use whatever tools the task requires, regardless of your specialty. Your role determines your expertise and perspective, not your tool access.
+
+Before making any substantive recommendation or starting any task:
+- Check what you already know from the knowledge panel below — this is your primary source of truth for site structure and recent performance
+- Use live tool calls only for data that could have changed since the last sync, or for tasks the knowledge panel cannot answer
+- Never make claims about a client's content, rankings, or site structure without grounding them in data you have actually read
+
+When a task is clear: acknowledge briefly and start working immediately.
+When a task is ambiguous or broad: ask one focused question before starting. Offer 2-3 specific options as part of that question so the user can respond quickly.
+
+Always reconcile all available data sources before drawing conclusions. If the keyword bank says a keyword is untargeted but the knowledge panel shows a live page covering that topic, say so — and read that page before recommending new content on the same angle.`)
+
+  // Client context
+  if (clients.length > 0) {
+    const clientContext = clients.map(c => {
+      const fields = [
+        `CLIENT: ${c.name}`,
+        c.description             ? `About: ${c.description}` : '',
+        c.industry                ? `Industry: ${c.industry}` : '',
+        c.website                 ? `Website: ${c.website}` : '',
+        c.icp                     ? `Customer: ${c.icp}` : '',
+        c.usp                     ? `USP: ${c.usp}` : '',
+        c.brand_voice             ? `Voice: ${c.brand_voice}` : '',
+        c.content_goals           ? `Goals: ${c.content_goals}` : '',
+        c.content_tone            ? `Tone: ${c.content_tone}` : '',
+        c.avoid_topics            ? `Avoid: ${c.avoid_topics}` : '',
+        c.cta_approach            ? `CTA: ${c.cta_approach}` : '',
+        c.pricing_info            ? `Pricing: ${c.pricing_info}` : '',
+        c.team_info               ? `Team: ${c.team_info}` : '',
+        c.trust_signals           ? `Trust: ${c.trust_signals}` : '',
+        c.service_differentiators ? `Differentiators: ${c.service_differentiators}` : '',
+        c.location_info           ? `Location: ${c.location_info}` : '',
+        c.target_keywords         ? `Target keywords: ${c.target_keywords}` : '',
+        c.schema_type             ? `Schema type: ${c.schema_type}` : '',
+        c.competitors?.length     ? `Competitors: ${c.competitors.join(', ')}` : '',
+        c.github_repo             ? `Repo: ${c.github_repo}` : '',
+      ].filter(Boolean).join('\n')
+      return fields
+    }).join('\n\n')
+    parts.push(`CLIENTS:\n${clientContext}`)
+
+    if (clients.length > 1) {
+      parts.push(`CLIENT DISAMBIGUATION:
+If a request could apply to multiple clients and it is unclear which is intended, ask before proceeding: "Which client — ${clients.map(c => c.name).join(', ')}?"
+If only one client exists, assume all work is for that client.
+General questions (how does X work, what is Y) can be answered without specifying a client.`)
+    }
+  }
+
+  // Knowledge panel injection — cached intelligence, no tool call cost
+  const knowledgeBlocks = clients.map(c => {
+    const k = knowledgePanels[c.id]
+    if (!k) return null
+    const kParts = [`KNOWLEDGE PANEL — ${c.name}:`]
+
+    if (k.site_summary) kParts.push(`Site overview: ${k.site_summary}`)
+
+    if (k.site_pages?.length > 0) {
+      const synced = k.site_pages_updated_at ? new Date(k.site_pages_updated_at).toLocaleDateString('en-GB') : 'unknown'
+      const pageList = k.site_pages.map((p: any) =>
+        `${p.url}${p.title ? ` — "${p.title}"` : ''}${p.word_count ? ` (${p.word_count}w)` : ''}`
+      ).join('\n')
+      kParts.push(`Live pages — ${k.site_pages.length} total, last crawled ${synced}:\n${pageList}`)
+    }
+
+    if (k.gsc_snapshot?.totals) {
+      const { clicks, impressions, avg_position } = k.gsc_snapshot.totals
+      const synced = k.gsc_snapshot_updated_at ? new Date(k.gsc_snapshot_updated_at).toLocaleDateString('en-GB') : 'unknown'
+      kParts.push(`GSC snapshot (${synced}): ${(clicks || 0).toLocaleString()} clicks, ${(impressions || 0).toLocaleString()} impressions, avg pos ${avg_position ?? 'n/a'}`)
+      if (k.gsc_snapshot.near_miss?.length) {
+        kParts.push(`Near-miss: ${k.gsc_snapshot.near_miss.slice(0, 10).map((r: any) => `"${r.query}" #${Math.round(r.position)} (${r.impressions}imp)`).join(' | ')}`)
+      }
+      if (k.gsc_snapshot.low_ctr?.length) {
+        kParts.push(`Low CTR on page 1: ${k.gsc_snapshot.low_ctr.slice(0, 5).map((r: any) => `${r.url} ${(r.ctr * 100).toFixed(1)}%`).join(' | ')}`)
+      }
+    }
+
+    if (k.content_summary) kParts.push(`Content state: ${k.content_summary}`)
+    if (k.docs?.length) k.docs.forEach((d: any) => kParts.push(`Doc — ${d.title}:\n${d.content}`))
+    if (k.agent_notes?.[agent.slug]) kParts.push(`Your notes on this client:\n${k.agent_notes[agent.slug]}`)
+
+    return kParts.join('\n\n')
+  }).filter(Boolean)
+
+  if (knowledgeBlocks.length > 0) {
+    parts.push(knowledgeBlocks.join('\n\n---\n\n'))
+    parts.push(`IMPORTANT: The knowledge panel above is your ground truth for site structure and recent performance. Use it before calling get_site_pages or analyse_gsc — only call those tools if you need fresher data than the panel provides, or for a specific query the panel cannot answer.`)
+  }
+
+  const isSeo       = agent.agent_type === 'seo'
   const isTechnical = agent.agent_type === 'technical'
 
   if (isSeo) {
-    parts.push(`WORKING APPROACH:
-You are a proactive SEO professional, not a passive assistant. Investigate before advising; fix don't just report.
-You have tools to fetch live data — call them when you need current information. Do not rely on assumptions when a tool call will give you ground truth.
-- Use analyse_gsc first when starting any SEO or content conversation — it gives you the current performance landscape
-- Use audit_site to understand site health before making strategy calls
-- Use search_history and get_keywords before planning any content — never repeat covered angles
-- Use get_site_pages to get the live page inventory for internal linking — never invent URLs
-- Use read_page to analyse a specific live page in depth
-- Use generate_images (plural, one call) for all blog images — pass an array, not separate calls
-- Use write_content to save finished posts as drafts — a human reviews every draft before it is published
-- Use save_planned_task / update_planned_task to log agreed content to the scheduler
-- When starting a blog post, call search_history, get_keywords, and get_site_pages in a SINGLE response simultaneously — do not call them one at a time. You will receive all three results together before proceeding. Always pass your primary keyword to get_site_pages so only relevant pages are returned.
+    parts.push(`SEO WORKING APPROACH:
+You are a proactive SEO strategist. Investigate before advising. You have a full tool set — call whatever you need.
+
+Tool usage guide:
+- Knowledge panel (above): use first for site structure, pages, GSC snapshot. Already loaded, no cost.
+- analyse_gsc: call when you need fresher data than the snapshot, or a deeper breakdown
+- get_site_pages: call when you need pages the knowledge panel does not have, or to filter by specific criteria
+- search_history: call before writing anything to avoid repeating angles and find linking opportunities
+- get_keywords: call to see the full keyword bank with targets and current ranking positions
+- audit_site: call when doing a full site health review
+- analyse_competitors: call when evaluating content gaps against competitors
+- read_page: call when you need the full content of a specific page before writing something adjacent
+- generate_images: call after writing the draft, not before
+- write_content: call to save finished drafts for review
+- save_planned_task / update_planned_task: call to log agreed content to the scheduler
+- suggest_internal_links: call after every write_content
+- suggest_keyword: call when you spot a valuable keyword not in the bank
+
+DATA ACCURACY RULE:
+Before claiming any keyword is "untargeted" or any topic "has not been covered," cross-reference all three:
+1. The keyword bank (get_keywords) — does any keyword have content_targeting_this set?
+2. The knowledge panel site pages — is there a live page on this topic?
+3. search_history — has a draft or published piece covered this angle?
+All three must agree before you say something is a gap. If they conflict, read the relevant page before concluding.
+
+BLOG POST WORKFLOW:
+1. search_history — check what exists on this topic
+2. get_keywords — find the best keyword angle not already covered
+3. Knowledge panel site pages — identify internal linking opportunities (no tool call needed if panel is loaded)
+4. Write the complete markdown post
+5. generate_images — after writing, derive 2-3 prompts from the actual content
+6. write_content — save the draft with images
+7. suggest_internal_links — identify pages that should link to this new piece
+
+Call steps 1 and 2 in parallel in a single response. Do not call them sequentially.
 
 BLOG POST RULES:
-- Always produce title tag (~60 chars, lead with keyword, end on differentiator) AND meta description (~155 chars, keyword + value prop + location)
+- Title tag: ~60 chars, lead with keyword, end on differentiator
+- Meta description: ~155 chars, keyword + value prop + location if local
 - Primary keyword in: H1, first 100 words, at least one H2, title tag, meta description
-- Location terms in first 100 words for local content — never buried
-- Real URLs only for internal links — flag missing pages as [NEEDS PAGE: /slug]
-- Prose over bullets — max 3 bullet lists per article
+- Location terms in first 100 words for local content
+- Real URLs only for internal links — use knowledge panel pages. Flag missing pages as [NEEDS PAGE: /slug]
+- Prose over bullets — max 3 bullet lists per post
 - FAQ sections need JSON-LD schema block appended
-- Images required — 2–4 per post, placed naturally, SEO filename + alt text. Use generate_images in a single call for all blog images. Image prompts must follow IMAGE GENERATION rules below.
-- Named credentialed practitioner for health/care content — never anonymous
+- Named credentialed practitioner for health, legal, or regulated content
+- 2-4 images per post, placed naturally
 
-CONTENT FORMAT:
-Write all content in clean markdown with YAML frontmatter. Never write TypeScript, JSX, or code.
-
-Required frontmatter:
+CONTENT FORMAT — always markdown with YAML frontmatter:
 ---
-title: "Post Title Here"
-slug: "post-title-here"
-description: "Meta description 150-160 characters"
-keyword: "primary target keyword"
-category: "Category Name"
-reading_time: "8 min read"
+title: "Post Title"
+slug: "post-slug"
+description: "Meta description 150-160 chars"
+keyword: "primary keyword"
+category: "Category"
+reading_time: "X min read"
 date: "YYYY-MM-DD"
 ---
 
-Body content in standard markdown:
-- Use ## for H2 headings, ### for H3
-- Use standard markdown links: [anchor text](/path)
-- Reference images with standard markdown: ![alt text](supabase-url-here)
-- Use **bold** for emphasis, not HTML tags
-- Use > for callout boxes / worth knowing sections
+Use ## for H2, ### for H3. Standard markdown links. Bold sparingly. > for callouts.
+Never write TypeScript, JSX, or code.
 
-WORKFLOW FOR EVERY BLOG POST:
-1. Call search_history to check what has already been written
-2. Call analyse_gsc to understand current performance
-3. Call get_keywords to find the best keyword to target
-4. Call get_site_pages to understand the site structure for internal links
-5. Call generate_images with specific, detailed prompts (2-3 images)
-6. Write the full markdown post using the image URLs returned
-7. Call write_content to save the draft for review
+CONTENT PLANNING:
+Default to 3 posts per week unless keyword bank is shallow or user specifies otherwise.
+Sequence: fastest ranking wins first (KD <30, near-miss), then hub pages, then commercial intent, then informational.
+A 4-week plan = 10-14 pieces, not 4.
+If keyword bank is thin, flag it rather than padding with low-value topics.
 
-Never write TypeScript or JSX. Always use markdown.`)
+PROACTIVE RESPONSIBILITIES:
+- After publishing, call suggest_internal_links
+- Spot keyword gaps and cannibalisation unprompted — raise them when relevant
+- If the GSC snapshot is more than 48 hours old, mention it and offer to refresh`)
   }
 
   if (isTechnical) {
@@ -124,102 +234,60 @@ Never write TypeScript or JSX. Always use markdown.`)
 Use publish_content with the output_id to publish approved drafts. Always confirm the draft is approved first. Report the live URL when done.`)
   }
 
-  if (clients.length > 0) {
-    const clientContext = clients.map(c => [
-      `CLIENT: ${c.name}`,
-      c.description ? `About: ${c.description}` : '',
-      c.icp ? `Customer: ${c.icp}` : '',
-      c.usp ? `USP: ${c.usp}` : '',
-      c.brand_voice ? `Voice: ${c.brand_voice}` : '',
-      c.content_goals ? `Goals: ${c.content_goals}` : '',
-      c.content_tone ? `Tone: ${c.content_tone}` : '',
-      c.avoid_topics ? `Avoid: ${c.avoid_topics}` : '',
-      c.cta_approach ? `CTA: ${c.cta_approach}` : '',
-      c.pricing_info ? `Pricing: ${c.pricing_info}` : '',
-      c.team_info ? `Team: ${c.team_info}` : '',
-      c.trust_signals ? `Trust: ${c.trust_signals}` : '',
-      c.service_differentiators ? `Differentiators: ${c.service_differentiators}` : '',
-      c.location_info ? `Location: ${c.location_info}` : '',
-      c.target_keywords ? `Target keywords: ${c.target_keywords}` : '',
-      c.schema_type ? `Schema type: ${c.schema_type}` : '',
-      c.competitors?.length ? `Competitors: ${c.competitors.join(', ')}` : '',
-      c.github_repo ? `Repo: ${c.github_repo}` : '',
-    ].filter(Boolean).join('\n')).join('\n\n')
-    parts.push(`CLIENTS:\n${clientContext}`)
-
-    parts.push(`CLIENT DISAMBIGUATION:
-You are working on behalf of: ${clients.map(c => c.name).join(' and ')}
-
-WORKSPACE CLIENTS: ${clients.map(c => c.name).join(', ')}
-
-If a request could apply to multiple clients and it is unclear which one is intended, ask: "Which client is this for — ${clients.map(c => c.name).join(', ')}?" before proceeding.
-If there is only one client in the workspace, assume all work relates to that client.
-If a message is clearly general (e.g. "how does GSC work", "what is a backlink") answer without needing a client context.`)
-  }
-
-  if (isSeo) {
   parts.push(`IMAGE GENERATION:
-Always use generate_images (a single call with an array) — never make separate single-image calls.
+Always use generate_images in a single call with an array — never separate calls per image.
+Generate images AFTER writing the content, not before. Prompts must be derived from the actual post content.
 
-Rules for every image prompt you write:
-1. Set the scene as a real UK home — living room, kitchen, hallway, bedroom. Never a clinical setting, hospital, or consulting room.
-2. Show a real person being helped — not a posed subject staring at the camera. Natural, candid, documentary feel.
-3. Natural lighting — window light preferred. No studio flash, no harsh shadows, no white backgrounds.
-4. No white coats, uniforms, or clinical equipment visible in primary compositions.
-5. Warm, editorial quality — think Guardian Weekend or BBC lifestyle photography. Not Getty stock.
-6. Every image needs an SEO filename (kebab-case, keyword-rich) and accurate alt text describing exactly what is shown.
+Use the SCHEMA methodology for every prompt (Structured Components for Harmonized Engineered Modular Architecture):
+- SUBJECT: Who or what is the main focus. Specific — not "a person" but "a woman in her 60s seated in a living room armchair"
+- CONTEXT: The environment, setting, and spatial relationships. Real locations, not abstract or studio backgrounds.
+- LIGHTING: Specific light quality. Use Kelvin temperature or descriptive terms (4500K overcast window light, warm afternoon sun through net curtains).
+- ATMOSPHERE: The emotional register and mood. What does it feel like to be in this image?
+- CAMERA: Focal length and shooting style (35mm documentary, 85mm portrait, wide editorial).
+- STYLE: Photographic reference (Guardian Weekend editorial, BBC lifestyle documentary, Magnum street).
+- MANDATORY: Non-negotiable elements that must appear.
+- PROHIBITIONS: What must not appear. Be explicit.
 
-GOOD prompt example: "An older woman sitting in a comfortable armchair in a bright living room, listening attentively as a healthcare professional explains something to her. Natural daylight from a window. Warm, relaxed atmosphere. Candid documentary style. Not posed."
-BAD prompt example: "A professional audiologist in a clinic performing ear wax removal on a patient."
+Derive every element from the post content:
+- The client's location, audience, and brand voice inform the setting and people
+- The topic of the post determines what the image should show
+- The client's ICP determines who appears in the image
+- Never use generic prompts — every prompt must be specific to this post for this client
 
-Per-image requirements:
-- filename: keyword-rich kebab-case, e.g. "home-hearing-test-newcastle"
-- alt_text: describe the scene accurately, include the primary keyword naturally
-- prompt: follow all 6 rules above`)
+Image quality requirements:
+- Photorealistic, natural and candid, never posed or stock-feeling
+- Contextually accurate to the client's geography and audience
+- Keyword-rich filename in kebab-case
+- Accurate alt text describing exactly what is shown, including the primary keyword naturally
 
-  parts.push(`MANDATORY RESEARCH — before answering any content question:
-Before responding to any question about content strategy, keyword opportunities, what to write next, or how the site is performing, you MUST call all three of the following tools in a single parallel response — do not wait for one before calling the next:
-- search_history — find what has already been written, avoid repeating angles, find linking opportunities
-- get_site_pages — understand the live page inventory for internal links
-- analyse_gsc — get the current performance data to ground your recommendations in real numbers
-
-Do not give content recommendations, propose topics, or draft anything before you have all three results. This is mandatory, not optional.
-
-Exception: purely conversational or educational messages ("how are you", "what is a backlink", "explain canonical tags") may be answered directly. If the next message is about content for a client, the research tools are mandatory again.
-
-PROACTIVE RESPONSIBILITIES:
-- After publishing new content, call suggest_internal_links to find existing pages that should link to it
-- If you spot a keyword gap or cannibalisation issue, raise it unprompted
-- After every successful write_content, call suggest_internal_links to identify existing pages that should link to the new content`)
-
-  parts.push(`CONTENT PLANNING:
-When creating content plans, default to 3 pieces per week unless the user specifies otherwise or the keyword bank is too shallow.
-A typical 4-week plan should contain 10-14 pieces, not 4.
-Sequence by:
-1. Fastest wins first (near-miss keywords with no content targeting them)
-2. Hub pages before supporting pages
-3. Commercial intent before informational
-4. Higher volume before lower volume when difficulty is similar
-Never plan fewer than 2 pieces per week unless explicitly asked. If the keyword bank lacks high-value untargeted keywords, surface that gap rather than padding with low-value topics.`)
-  }
+Resolution defaults to 1K (1024x1024) — sufficient quality for standard blog images, significantly cheaper than 2K/4K. Only request higher resolution for hero campaign images or print assets.`)
 
   parts.push(`RESPONSE STYLE:
-Write conversationally, not as a document. Markdown renders properly — use it deliberately, not excessively.
-- Lead with the most important insight, not a preamble
-- Use ## headings only to separate genuinely distinct sections in longer analyses. Not for responses under 200 words.
-- Use bullet lists for genuinely list-like content. Write continuous reasoning as prose.
-- Bold sparingly — only for the single most important term or finding in a section
-- Never start with "Certainly", "Great question", "Of course", or any filler. Get straight to the point.
-- For short answers (under 100 words), write plain prose with no formatting
-- End with a clear single question or action, not a list of options
+Write conversationally. Lead with the most important thing, not a preamble.
+- Use ## headings only for genuinely distinct sections in longer analyses — not for replies under 200 words
+- Bullets for genuinely list-like content. Prose for reasoning.
+- Bold sparingly — one key term or finding per section at most
+- Never start with "Certainly", "Great question", "Of course", or any filler
+- End with one clear question or action — not a list of options
 - UK English. No em dashes.
 
 LENGTH:
 - Conversational replies: 2-4 sentences
-- Analysis of a single keyword or page: 150-300 words
-- Full content strategy or plan: up to 500 words, structured
-- Never produce walls of text for a question with a clear direct answer
-- If writing more than 400 words, ask: is the user asking for a document or a conversation? Default to conversation.`)
+- Single keyword or page analysis: 150-300 words
+- Full strategy or content plan: up to 500 words
+- Never produce walls of text for a question with a direct answer
+
+SUGGESTED REPLIES:
+When your response ends with a question or offers the user options, always include a SUGGESTIONS block at the very end in this exact format:
+
+<suggestions>
+["Option one text", "Option two text", "Option three text"]
+</suggestions>
+
+Use this when the task is broad, when you are asking for clarification, or when there are 2-3 natural next steps. Do not use it after completing a specific task the user explicitly requested. Options should be short (under 10 words each) and immediately actionable.
+
+ACKNOWLEDGEMENT:
+When starting a task that will take multiple tool calls or produce substantial output, send a brief acknowledgement first in plain prose (1 sentence), then begin working. Example: "On it — pulling keyword data and content history now." Do not send the acknowledgement and the results in the same message turn.`)
 
   return parts.join('\n\n')
 }
@@ -283,7 +351,7 @@ Supports: wordpress, shopify, github (MDX), webflow`,
   },
   {
     name: 'generate_images',
-    description: 'Generate multiple images in parallel using Nano Banana Pro AI and upload them to Supabase Storage. Returns an array of public URLs to reference in the markdown post. Images are automatically enhanced with client context (location, brand feel, target audience) to ensure they feel authentic rather than stock. Always use this for blog post images — pass all images in one call.',
+    description: 'Generate multiple images in parallel using Nano Banana Pro AI and upload them to Supabase Storage. Returns an array of public URLs to reference in the markdown post. Use the SCHEMA methodology for every prompt (Structured Components for Harmonized Engineered Modular Architecture): Subject, Context, Harmony, Environment, Mood, Aesthetics. Derive prompts from the actual written content -- never generate before writing. Resolution defaults to 1K (1024x1024) -- sufficient for blog images. Only request 2K or 4K for hero/campaign images. Always pass all images in one call.',
     input_schema: {
       type: 'object',
       properties: {
@@ -513,18 +581,10 @@ Supports: wordpress, shopify, github (MDX), webflow`,
   },
 ]
 
-// Tool access by agent type — shared tools go to every agent,
-// Ada (agent_type 'seo') gets the content + intelligence tools,
-// Theo (agent_type 'technical') gets publishing + repo write access.
-const SHARED_TOOL_NAMES = ['search_history', 'get_site_pages', 'get_keywords', 'read_file', 'read_page', 'audit_site']
-const ADA_TOOL_NAMES = ['generate_images', 'write_content', 'save_planned_task', 'update_planned_task', 'suggest_keyword', 'create_content_plan', 'analyse_competitors', 'suggest_internal_links', 'analyse_gsc']
-const THEO_TOOL_NAMES = ['publish_content', 'write_file']
-
-function getToolsForAgent(agentType: string) {
-  const names = agentType === 'technical'
-    ? [...SHARED_TOOL_NAMES, ...THEO_TOOL_NAMES]
-    : [...SHARED_TOOL_NAMES, ...ADA_TOOL_NAMES]
-  return ALL_TOOLS.filter(t => names.includes(t.name))
+function getToolsForAgent(_agentType: string) {
+  // All agents have access to all tools.
+  // Specialists use their expertise to decide what to call, not restricted access.
+  return ALL_TOOLS
 }
 
 const S = {
@@ -561,6 +621,18 @@ const SETTINGS_FIELDS = [
   ]},
 ]
 
+function parseSuggestions(content: string): { clean: string; suggestions: string[] } {
+  const match = content.match(/<suggestions>\s*(\[[\s\S]*?\])\s*<\/suggestions>/)
+  if (!match) return { clean: content, suggestions: [] }
+  try {
+    const suggestions = JSON.parse(match[1])
+    const clean = content.replace(/<suggestions>[\s\S]*?<\/suggestions>/, '').trim()
+    return { clean, suggestions: Array.isArray(suggestions) ? suggestions : [] }
+  } catch {
+    return { clean: content, suggestions: [] }
+  }
+}
+
 export default function AgentPage() {
   const { id } = useParams<{ id: string }>()
   const [tab, setTab] = useState<'chat' | 'settings'>('chat')
@@ -585,6 +657,7 @@ export default function AgentPage() {
   const [userId, setUserId] = useState<string | null>(null)
   const [workspaceId, setWorkspaceId] = useState<string | null>(null)
   const [gscRows, setGscRows] = useState<Record<string, GscRow[]>>({})
+  const [knowledgePanels, setKnowledgePanels] = useState<Record<string, any>>({})
   const scroller = useRef<HTMLDivElement>(null)
 
   // Map tool names → human-readable status labels
@@ -655,11 +728,24 @@ export default function AgentPage() {
   }
 
   async function loadClients() {
-    const { data } = await supabase.from('client_profiles').select('id,name,description,icp,usp,brand_voice,content_goals,competitors,file_tree,github_repo,slug,pricing_info,team_info,trust_signals,service_differentiators,location_info,target_keywords,content_tone,avoid_topics,cta_approach,schema_type').order('name')
+    const { data } = await supabase.from('client_profiles').select('id,name,description,icp,usp,brand_voice,content_goals,competitors,file_tree,github_repo,slug,industry,website,pricing_info,team_info,trust_signals,service_differentiators,location_info,target_keywords,content_tone,avoid_topics,cta_approach,schema_type').order('name')
     const clientList = data || []
     setClients(clientList)
     loadSitePages(clientList)
     loadGscData(clientList)
+    loadKnowledgePanels(clientList)
+  }
+
+  async function loadKnowledgePanels(clientList: Client[]) {
+    const panels: Record<string, any> = {}
+    await Promise.all(clientList.map(async c => {
+      try {
+        const res = await fetch(`/api/knowledge/${c.id}`)
+        const { knowledge } = await res.json()
+        if (knowledge) panels[c.id] = knowledge
+      } catch { /* non-critical */ }
+    }))
+    setKnowledgePanels(panels)
   }
 
   async function loadGscData(clientList: Client[]) {
@@ -1312,7 +1398,7 @@ export default function AgentPage() {
     setThoughts([]); thoughtsRef.current = []
     pendingDraftCardRef.current = null
     await supabase.from('messages').insert({ conversation_id: convId, role: 'user', content: userMsg.content, user_id: uid })
-    const systemPrompt = buildSystemPrompt(agent, clients)
+    const systemPrompt = buildSystemPrompt(agent, clients, knowledgePanels)
     const addTask = (label: string, done = false) => {
       const entry: TaskEntry = { label, done, ts: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }
       taskLogRef.current = [...taskLogRef.current, entry]
@@ -1335,17 +1421,53 @@ export default function AgentPage() {
       await supabase.from('conversations').update({ updated_at: new Date().toISOString(), title: userMsg.content.slice(0, 60) }).eq('id', convId)
       setMessages(prev => prev.map(m => m.id === placeholder.id ? { ...m, content: reply, _taskLog: [...taskLogRef.current], _thoughts: [...thoughtsRef.current], _draftCard: pendingDraftCardRef.current || undefined } : m))
     }
+    // Quick acknowledgement — Haiku, no tools, shows user the agent has started
+    try {
+      const ackRes = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'claude-haiku-4-5-20251001',
+          max_tokens: 150,
+          system: systemPrompt,
+          tools: [],
+          messages: [...apiMessages, {
+            role: 'user',
+            content: `[INTERNAL] In one sentence, acknowledge you are starting this task and say what data you are pulling first. Plain prose only, no markdown, no filler phrases like "Certainly" or "Of course".`,
+          }],
+        }),
+      })
+      const ackData = await ackRes.json()
+      const ackText = (ackData.content || []).filter((b: any) => b.type === 'text').map((b: any) => b.text).join('').trim()
+      if (ackText) {
+        setMessages(prev => prev.map(m => m.id === placeholder.id ? { ...m, content: ackText } : m))
+      }
+    } catch { /* non-critical */ }
+
+    const userText = typeof userMsg.content === 'string' ? userMsg.content.toLowerCase() : ''
+    const isWritingTurn = ['write', 'draft', 'blog post', 'article', 'content plan', 'create a plan'].some(kw => userText.includes(kw))
+
     try {
       let loopCount = 0
       let savedReply = false
+      let prevStopReason: string | null = null
       while (loopCount < 12) {
         loopCount++
         setAgentStatus(loopCount === 1 ? 'Thinking…' : 'Working…')
-        const res = await fetch('/api/chat', {
+
+        const isFetchOnlyTurn: boolean = (
+          ['what keywords', 'show me', 'list', 'how is', 'what does', 'summarise', 'summarize', 'pull', 'fetch', 'check'].some(kw => userText.includes(kw)) ||
+          (loopCount > 1 && prevStopReason === 'tool_use')
+        )
+        const model: string = isFetchOnlyTurn && !isWritingTurn ? 'claude-haiku-4-5-20251001' : 'claude-sonnet-4-6'
+        const maxTokens: number = isWritingTurn ? 16000 : isFetchOnlyTurn ? 2000 : 4000
+
+        const res: Response = await fetch('/api/chat', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 16000, system: systemPrompt, tools: getToolsForAgent(agent.agent_type), messages: apiMessages }),
+          body: JSON.stringify({ model, max_tokens: maxTokens, system: systemPrompt, tools: getToolsForAgent(agent.agent_type), messages: apiMessages }),
         })
-        const data = await res.json()
+        const data: any = await res.json()
+        prevStopReason = data.stop_reason ?? null
         if (data.error || !data.content) {
           const errMsg = typeof data.error === 'string' ? data.error : (data.error?.message || 'Something went wrong — try again.')
           const errReply = `⚠️ ${errMsg}`
@@ -1554,9 +1676,11 @@ export default function AgentPage() {
               <>
                 <div ref={scroller} style={{ flex: 1, overflow: 'auto', display: 'flex', flexDirection: 'column', gap: 16, paddingBottom: 8 }}>
                   {messages.length === 0 && <div style={{ margin: 'auto' }}><div style={{ fontSize: 15, color: 'var(--text-2)' }}>Say something to get started.</div></div>}
-                  {messages.filter((m, i) => m.role === 'user' || m.content || i === messages.length - 1).map((m, i) => {
+                  {messages.filter((m, i) => m.role === 'user' || m.content || i === messages.length - 1).map((m, i, arr) => {
                     const msgTaskLog = m._taskLog || (m.id === messages[messages.length - 1]?.id && sending ? taskLog : [])
                     const msgThoughts = m._thoughts || (m.id === messages[messages.length - 1]?.id && sending ? thoughts : [])
+                    const isLastMessage = i === arr.length - 1
+                    const { clean, suggestions } = m.role === 'assistant' ? parseSuggestions(m.content) : { clean: m.content, suggestions: [] }
                     return (
                     <div key={m.id || i} style={{ display: 'flex', flexDirection: 'column', alignItems: m.role === 'user' ? 'flex-end' : 'flex-start', maxWidth: '82%', alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start' }}>
                       {/* Task log + thoughts — shown on assistant messages that used tools */}
@@ -1585,13 +1709,26 @@ export default function AgentPage() {
                         </div>
                       )}
                       <div style={{ padding: '12px 16px', borderRadius: m.role === 'user' ? '12px 12px 3px 12px' : '3px 12px 12px 12px', background: m.role === 'user' ? 'var(--brand)' : 'var(--surface)', color: m.role === 'user' ? '#fff' : 'var(--text)', border: m.role === 'assistant' ? '1px solid var(--border)' : 'none', borderLeft: m.role === 'assistant' ? '2px solid var(--brand)' : 'none' }}>
-                        {m.role === 'assistant' && m.content
-                          ? <div className="ada-message-content" dangerouslySetInnerHTML={{ __html: marked.parse(m.content) as string }} />
-                          : m.content
-                            ? <span style={{ fontSize: 14, lineHeight: 1.65, whiteSpace: 'pre-wrap' }}>{m.content}</span>
+                        {m.role === 'assistant' && clean
+                          ? <div className="ada-message-content" dangerouslySetInnerHTML={{ __html: marked.parse(clean) as string }} />
+                          : clean
+                            ? <span style={{ fontSize: 14, lineHeight: 1.65, whiteSpace: 'pre-wrap' }}>{clean}</span>
                             : <span style={{ opacity: 0.5, fontSize: 14 }}>…</span>
                         }
                       </div>
+                      {/* Suggested replies — only on last assistant message, only when not sending */}
+                      {m.role === 'assistant' && suggestions.length > 0 && isLastMessage && !sending && (
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8, maxWidth: '100%' }}>
+                          {suggestions.map((s, si) => (
+                            <button key={si} onClick={() => { setDraft(s); setTimeout(() => send(), 50) }}
+                              style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: '6px 12px', fontSize: 12.5, color: 'var(--text-2)', cursor: 'pointer', transition: 'border-color 0.12s, color 0.12s', whiteSpace: 'nowrap' }}
+                              onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--brand)'; e.currentTarget.style.color = 'var(--text)' }}
+                              onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = 'var(--text-2)' }}>
+                              {s}
+                            </button>
+                          ))}
+                        </div>
+                      )}
                       {m.role === 'assistant' && m._draftCard && (
                         <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderLeft: '3px solid var(--green)', borderRadius: 'var(--radius-md)', padding: '12px 16px', marginTop: 6, alignSelf: 'stretch' }}>
                           <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>✓ Draft saved · &quot;{m._draftCard.title}&quot;</div>

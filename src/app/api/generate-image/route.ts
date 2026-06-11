@@ -7,8 +7,15 @@ const supabase = createClient(
 )
 
 export async function POST(req: NextRequest) {
-  const { prompt, filename, client_id, workspace_id } = await req.json()
+  const { prompt, filename, client_id, workspace_id, resolution = '1K' } = await req.json()
   if (!prompt) return NextResponse.json({ error: 'prompt required' }, { status: 400 })
+
+  const resolutionMap: Record<string, string> = {
+    '1K': '1024x1024',
+    '2K': '2048x2048',
+    '4K': '4096x4096',
+  }
+  const outputSize = resolutionMap[resolution] || '1024x1024'
 
   const apiKey = process.env.GEMINI_API_KEY
   if (!apiKey) return NextResponse.json({ error: 'GEMINI_API_KEY not set' }, { status: 500 })
@@ -24,7 +31,13 @@ export async function POST(req: NextRequest) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { responseModalities: ['IMAGE', 'TEXT'] },
+          generationConfig: {
+            responseModalities: ['IMAGE', 'TEXT'],
+            imageGenerationConfig: {
+              outputOptions: { mimeType: 'image/jpeg', compressionQuality: 85 },
+              numberOfImages: 1,
+            },
+          },
         }),
       },
     )

@@ -220,5 +220,25 @@ export async function POST(req: NextRequest) {
 
   await supabase.from('client_profiles').update({ last_crawled_at: new Date().toISOString() }).eq('id', client_id)
 
+  // Update knowledge panel cache with fresh site inventory
+  const pageInventory = pages.map((p: any) => ({
+    url: p.url,
+    title: p.title,
+    h1: p.h1,
+    meta_description: p.meta_description,
+    word_count: p.word_count,
+  }))
+  const siteSummary = `${pageInventory.length} pages crawled. ` +
+    `${pageInventory.filter((p: any) => !p.meta_description).length} missing meta descriptions. ` +
+    `${pageInventory.filter((p: any) => (p.word_count || 0) < 300).length} thin pages (under 300 words).`
+  await supabase.from('client_knowledge').upsert({
+    client_id,
+    workspace_id: workspaceId,
+    site_pages: pageInventory,
+    site_pages_updated_at: new Date().toISOString(),
+    site_summary: siteSummary,
+    updated_at: new Date().toISOString(),
+  }, { onConflict: 'client_id' })
+
   return NextResponse.json({ success: true, pages_crawled: pages.length, workspace_id: workspaceId })
 }
