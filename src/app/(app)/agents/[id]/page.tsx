@@ -74,6 +74,8 @@ Before making any substantive recommendation or starting any task:
 When a task is clear: acknowledge briefly and start working immediately.
 When a task is ambiguous or broad: ask one focused question before starting. Offer 2-3 specific options as part of that question so the user can respond quickly.
 
+Never print internal tool calls, JSON tool plans, or arrays like [{"tool_name": "..."}] in the chat. Use the actual tools silently and only show the user your plain-language result.
+
 Always reconcile all available data sources before drawing conclusions. If the keyword bank says a keyword is untargeted but the knowledge panel shows a live page covering that topic, say so — and read that page before recommending new content on the same angle.
 
 - Use update_agent_notes at the end of any conversation where you learned something useful about a client — preferences, patterns, things to avoid, tone adjustments. This persists across sessions and makes you more useful over time.`)
@@ -211,6 +213,7 @@ Before claiming any keyword is "untargeted" or any topic "has not been covered,"
 2. The knowledge panel site pages — is there a live page on this topic?
 3. search_history — has a draft or published piece covered this angle?
 All three must agree before you say something is a gap. If they conflict, read the relevant page before concluding.
+If get_keywords reports "inferred coverage" for a keyword, treat it as already targeted unless the user explicitly asks for a stronger/dedicated page.
 
 BLOG POST WORKFLOW:
 1. search_history — check what exists on this topic
@@ -498,7 +501,7 @@ Supports: wordpress, shopify, github (MDX), webflow`,
         client_name: { type: 'string', description: 'The client' },
         query: { type: 'string', description: 'Topic, keyword, or theme to search for' },
       },
-      required: ['client_name', 'query'],
+      required: ['client_name'],
     },
   },
   {
@@ -692,6 +695,44 @@ function parseSuggestions(content: string): { clean: string; suggestions: string
   } catch {
     return { clean: content, suggestions: [] }
   }
+}
+
+function stripToolCallJson(content: string): string {
+  let clean = content || ''
+  clean = clean.replace(/```(?:json)?\s*([\s\S]*?)```/gi, (block, body) =>
+    /["']tool_name["']|["']parameters["']/.test(body) ? '' : block
+  )
+  clean = clean.replace(/(^|\n)\s*(\[\s*\{[\s\S]*?["']tool_name["'][\s\S]*?\}\s*\])\s*(?=\n|$)/gi, '$1')
+  clean = clean.replace(/(^|\n)\s*(\{\s*["']tool_name["'][\s\S]*?\})\s*(?=\n|$)/gi, '$1')
+  if (/^\s*[\[{][\s\S]*["']tool_name["'][\s\S]*[\]}]\s*$/.test(clean)) return ''
+  return clean.replace(/\n{3,}/g, '\n\n').trim()
+}
+
+function toolClientName(input: any): string {
+  return input?.client_name || input?.client || input?.clientName || ''
+}
+
+function normaliseForMatch(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/\baudiology\b/g, 'audiolog')
+    .replace(/\baudiologist\b/g, 'audiolog')
+    .replace(/\bhearing aids\b/g, 'hearing aid')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+}
+
+function keywordTerms(keyword: string): string[] {
+  const stop = new Set(['the', 'and', 'for', 'with', 'near', 'me', 'at', 'to', 'in', 'a', 'an'])
+  return normaliseForMatch(keyword).split(/\s+/).filter(w => w.length > 1 && !stop.has(w))
+}
+
+function pageCoversKeyword(page: SitePage, keyword: string): boolean {
+  const haystack = normaliseForMatch([page.url, page.title, page.h1, page.meta_description, page.content_summary].filter(Boolean).join(' '))
+  const phrase = normaliseForMatch(keyword)
+  if (phrase && haystack.includes(phrase)) return true
+  const terms = keywordTerms(keyword)
+  return terms.length > 0 && terms.every(term => haystack.includes(term))
 }
 
 export default function AgentPage() {
@@ -919,7 +960,7 @@ export default function AgentPage() {
     const parsed = (data || []).map((m: any) => {
       if (m.role !== 'assistant') return m
       const { content, taskLog, thoughts } = decodeMessageMeta(m.content || '')
-      return { ...m, content, _taskLog: taskLog, _thoughts: thoughts }
+      return { ...m, content: stripToolCallJson(content), _taskLog: taskLog, _thoughts: thoughts.map(stripToolCallJson).filter(Boolean) }
     })
     setMessages(parsed)
     // Restore task log from the last assistant message that used tools
@@ -1211,8 +1252,9 @@ export default function AgentPage() {
     }
 
     if (toolName === 'search_history') {
-      const client = clients.find(c => c.name.toLowerCase().includes((toolInput.client_name || '').toLowerCase()))
-      if (!client) return `Could not find client matching "${toolInput.client_name}".`
+      const requestedClient = toolClientName(toolInput)
+      const client = clients.find(c => c.name.toLowerCase().includes(requestedClient.toLowerCase()))
+      if (!client) return `Could not find client matching "${requestedClient}".`
       const { data } = await supabase.from('content_history').select('title,url,primary_keyword,summary,published_at,performance_notes,ranking_position,ranking_date,traffic_notes').eq('client_id', client.id).order('published_at', { ascending: false })
       if (!data || data.length === 0) return `No content history for ${client.name} yet — this client has no published pieces on record.`
       const query = (toolInput.query || '').toLowerCase()
@@ -1266,18 +1308,34 @@ export default function AgentPage() {
     }
 
     if (toolName === 'get_keywords') {
-      const client = clients.find(c => c.name.toLowerCase().includes((toolInput.client_name || '').toLowerCase()))
-      if (!client) return `Could not find client matching "${toolInput.client_name}".`
+      const requestedClient = toolClientName(toolInput)
+      const client = clients.find(c => c.name.toLowerCase().includes(requestedClient.toLowerCase()))
+      if (!client) return `Could not find client matching "${requestedClient}".`
       const { data } = await supabase.from('keyword_banks').select('keyword,intent,funnel_stage,monthly_volume,difficulty,current_position,content_targeting_this,cluster,priority,opportunity_score').eq('client_id', client.id).order('opportunity_score', { ascending: false, nullsFirst: false }).limit(200)
       if (!data || data.length === 0) return `No keywords in bank for ${client.name}. Add some in the Keywords section.`
+      const pages = sitePages[client.id] || []
+      const inferCoverage = (keyword: string): { url: string; reason: string } | null => {
+        const matchedPage = pages.find(page => pageCoversKeyword(page, keyword))
+        if (matchedPage) return { url: matchedPage.url, reason: 'inferred from crawled page title/H1/meta/summary' }
+        return null
+      }
+      const targetingFor = (k: any): { value: string | null; inferred: boolean; reason?: string } => {
+        if (k.content_targeting_this) return { value: k.content_targeting_this, inferred: false }
+        const coverage = inferCoverage(k.keyword)
+        return coverage ? { value: coverage.url, inferred: true, reason: coverage.reason } : { value: null, inferred: false }
+      }
       let filtered = data
-      if (toolInput.filter === 'untargeted') filtered = data.filter(k => !k.content_targeting_this)
+      if (toolInput.filter === 'untargeted') filtered = data.filter(k => !targetingFor(k).value)
       else if (toolInput.filter === 'ranking') filtered = data.filter(k => k.current_position)
       else if (toolInput.filter === 'high_volume') filtered = data.filter(k => k.monthly_volume >= 1000)
       const label = toolInput.filter && toolInput.filter !== 'all' ? ` (filter: ${toolInput.filter})` : ''
-      return `Keyword bank for ${client.name}${label} — ${filtered.length} keywords:\n\n` + filtered.map(k =>
-        `• "${k.keyword}" | ${k.intent || '—'} | ${k.funnel_stage || '—'} | vol: ${k.monthly_volume || '?'} | KD: ${k.difficulty || '?'} | pos: ${k.current_position || 'not ranking'} | opp_score: ${k.opportunity_score ?? '—'} | targeting: ${k.content_targeting_this || 'nothing yet'}${k.cluster ? ` | cluster: ${k.cluster}` : ''}`
-      ).join('\n')
+      return `Keyword bank for ${client.name}${label} — ${filtered.length} keywords. Treat rows with inferred coverage as already targeted unless the user asks for a stronger/dedicated page:\n\n` + filtered.map(k => {
+        const targeting = targetingFor(k)
+        const targetingText = targeting.value
+          ? `${targeting.value}${targeting.inferred ? ` (${targeting.reason})` : ''}`
+          : 'nothing yet'
+        return `• "${k.keyword}" | ${k.intent || '—'} | ${k.funnel_stage || '—'} | vol: ${k.monthly_volume || '?'} | KD: ${k.difficulty || '?'} | pos: ${k.current_position || 'not ranking'} | opp_score: ${k.opportunity_score ?? '—'} | targeting: ${targetingText}${k.cluster ? ` | cluster: ${k.cluster}` : ''}`
+      }).join('\n')
     }
 
     if (toolName === 'write_file') {
@@ -1687,7 +1745,7 @@ export default function AgentPage() {
     // Strip any __META__ prefixes that snuck into state (defensive decode)
     const rawMessages = [...messages.filter(m => m.content), userMsg].map(m => ({
       role: m.role,
-      content: m.role === 'assistant' ? decodeMessageMeta(m.content).content : m.content,
+      content: m.role === 'assistant' ? stripToolCallJson(decodeMessageMeta(m.content).content) : m.content,
     }))
     // Summarise old turns to reduce input tokens on long conversations
     const apiMessages: any[] = rawMessages.length > 8
@@ -1695,10 +1753,11 @@ export default function AgentPage() {
       : rawMessages
     // Helper to save + display the assistant message
     const saveReply = async (reply: string) => {
-      const stored = encodeMessageMeta(reply, taskLogRef.current, thoughtsRef.current)
+      const cleanReply = stripToolCallJson(reply) || 'Done.'
+      const stored = encodeMessageMeta(cleanReply, taskLogRef.current, thoughtsRef.current.map(stripToolCallJson).filter(Boolean))
       await supabase.from('messages').insert({ conversation_id: convId, role: 'assistant', content: stored, user_id: uid })
       await supabase.from('conversations').update({ updated_at: new Date().toISOString(), title: userMsg.content.slice(0, 60) }).eq('id', convId)
-      setMessages(prev => prev.map(m => m.id === placeholder.id ? { ...m, content: reply, _taskLog: [...taskLogRef.current], _thoughts: [...thoughtsRef.current], _draftCard: pendingDraftCardRef.current || undefined } : m))
+      setMessages(prev => prev.map(m => m.id === placeholder.id ? { ...m, content: cleanReply, _taskLog: [...taskLogRef.current], _thoughts: thoughtsRef.current.map(stripToolCallJson).filter(Boolean), _draftCard: pendingDraftCardRef.current || undefined } : m))
     }
     // Quick acknowledgement — Haiku, no tools, shows user the agent has started
     try {
@@ -1720,7 +1779,7 @@ export default function AgentPage() {
         }),
       })
       const ackData = await ackRes.json()
-      const ackText = (ackData.content || []).filter((b: any) => b.type === 'text').map((b: any) => b.text).join('').trim()
+      const ackText = stripToolCallJson((ackData.content || []).filter((b: any) => b.type === 'text').map((b: any) => b.text).join('').trim())
       if (ackText) {
         setMessages(prev => prev.map(m => m.id === placeholder.id ? { ...m, content: ackText } : m))
       }
@@ -1781,7 +1840,7 @@ export default function AgentPage() {
         }
 
         // Capture any reasoning text Ada emits before a tool call
-        const thinkingText = (data.content || []).filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n').trim()
+        const thinkingText = stripToolCallJson((data.content || []).filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n').trim())
         if (thinkingText) {
           thoughtsRef.current = [...thoughtsRef.current, thinkingText]
           setThoughts([...thoughtsRef.current])
@@ -2079,7 +2138,8 @@ export default function AgentPage() {
                   {messages.filter((m, i) => m.role === 'user' || m.content || i === messages.length - 1).map((m, i, arr) => {
                     const msgTaskLog = m._taskLog || (m.id === messages[messages.length - 1]?.id && sending ? taskLog : [])
                     const isLastMessage = i === arr.length - 1
-                    const { clean, suggestions } = m.role === 'assistant' ? parseSuggestions(m.content) : { clean: m.content, suggestions: [] }
+                    const displayContent = m.role === 'assistant' ? stripToolCallJson(m.content) : m.content
+                    const { clean, suggestions } = m.role === 'assistant' ? parseSuggestions(displayContent) : { clean: displayContent, suggestions: [] }
                     return (
                     <div key={m.id || i} style={{ display: 'flex', flexDirection: 'column', alignItems: m.role === 'user' ? 'flex-end' : 'flex-start', maxWidth: '82%', alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start' }}>
                       {/* Task log + thoughts — shown on assistant messages that used tools */}

@@ -7,6 +7,29 @@ const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env
 
 export const maxDuration = 60
 
+function normaliseForMatch(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/\baudiology\b/g, 'audiolog')
+    .replace(/\baudiologist\b/g, 'audiolog')
+    .replace(/\bhearing aids\b/g, 'hearing aid')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+}
+
+function keywordTerms(keyword: string): string[] {
+  const stop = new Set(['the', 'and', 'for', 'with', 'near', 'me', 'at', 'to', 'in', 'a', 'an'])
+  return normaliseForMatch(keyword).split(/\s+/).filter(w => w.length > 1 && !stop.has(w))
+}
+
+function pageCoversKeyword(page: any, keyword: string): boolean {
+  const haystack = normaliseForMatch([page.url, page.title, page.h1, page.meta_description, page.content_summary].filter(Boolean).join(' '))
+  const phrase = normaliseForMatch(keyword)
+  if (phrase && haystack.includes(phrase)) return true
+  const terms = keywordTerms(keyword)
+  return terms.length > 0 && terms.every(term => haystack.includes(term))
+}
+
 export async function POST(req: NextRequest) {
   const authResult = await requireUser(req)
   if (!authResult.ok) return authResult.response
@@ -27,16 +50,36 @@ export async function POST(req: NextRequest) {
   const apiKey = process.env.ANTHROPIC_API_KEY
   if (!apiKey) return NextResponse.json({ error: 'ANTHROPIC_API_KEY is not configured in Vercel environment variables.' }, { status: 500 })
 
-  const [{ data: keywords }, { data: knowledge }] = await Promise.all([
+  const [{ data: keywords }, { data: knowledge }, { data: crawledPages }] = await Promise.all([
     supabase.from('keyword_banks').select('id,keyword').eq('client_id', client_id).is('content_targeting_this', null),
     supabase.from('client_knowledge').select('site_pages').eq('client_id', client_id).maybeSingle(),
+    supabase.from('site_pages').select('url,title,h1,meta_description,content_summary').eq('client_id', client_id).limit(100),
   ])
 
   if (!keywords?.length) return NextResponse.json({ matched: 0, message: 'No untargeted keywords' })
-  if (!knowledge?.site_pages?.length) return NextResponse.json({ error: 'No site pages in knowledge panel -- run a crawl first' }, { status: 400 })
+  const pageRows = crawledPages?.length ? crawledPages : (knowledge?.site_pages || [])
+  if (!pageRows?.length) return NextResponse.json({ error: 'No site pages found -- run a crawl first' }, { status: 400 })
 
-  const pages = (knowledge.site_pages as any[]).map((p: any) =>
-    `${p.url} | "${p.title || ''}"${p.h1 ? ` | H1: "${p.h1}"` : ''}`
+  let deterministicMatched = 0
+  const deterministicResults: Record<string, string> = {}
+  const remainingKeywords: any[] = []
+  for (const kw of keywords) {
+    const page = pageRows.find((p: any) => pageCoversKeyword(p, (kw as any).keyword))
+    if (page?.url) {
+      await supabase.from('keyword_banks').update({ content_targeting_this: page.url }).eq('id', (kw as any).id)
+      deterministicResults[(kw as any).keyword] = page.url
+      deterministicMatched++
+    } else {
+      remainingKeywords.push(kw)
+    }
+  }
+
+  if (remainingKeywords.length === 0) {
+    return NextResponse.json({ matched: deterministicMatched, total_untargeted: keywords.length, mapping: deterministicResults })
+  }
+
+  const pages = (pageRows as any[]).map((p: any) =>
+    `${p.url} | "${p.title || ''}"${p.h1 ? ` | H1: "${p.h1}"` : ''}${p.content_summary ? ` | Summary: "${p.content_summary}"` : ''}`
   )
 
   const prompt = `You are an SEO analyst. Match keywords to live pages that genuinely target them.
@@ -44,7 +87,7 @@ export async function POST(req: NextRequest) {
 A page "targets" a keyword if it is clearly the page someone searching that keyword should land on -- the keyword (or a close variant) is the page's primary topic, reflected in its URL, title, or H1. A passing mention does not count. Be strict: only match when the page is genuinely built for that keyword.
 
 KEYWORDS:
-${keywords.map((k: any) => k.keyword).join('\n')}
+${remainingKeywords.map((k: any) => k.keyword).join('\n')}
 
 LIVE PAGES:
 ${pages.join('\n')}
@@ -88,11 +131,11 @@ Respond with ONLY a JSON object mapping keyword to URL for genuine matches. Omit
     return NextResponse.json({ error: 'Invalid JSON from AI', raw: raw.slice(0, 300) }, { status: 500 })
   }
 
-  const validUrls = new Set((knowledge.site_pages as any[]).map((p: any) => p.url))
-  let matched = 0
-  const results: Record<string, string> = {}
+  const validUrls = new Set((pageRows as any[]).map((p: any) => p.url))
+  let matched = deterministicMatched
+  const results: Record<string, string> = { ...deterministicResults }
 
-  for (const kw of keywords) {
+  for (const kw of remainingKeywords) {
     const url = mapping[(kw as any).keyword]
     if (url && validUrls.has(url)) {
       await supabase.from('keyword_banks').update({ content_targeting_this: url }).eq('id', (kw as any).id)
