@@ -1813,7 +1813,7 @@ export default function AgentPage() {
           toolResults.push(...parallelResults)
           apiMessages.push({ role: 'user', content: toolResults })
           // After write_content succeeded, allow one more turn for Ada's summary then stop
-          if (draftSavedRef.current && loopCount >= 3) {
+          if (draftSavedRef.current && loopCount >= 6) {
             const wrapRes = await fetch('/api/chat', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -1983,7 +1983,15 @@ export default function AgentPage() {
                   </span>
                 </div>
                 <div style={{ padding: '6px 0' }}>
-                  {sending && agentStatus && !taskLog.find(t => !t.done && t.label === agentStatus) && (
+                  {sending && taskLog.length > 0 && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', background: 'var(--surface-2)', borderRadius: 'var(--radius)', margin: '2px 8px 4px', borderLeft: '2px solid var(--accent)' }}>
+                      <div style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--accent)', flexShrink: 0, animation: 'pulse 1s ease-in-out infinite' }} />
+                      <span style={{ fontSize: 12, color: 'var(--text)', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {taskLog[taskLog.length - 1]?.label || agentStatus || 'Working...'}
+                      </span>
+                    </div>
+                  )}
+                  {sending && !taskLog.length && agentStatus && (
                     <div style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '5px 10px' }}>
                       <span style={{ width: 5, height: 5, borderRadius: '50%', background: 'var(--accent)', flexShrink: 0, animation: 'pulse 1s ease-in-out infinite' }} />
                       <span style={{ fontSize: 12, color: 'var(--text-2)' }}>{agentStatus}</span>
@@ -2045,7 +2053,6 @@ export default function AgentPage() {
                   {messages.length === 0 && <div style={{ margin: 'auto' }}><div style={{ fontSize: 15, color: 'var(--text-2)' }}>Say something to get started.</div></div>}
                   {messages.filter((m, i) => m.role === 'user' || m.content || i === messages.length - 1).map((m, i, arr) => {
                     const msgTaskLog = m._taskLog || (m.id === messages[messages.length - 1]?.id && sending ? taskLog : [])
-                    const msgThoughts = m._thoughts || (m.id === messages[messages.length - 1]?.id && sending ? thoughts : [])
                     const isLastMessage = i === arr.length - 1
                     const { clean, suggestions } = m.role === 'assistant' ? parseSuggestions(m.content) : { clean: m.content, suggestions: [] }
                     return (
@@ -2125,7 +2132,12 @@ export default function AgentPage() {
                       </div>
                     </div>
                   )}
-                  <div style={{ marginTop: 12, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)', padding: '10px 10px 10px 14px', display: 'flex', alignItems: 'flex-end', gap: 8 }}>
+                  <div style={{ marginTop: 12, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)', padding: '10px 10px 10px 14px', display: 'flex', alignItems: 'flex-end', gap: 8, position: 'relative', overflow: 'hidden' }}>
+                    {sending && (
+                      <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 2, background: 'var(--surface-3)', borderRadius: 1, overflow: 'hidden' }}>
+                        <div style={{ height: '100%', background: 'var(--accent)', animation: 'progress-indeterminate 1.5s ease-in-out infinite', width: '40%' }} />
+                      </div>
+                    )}
                     <textarea value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() } }} placeholder={`Message ${agent.name}...`} rows={2} style={{ flex: 1, resize: 'none', fontFamily: 'inherit', background: 'transparent', border: 'none', outline: 'none', boxShadow: 'none', padding: 0 }} />
                     <button onClick={send} disabled={!draft.trim() || sending} style={{ ...S.btn, flexShrink: 0, background: 'var(--brand)', borderRadius: 'var(--radius-md)', padding: '8px 14px', opacity: (!draft.trim() || sending) ? 0.4 : 1 }}>{sending ? '...' : 'Send'}</button>
                   </div>

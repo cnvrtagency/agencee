@@ -162,6 +162,11 @@ textarea { resize: vertical; line-height: 1.6; }
   100% { background-position: 200% 0; }
 }
 
+@keyframes progress-indeterminate {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(350%); }
+}
+
 /* ─── Markdown prose (output detail) ─────────────────────── */
 .md-prose h1 { font-size: 22px; font-weight: 600; color: var(--text); margin: 28px 0 12px; line-height: 1.3; letter-spacing: -0.3px; }
 .md-prose h2 { font-size: 17px; font-weight: 600; color: var(--text); margin: 24px 0 10px; line-height: 1.35; }

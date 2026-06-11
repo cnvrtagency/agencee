@@ -141,6 +141,8 @@ export default function ClientDetail() {
   const [knowledgeDocs, setKnowledgeDocs] = useState<{ id: string; title: string; content: string; updated_at: string }[]>([])
   const [editingDoc, setEditingDoc] = useState<string | null>(null)
   const [savingDoc, setSavingDoc] = useState(false)
+  const [agentNotes, setAgentNotes] = useState<Record<string, any> | null>(null)
+  const [knowledgeSummary, setKnowledgeSummary] = useState<string | null>(null)
 
   // Competitors state
   const [compOpen, setCompOpen] = useState(false)
@@ -164,9 +166,11 @@ export default function ClientDetail() {
     // Load AI overview (cached if fresh)
     loadOverview()
 
-    // Load knowledge docs
-    supabase.from('client_knowledge').select('docs').eq('client_id', id).maybeSingle().then(({ data: kn }) => {
+    // Load knowledge docs, agent notes, and content summary
+    supabase.from('client_knowledge').select('docs, agent_notes, content_summary').eq('client_id', id).maybeSingle().then(({ data: kn }) => {
       if (kn?.docs) setKnowledgeDocs(kn.docs as any[])
+      if (kn?.agent_notes) setAgentNotes(kn.agent_notes as Record<string, any>)
+      if (kn?.content_summary) setKnowledgeSummary(kn.content_summary)
     })
 
     // Read tab from URL param — handles OAuth redirects
@@ -1650,6 +1654,66 @@ export default function ClientDetail() {
       {/* ── Knowledge docs ── */}
       {activeTab === 'knowledge' && (
         <div>
+          {/* Content summary */}
+          {knowledgeSummary && (
+            <div style={{ ...S.panel, marginBottom: 16 }}>
+              <div style={S.panelHead}>Content state</div>
+              <div style={{ padding: '14px 20px', fontSize: 13, color: 'var(--text-2)', lineHeight: 1.7 }}>
+                {knowledgeSummary}
+              </div>
+            </div>
+          )}
+
+          {/* Agent notes — written automatically from conversations */}
+          {agentNotes && Object.keys(agentNotes).filter(k => k !== 'competitor_analysis').length > 0 && (
+            <div style={{ ...S.panel, marginBottom: 16 }}>
+              <div style={S.panelHead}>
+                <span>Ada's notes</span>
+                <span style={{ fontSize: 11, color: 'var(--text-dim)', fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>Written automatically from conversations</span>
+              </div>
+              {Object.entries(agentNotes).map(([slug, notes]: [string, any]) => {
+                if (slug === 'competitor_analysis') return null
+                if (!notes || typeof notes !== 'object') return null
+                return (
+                  <div key={slug} style={{ padding: '14px 20px', borderBottom: '1px solid var(--border)' }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-2)', textTransform: 'uppercase', letterSpacing: '0.8px', marginBottom: 8 }}>{slug}</div>
+                    {notes.last_conversation && (
+                      <div style={{ marginBottom: 8 }}>
+                        {notes.last_conversation.date && (
+                          <div style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 4 }}>
+                            Last session — {new Date(notes.last_conversation.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}
+                          </div>
+                        )}
+                        <div style={{ fontSize: 13, color: 'var(--text)', lineHeight: 1.6 }}>{notes.last_conversation.summary}</div>
+                        {notes.last_conversation.recommendations?.length > 0 && (
+                          <div style={{ marginTop: 8 }}>
+                            <div style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 600, marginBottom: 3 }}>Recommendations</div>
+                            {notes.last_conversation.recommendations.map((r: string, i: number) => (
+                              <div key={i} style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 2 }}>· {r}</div>
+                            ))}
+                          </div>
+                        )}
+                        {notes.last_conversation.pending?.length > 0 && (
+                          <div style={{ marginTop: 8 }}>
+                            <div style={{ fontSize: 11, color: 'var(--amber)', fontWeight: 600, marginBottom: 3 }}>Pending</div>
+                            {notes.last_conversation.pending.map((p: string, i: number) => (
+                              <div key={i} style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 2 }}>· {p}</div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    {(notes.history?.length || 0) > 1 && (
+                      <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 4 }}>
+                        {notes.history.length - 1} previous session{notes.history.length > 2 ? 's' : ''} on record
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+
           <div style={S.panel}>
             <div style={S.panelHead}>
               <span>Knowledge docs ({knowledgeDocs.length})</span>

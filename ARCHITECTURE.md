@@ -1,7 +1,7 @@
 # Agencee — Master Architecture Document
 
 **Living document. Update at the end of every build session.**
-Last updated: 11 June 2026. Session: Platform stability sweep — briefing workspace_id, overview stats accuracy, agent notes format, auto debrief threshold.
+Last updated: 11 June 2026. Session: GSC token refresh fix, task log cleanup, progress bar, knowledge panel UI, blog loop fix.
 
 ---
 
@@ -199,7 +199,7 @@ Exist as cards in `/marketplace` only. No agent_type, tools, or system prompt.
 |---|---|
 | `/` | Dashboard. Briefing room (AI opportunity cards, expand/collapse, Act/Dismiss). Stat cards (Clients, Queued, Running, Needs review — mono font, 36px number). What needs attention panel. Token usage (by agent + 5-week activity calendar). Pending review (inline approve/delete). Queue activity. |
 | `/clients` | Client list table. Add client modal (name, website, industry, slug — minimal). Saves immediately, redirects to client detail page to complete profile. |
-| `/clients/[id]` | 10 tabs: Profile, Keywords, Pages, Codebase, Connections, Schedule, Competitors, Search, Reports, Knowledge. AI overview panel (Haiku, 24h cache). Crawl button. GSC sync button. Refresh knowledge panel button. Knowledge tab: free-form docs per client (SEO guidelines, brand rules, industry context) stored in `client_knowledge.docs` jsonb array. Reads `?tab=` and `?gsc=` URL params on mount for OAuth redirect handling. |
+| `/clients/[id]` | 10 tabs: Profile, Keywords, Pages, Codebase, Connections, Schedule, Competitors, Search, Reports, Knowledge. AI overview panel (Haiku, 24h cache). Crawl button. GSC sync button. Refresh knowledge panel button. Knowledge tab: shows Ada's notes (last_conversation, recommendations, pending, history from `client_knowledge.agent_notes`), content summary (`client_knowledge.content_summary`), and manual docs (`client_knowledge.docs`). All three sections loaded from client_knowledge on mount. Reads `?tab=` and `?gsc=` URL params on mount for OAuth redirect handling. |
 | `/clients/[id]/gsc-setup` | Google OAuth for GSC connection |
 | `/outputs` | Global outputs — Drafts/Approved/Published tabs. Thumbnail, title, client, keyword, agent, word count, date, status pill, action buttons (Approve, Review, Publish, View live). |
 | `/outputs/[id]` | Full output detail. Pipeline bar (Draft/Approved/Published). Image gallery with Supabase URLs. SEO metadata bar (title char count, meta char count). Preview/Edit toggle. 12 feedback preset chips (Generate images, Add TOC, Strengthen intro, Fix title/meta, Featured snippet, Internal links, Improve CTA, FAQ section, Expand, Fix headings, Strengthen trust signals, Adjust tone). Feedback to Ada panel. Version history. Approve/Revert/Publish/Delete. |
@@ -523,6 +523,9 @@ GET /api/schedule/check
 | Agent notes injected as raw JSON object | Medium | agents/[id]/page.tsx buildSystemPrompt | **Fixed 11 Jun 2026** — structured object formatted into readable lines (last session, recommendations, pending, history) |
 | Auto debrief threshold too broad (triggered on 'improve' keyword) | Medium | agents/[id]/page.tsx | **Fixed 11 Jun 2026** — debrief only fires when task log contains 'Saving draft', 'Loading keyword bank', 'Analysing GSC', or 'Checking content history' labels |
 | Schedule/check cron GSC sync filtering on 'active' only | High | api/schedule/check/route.ts | **Fixed 11 Jun 2026** — changed .eq('status','active') to .in('status',['active','connected']) |
+| GSC sync 400 — token refresh failing silently | High | src/lib/gsc.ts | **Fixed 11 Jun 2026** — getValidAccessToken now calls Google token endpoint directly (no proxy through /api/auth/google/refresh). Surfaces real error: missing env vars, expired token, revoked access. Manual reconnect required for existing expired tokens. |
+| Task log dead msgThoughts variable | Low | agents/[id]/page.tsx | **Fixed 11 Jun 2026** — dead `msgThoughts` variable removed from message render loop. Thoughts never rendered; agentStatus confirmed hardcoded strings only. |
+| Blog not completing (loop exit too aggressive) | Critical | agents/[id]/page.tsx | **Fixed 11 Jun 2026** — loop exit condition raised from loopCount >= 3 to loopCount >= 6. Ada now has up to 6 post-draft turns before the Haiku wrap-up. Duplicate prevention still active via draftSavedRef dedup check. |
 | Duplicate write_content — 9 drafts from one conversation (~120k tokens wasted) | Critical | agents/[id]/page.tsx | **Fixed 11 Jun 2026** — 30min dedup check in write_content handler returns already_existed=true; loop exits via Haiku wrap turn after draftSavedRef set + loopCount>=3 |
 | Session token counter reset on every message | High | agents/[id]/page.tsx | **Fixed 11 Jun 2026** — removed reset from send(); only resets in newConversation() |
 | All 6 automations broken (wrong column names, wrong tables, no output) | Critical | api/intelligence/run-automation/route.ts | **Fixed 11 Jun 2026** — weekly_keyword_scan uses monthly_volume+opportunity_score; internal_link_audit uses internal_links jsonb array; competitor_analysis uses competitor_sites table; site_audit analyses crawled pages; monthly_content_plan calls generate-plan route; all create briefing_items |
@@ -691,6 +694,16 @@ CREATE TABLE IF NOT EXISTS agent_knowledge (
 - Schedule editing UI — inline editor on automations page. "Schedule" button per row opens/closes a panel below the card (card border-radius adjusts). Panel has cadence pill row (daily/weekly/monthly), day-of-week pill row (weekly only), hour dropdown (UTC), "Save schedule" button. Saves to `agent_automations` and recomputes `next_run_at`.
 
 **Token waste note:** The duplicate write_content bug was responsible for most unexpectedly high session costs. Each duplicate invocation costs ~10-25k tokens for the write + image generation. With 9 drafts per session this was estimated at ~120k tokens (~$0.50+) per affected conversation.
+
+### 11 June 2026 (session 11)
+**Fixed:**
+- GSC token refresh 400 — `getValidAccessToken` in `src/lib/gsc.ts` now calls Google's token endpoint directly with `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET` (previously proxied through `/api/auth/google/refresh`). Returns specific error: missing env vars, invalid_grant (expired/revoked), HTTP status. Manual reconnect required for Hear Better if tokens are permanently expired. `safeDecrypt` applied to both access_token (cached path) and refresh_token (refresh path) to handle encrypted storage.
+- Task log cleaned — removed dead `msgThoughts` variable from message render loop. Thoughts never rendered anywhere. All `setAgentStatus` calls confirmed as hardcoded human-readable strings.
+- Progress bar — indeterminate `progress-indeterminate` CSS animation added to globals.css. Blue bar slides across the top of the input container while Ada is active. Left task log panel shows prominent pulsing label for the current active tool (last item in taskLog array).
+- Knowledge tab now shows Ada's notes — `client_knowledge.agent_notes` and `content_summary` loaded on mount. Knowledge tab renders: content summary card, Ada's notes panel (last_conversation summary + recommendations + pending + history count), then manual docs. `competitor_analysis` key excluded from notes display (shown via separate analysis tool).
+- Blog loop exit raised — `draftSavedRef.current && loopCount >= 3` → `loopCount >= 6`. Gives Ada 3 extra tool-call turns after saving the draft (for generate_images + suggest_internal_links) before the Haiku wrap fires. Verified `draftSavedRef.current = true` only in two correct places.
+
+**Note on GSC reconnect:** The existing Hear Better GSC connection likely has permanently expired tokens. After deploy: client Connections tab → disconnect → reconnect via OAuth.
 
 ### 11 June 2026 (session 10 — platform stability sweep)
 **Fixed:**
