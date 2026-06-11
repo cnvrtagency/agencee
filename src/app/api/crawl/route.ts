@@ -105,6 +105,49 @@ async function fetchPage(url: string): Promise<{ html: string; finalUrl: string 
   } catch { return null }
 }
 
+async function fetchSitemapUrls(baseUrl: string): Promise<string[]> {
+  const candidates = [
+    `${baseUrl}/sitemap.xml`,
+    `${baseUrl}/sitemap_index.xml`,
+    `${baseUrl}/sitemap/`,
+    `${baseUrl}/sitemap`,
+  ]
+  for (const sitemapUrl of candidates) {
+    try {
+      const res = await fetch(sitemapUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept': 'text/html,application/xml,application/xhtml+xml,text/xml,*/*',
+        },
+        signal: AbortSignal.timeout(8000),
+      })
+      if (!res.ok) continue
+      const text = await res.text()
+      if (!text.includes('<urlset') && !text.includes('<sitemapindex')) continue
+      if (text.includes('<sitemapindex')) {
+        const subSitemapUrls = [...text.matchAll(/<loc>([^<]+)<\/loc>/g)].map(m => m[1].trim())
+        const allUrls: string[] = []
+        for (const subUrl of subSitemapUrls.slice(0, 5)) {
+          try {
+            const subRes = await fetch(subUrl, {
+              headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' },
+              signal: AbortSignal.timeout(8000),
+            })
+            if (!subRes.ok) continue
+            const subText = await subRes.text()
+            const urls = [...subText.matchAll(/<loc>([^<]+)<\/loc>/g)].map(m => m[1].trim())
+            allUrls.push(...urls)
+          } catch { continue }
+        }
+        return allUrls
+      }
+      const urls = [...text.matchAll(/<loc>([^<]+)<\/loc>/g)].map(m => m[1].trim())
+      return urls
+    } catch { continue }
+  }
+  return []
+}
+
 export async function POST(req: NextRequest) {
   let body: any
   try { body = await req.json() } catch { return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 }) }
@@ -117,9 +160,25 @@ export async function POST(req: NextRequest) {
 
     const baseUrl = comp.url.replace(/\/$/, '')
     const visited = new Set<string>()
-    const queue: string[] = [baseUrl]
     const pages: any[] = []
     const maxPages = 40
+    // Try sitemap first
+    let queue: string[] = []
+    let usingSitemap = false
+    const sitemapUrls = await fetchSitemapUrls(baseUrl)
+    if (sitemapUrls.length > 0) {
+      const host = new URL(baseUrl).hostname
+      queue = sitemapUrls
+        .filter(u => {
+          try {
+            const parsed = new URL(u)
+            return parsed.hostname === host && !u.match(/\.(pdf|jpg|jpeg|png|gif|svg|webp|css|js|ico|xml|txt)$/i)
+          } catch { return false }
+        })
+        .slice(0, maxPages)
+      usingSitemap = queue.length > 0
+    }
+    if (!usingSitemap) queue = [baseUrl]
 
     while (queue.length > 0 && pages.length < maxPages) {
       const url = queue.shift()!
@@ -135,8 +194,10 @@ export async function POST(req: NextRequest) {
       const wordCount = countWords(html)
       const content = extractContent(html)
       pages.push({ competitor_id, client_id, url: finalUrl, title, h1, meta_description: metaDesc, word_count: wordCount, content, crawled_at: new Date().toISOString() })
-      for (const link of extractLinks(html, finalUrl)) {
-        if (!visited.has(link) && !queue.includes(link)) queue.push(link)
+      if (!usingSitemap) {
+        for (const link of extractLinks(html, finalUrl)) {
+          if (!visited.has(link) && !queue.includes(link)) queue.push(link)
+        }
       }
     }
 
@@ -206,9 +267,25 @@ export async function POST(req: NextRequest) {
 
   const baseUrl = website.replace(/\/$/, '')
   const visited = new Set<string>()
-  const queue: string[] = [baseUrl]
   const pages: any[] = []
   const maxPages = 60
+  // Try sitemap first — gives a clean URL list without link crawling
+  let queue: string[] = []
+  let usingSitemap = false
+  const sitemapUrls = await fetchSitemapUrls(baseUrl)
+  if (sitemapUrls.length > 0) {
+    const host = new URL(baseUrl).hostname
+    queue = sitemapUrls
+      .filter(u => {
+        try {
+          const parsed = new URL(u)
+          return parsed.hostname === host && !u.match(/\.(pdf|jpg|jpeg|png|gif|svg|webp|css|js|ico|xml|txt)$/i)
+        } catch { return false }
+      })
+      .slice(0, maxPages)
+    usingSitemap = queue.length > 0
+  }
+  if (!usingSitemap) queue = [baseUrl]
 
   while (queue.length > 0 && pages.length < maxPages) {
     const url = queue.shift()!
@@ -244,8 +321,10 @@ export async function POST(req: NextRequest) {
       crawled_at: new Date().toISOString(),
     })
 
-    for (const link of links) {
-      if (!visited.has(link) && !queue.includes(link)) queue.push(link)
+    if (!usingSitemap) {
+      for (const link of links) {
+        if (!visited.has(link) && !queue.includes(link)) queue.push(link)
+      }
     }
   }
 

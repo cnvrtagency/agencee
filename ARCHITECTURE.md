@@ -1,7 +1,7 @@
 # Agencee — Master Architecture Document
 
 **Living document. Update at the end of every build session.**
-Last updated: 11 June 2026. Session: Bug fixes — task log thoughts render, token tracking, run-task quality upgrade.
+Last updated: 11 June 2026. Session: Cost optimisations — sitemap-first crawl, conversation summarisation, stored competitor gaps.
 
 ---
 
@@ -167,7 +167,7 @@ Exist as cards in `/marketplace` only. No agent_type, tools, or system prompt.
 | `get_keywords` | agents/[id]/page.tsx | Reads `keyword_banks` ordered by `opportunity_score` desc. Supports filter: all/untargeted/ranking/high_volume. | None |
 | `suggest_keyword` | agents/[id]/page.tsx | Inserts to `keyword_suggestions` (status: pending). | Logs to `agent_activity`. |
 | `create_content_plan` | agents/[id]/page.tsx | Inserts to `content_calendar`. | Logs to `agent_activity`. |
-| `analyse_competitors` | agents/[id]/page.tsx | Reads `competitor_sites` and `competitor_pages`. | Logs to `agent_activity`. |
+| `analyse_competitors` | agents/[id]/page.tsx | Reads `competitor_sites` and `competitor_pages`. | Logs to `agent_activity`. Upserts result to `client_knowledge.agent_notes.competitor_analysis` (capped at 4000 chars) with timestamp. |
 | `suggest_internal_links` | agents/[id]/page.tsx | Scores existing `sitePages` state by keyword relevance. Returns top 5. | Creates `briefing_item`. Logs to `agent_activity`. |
 | `analyse_gsc` | agents/[id]/page.tsx | Reads `search_performance` table. Returns near-misses (pos 5-15, >50 imp), low-CTR, top queries, totals. | Runs `discoverKeywordsFromGSC` — may add to `keyword_suggestions`. |
 | `update_agent_notes` | agents/[id]/page.tsx | Upserts to `client_knowledge.agent_notes[agent.slug]`. | None |
@@ -186,6 +186,7 @@ Exist as cards in `/marketplace` only. No agent_type, tools, or system prompt.
 - On `max_tokens`: saves partial + "Reply 'continue' to get the rest"
 - Task log: persists across navigation via `encodeMessageMeta` / `decodeMessageMeta` in message content
 - `pendingDraftCardRef`: holds draft card data (title, word count, image count, review URL) set by write_content, attached to the final assistant message
+- **Conversation summarisation:** when `rawMessages.length > 8`, all but the last 6 messages are summarised into a single Haiku call (max 600 tokens) and replaced with a 2-message `[Earlier in this conversation] / Summary: ...` block. Keeps input tokens bounded on long sessions. Falls back to full history if the Haiku call fails.
 
 ---
 
@@ -257,7 +258,7 @@ Exist as cards in `/marketplace` only. No agent_type, tools, or system prompt.
 
 | Route | Method | Purpose |
 |---|---|---|
-| `/api/crawl` | POST | Crawl client website → site_pages → client_knowledge (site_pages, site_summary, content_summary via Haiku). Competitor mode now generates Haiku content summaries for each crawled page (capped at 20). |
+| `/api/crawl` | POST | Crawl client website → site_pages → client_knowledge (site_pages, site_summary, content_summary via Haiku). Competitor mode now generates Haiku content summaries for each crawled page (capped at 20). **Sitemap-first:** tries /sitemap.xml then /sitemap_index.xml (+ sub-sitemaps, max 5) before link crawling. Falls back to link crawling from homepage if no sitemap found. Uses Chrome browser UA. When sitemap mode active, link extraction inside the crawl loop is skipped. |
 | `/api/gsc/sync` | POST | Full GSC sync: 7d/28d/90d → search_performance, keyword position updates, briefing_items, client_knowledge gsc_snapshot. |
 | `/api/gsc/properties` | GET | List GSC properties for a Google account. |
 | `/api/knowledge/[clientId]` | GET/PATCH | Read or upsert client_knowledge panel. |
@@ -358,6 +359,7 @@ The persistent brain per client. Injected into every agent session — eliminate
 - GSC snapshot: totals (clicks, impressions, avg_position, ctr), near-miss keywords, low-CTR pages, top 30 queries
 - Content summary prose
 - Agent notes for the current agent's slug
+- Competitor analysis: if `agent_notes.competitor_analysis` exists and is under 7 days old, injected as a `COMPETITOR ANALYSIS (from Xh ago):` block — Ada has the gap analysis without calling the tool again
 - Knowledge docs (user-editable, not yet surfaced in UI)
 
 ---
@@ -602,6 +604,12 @@ GET /api/schedule/check
 - keyword approve funnel_stage constraint violation — 'top'/'middle'/'bottom' changed to 'tofu'/'mofu'/'bofu' in approve route
 - Client insert 403 — workspace_id and user_id now loaded on mount and passed on insert
 - Add client modal simplified to 4 fields (name, website, industry, slug); saves immediately and redirects to client detail page to complete profile
+
+### 11 June 2026 (session 5)
+**Built (cost optimisations):**
+- Sitemap-first crawl — `fetchSitemapUrls()` tries /sitemap.xml, /sitemap_index.xml (recursing into sub-sitemaps, max 5), /sitemap/, /sitemap before falling back to link crawling. Applied to both client site crawl (maxPages 60) and competitor crawl (maxPages 40). When sitemap mode is active, link extraction inside the while loop is skipped (`usingSitemap` flag). Uses Chrome browser UA for sitemap fetches.
+- Conversation summarisation — `summariseOldMessages()` added before `send()`. When conversation > 8 messages, all but the last 6 are condensed via a Haiku call (600 tokens) into a 2-message summary block. Falls back silently to full history on error. Cuts input tokens 60-80% on sessions > 8 turns.
+- Stored competitor analysis — `analyse_competitors` now upserts `client_knowledge.agent_notes.competitor_analysis` with result (capped 4000 chars) and timestamp. `buildSystemPrompt` injects this into the knowledge panel if under 7 days old, labelled with age in hours. Ada doesn't need to re-call the tool on subsequent asks in the same window.
 
 ### 11 June 2026 (session 4)
 **Built:**

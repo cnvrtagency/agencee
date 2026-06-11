@@ -146,6 +146,14 @@ General questions (how does X work, what is Y) can be answered without specifyin
     if (k.docs?.length) k.docs.forEach((d: any) => kParts.push(`Doc — ${d.title}:\n${d.content}`))
     if (k.agent_notes?.[agent.slug]) kParts.push(`Your notes on this client:\n${k.agent_notes[agent.slug]}`)
 
+    if (k.agent_notes?.competitor_analysis) {
+      const ca = k.agent_notes.competitor_analysis
+      const ageHours = (Date.now() - new Date(ca.updated_at).getTime()) / 3600000
+      if (ageHours < 168) {
+        kParts.push(`COMPETITOR ANALYSIS (from ${Math.round(ageHours)}h ago):\n${ca.result}`)
+      }
+    }
+
     return kParts.join('\n\n')
   }).filter(Boolean)
 
@@ -1339,6 +1347,28 @@ export default function AgentPage() {
         body: JSON.stringify({ agent_id: id, client_id: client.id, action: 'competitor_analysis', detail: `Analysed ${compSites.length} competitors`, tokens_used: 0 })
       })
 
+      // Store result in client_knowledge so it can be injected into future prompts without re-running
+      try {
+        const { data: existing } = await supabase
+          .from('client_knowledge')
+          .select('agent_notes')
+          .eq('client_id', client.id)
+          .maybeSingle()
+        const notes = (existing?.agent_notes as Record<string, any>) || {}
+        await supabase.from('client_knowledge').upsert({
+          client_id: client.id,
+          workspace_id: workspaceId,
+          agent_notes: {
+            ...notes,
+            competitor_analysis: {
+              updated_at: new Date().toISOString(),
+              result: perSite.join('\n\n').slice(0, 4000),
+            },
+          },
+          updated_at: new Date().toISOString(),
+        }, { onConflict: 'client_id' })
+      } catch { /* non-critical */ }
+
       return `Competitor analysis for ${client.name} — ${compSites.length} competitors:\n\nNote: gaps are identified by comparing competitor page topics against your live site. Verify before acting.\n\n${perSite.join('\n\n')}`
     }
 
@@ -1485,6 +1515,43 @@ export default function AgentPage() {
     return 'Unknown tool.'
   }
 
+  async function summariseOldMessages(msgs: any[]): Promise<any[]> {
+    if (msgs.length <= 8) return msgs
+    const toSummarise = msgs.slice(0, -6)
+    const toKeep = msgs.slice(-6)
+    const historyText = toSummarise.map(m => {
+      const role = m.role === 'user' ? 'User' : 'Ada'
+      const content = typeof m.content === 'string'
+        ? m.content.slice(0, 500)
+        : '[tool calls/results]'
+      return `${role}: ${content}`
+    }).join('\n')
+    try {
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'claude-haiku-4-5-20251001',
+          max_tokens: 600,
+          messages: [{
+            role: 'user',
+            content: `Summarise this conversation history in 3-5 bullet points. Capture: what was discussed, what data was found, what was recommended, what was created or saved. Be specific -- include keyword names, URLs, and numbers where they appeared.\n\n${historyText}`,
+          }],
+        }),
+      })
+      const data = await res.json()
+      const summary = (data.content || []).filter((b: any) => b.type === 'text').map((b: any) => b.text).join('').trim()
+      if (!summary) return msgs
+      return [
+        { role: 'user', content: '[Earlier in this conversation]' },
+        { role: 'assistant', content: `Summary of earlier context:\n${summary}` },
+        ...toKeep,
+      ]
+    } catch {
+      return msgs
+    }
+  }
+
   async function send() {
     if (!draft.trim() || !agent || sending) return
     // Resolve userId inline so RLS inserts never fail due to async state lag
@@ -1521,10 +1588,14 @@ export default function AgentPage() {
     }
     // Build agentic message loop — keeps going until Ada stops using tools
     // Strip any __META__ prefixes that snuck into state (defensive decode)
-    const apiMessages: any[] = [...messages.filter(m => m.content), userMsg].map(m => ({
+    const rawMessages = [...messages.filter(m => m.content), userMsg].map(m => ({
       role: m.role,
       content: m.role === 'assistant' ? decodeMessageMeta(m.content).content : m.content,
     }))
+    // Summarise old turns to reduce input tokens on long conversations
+    const apiMessages: any[] = rawMessages.length > 8
+      ? await summariseOldMessages(rawMessages)
+      : rawMessages
     // Helper to save + display the assistant message
     const saveReply = async (reply: string) => {
       const stored = encodeMessageMeta(reply, taskLogRef.current, thoughtsRef.current)
