@@ -35,10 +35,13 @@ export default function ClientsPage() {
   }
 
   function set(k: string, v: string) {
-    setForm(f => ({ ...f, [k]: v }))
-    if (k === 'name' && !form.slug) {
-      setForm(f => ({ ...f, name: v, slug: v.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '') }))
-    }
+    setForm(f => {
+      const updated = { ...f, [k]: v }
+      if (k === 'name' && !f.slug) {
+        updated.slug = v.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '')
+      }
+      return updated
+    })
   }
 
   async function save() {

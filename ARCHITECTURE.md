@@ -45,7 +45,7 @@ Ada is the primary content and SEO strategy agent. She plans, researches, writes
 | Blog post writing | Full markdown + YAML frontmatter. Title tag, meta description, keyword placement, location terms, internal links, FAQ with JSON-LD schema, credentialed practitioner for health content. 2-4 images. |
 | Image generation | Calls `generate_images` (single array call) AFTER writing the post. SCHEMA-structured prompts (Subject/Context/Lighting/Atmosphere/Camera/Style/Mandatory/Prohibitions) derived from actual post content and client profile. 1K resolution default. |
 | Site audit | `audit_site` checks crawled pages for: missing meta descriptions, missing H1s, thin content (<300w), keyword cannibalisation (pages targeting >3 keywords), untargeted keywords. |
-| Competitor analysis | `analyse_competitors` reads `competitor_sites` and `competitor_pages` tables. Returns per-site page inventory with summaries. |
+| Competitor analysis | `analyse_competitors` reads `competitor_sites` and `competitor_pages`. Returns per-site summaries with Haiku-generated content summaries and a basic gap analysis comparing competitor topics to client site pages. |
 | Content planning | `create_content_plan` inserts to `content_calendar`. The calendar generator route (`/api/calendar/generate-plan`) is the preferred path — one Sonnet call with full context. |
 | Internal link suggestions | `suggest_internal_links` after every `write_content`. Scores existing pages by keyword relevance, returns top 5. Creates a briefing_item for the user. |
 | Keyword suggestions | `suggest_keyword` adds to `keyword_suggestions` table (pending, awaiting user approval). |
@@ -257,11 +257,11 @@ Exist as cards in `/marketplace` only. No agent_type, tools, or system prompt.
 
 | Route | Method | Purpose |
 |---|---|---|
-| `/api/crawl` | POST | Crawl client website → site_pages → client_knowledge (site_pages, site_summary, content_summary via Haiku). |
+| `/api/crawl` | POST | Crawl client website → site_pages → client_knowledge (site_pages, site_summary, content_summary via Haiku). Competitor mode now generates Haiku content summaries for each crawled page (capped at 20). |
 | `/api/gsc/sync` | POST | Full GSC sync: 7d/28d/90d → search_performance, keyword position updates, briefing_items, client_knowledge gsc_snapshot. |
 | `/api/gsc/properties` | GET | List GSC properties for a Google account. |
 | `/api/knowledge/[clientId]` | GET/PATCH | Read or upsert client_knowledge panel. |
-| `/api/calendar/generate-plan` | POST | Load full client context (knowledge panel + keyword bank + content history + existing plan) → one Sonnet call → JSON plan → insert to content_calendar. |
+| `/api/calendar/generate-plan` | POST | Load full client context (knowledge panel + keyword bank + content history + existing plan + competitor pages with summaries) → one Sonnet call → JSON plan → insert to content_calendar. Upgraded prompt — near-miss analysis, featured snippet gaps, competitor gaps, cannibalisation detection, topical authority gaps. Returns intelligence_notes for proactive findings. |
 | `/api/clients/[id]/overview` | POST | Haiku AI overview for client (24h cache). Uses GSC totals + content stats. |
 | `/api/keywords/approve` | POST | Approve keyword_suggestion → insert to keyword_banks. Rounds float positions. |
 | `/api/keywords/reject` | POST | Reject a keyword_suggestion. |
@@ -491,6 +491,11 @@ GET /api/schedule/check
 | Token usage not recording (tokens_used always 0 in agent_activity) | High | agents/[id]/page.tsx | **Fixed 11 Jun 2026** — totalTokensUsed accumulator + increment_token_usage RPC after loop |
 | keyword approve funnel_stage check constraint violation | High | api/keywords/approve/route.ts | **Fixed 11 Jun 2026** — changed 'top'/'middle'/'bottom' to 'tofu'/'mofu'/'bofu' |
 | Client insert 403 (RLS violation) | High | clients/page.tsx | **Fixed 11 Jun 2026** — workspace_id and user_id now loaded and passed on insert |
+| Competitor pages had no content_summary | High | api/crawl/route.ts | **Fixed 11 Jun 2026** — Haiku summarisation pass added after competitor crawl |
+| Slug only picks up first letter | Medium | clients/page.tsx | **Fixed 11 Jun 2026** — single setForm call using functional updater |
+| Client profile top panel not editable | Medium | clients/[id]/page.tsx | **Fixed 11 Jun 2026** — profileFields rendered as textareas with onBlur save |
+| Collapsible sections (Brand, Business, SEO) closed by default | Low | clients/[id]/page.tsx | **Fixed 11 Jun 2026** — all three sections open by default |
+| GSC redirect_uri_mismatch | High | Google Cloud Console config | Open — needs redirect URI added: https://agencee.vercel.app/api/auth/google/callback (manual config fix) |
 
 ---
 
@@ -597,3 +602,15 @@ GET /api/schedule/check
 - keyword approve funnel_stage constraint violation — 'top'/'middle'/'bottom' changed to 'tofu'/'mofu'/'bofu' in approve route
 - Client insert 403 — workspace_id and user_id now loaded on mount and passed on insert
 - Add client modal simplified to 4 fields (name, website, industry, slug); saves immediately and redirects to client detail page to complete profile
+
+### 11 June 2026 (session 4)
+**Built:**
+- Competitor page Haiku summaries — crawl route now runs summarisation pass (up to 20 pages) after competitor crawl, writes content_summary to competitor_pages
+- analyse_competitors tool upgraded — now returns per-site summaries + gap analysis comparing competitor topics to client site pages
+- Calendar generate-plan upgraded — loads competitor pages with summaries; new TASK prompt with near-miss wins, featured snippet gaps, competitor gaps, cannibalisation detection, topical authority gaps; returns intelligence_notes; max_tokens raised to 6000
+- Calendar page — intelligence_notes displayed as amber callout below Ada's summary
+- Competitor tab — "X pages analysed" badge shows when content_summary rows exist
+- Slug generation fixed — single functional setForm call (was firing on first char only)
+- Client profile top panel now editable textareas with Saved confirmation on blur
+- All three collapsible sections (Brand, Business, SEO) open by default
+- GSC redirect_uri_mismatch documented as open (needs Google Cloud Console config — manual fix)

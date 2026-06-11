@@ -86,7 +86,7 @@ export default function ClientDetail() {
   const [githubForm, setGithubForm] = useState({ github_repo: '', github_branch: '', github_token: '' })
   const [githubTokenDirty, setGithubTokenDirty] = useState(false)
   const [savingGithub, setSavingGithub] = useState(false)
-  const [openSections, setOpenSections] = useState<Set<string>>(new Set(['brand-voice']))
+  const [openSections, setOpenSections] = useState<Set<string>>(new Set(['brand-voice', 'business-details', 'seo-locations']))
   const [savedField, setSavedField] = useState<string | null>(null)
 
   // GSC state
@@ -592,16 +592,35 @@ export default function ClientDetail() {
         <div>
           <div style={S.panel}>
             <div style={S.panelHead}><span>Client profile</span></div>
-            {profileFields.map(({ key, label }) => {
-              const val = (client as any)[key]
-              if (!val) return null
-              return (
-                <div key={key} style={S.field}>
-                  <div style={S.fieldLabel}>{label}</div>
-                  <div style={S.fieldVal}>{val}</div>
+            {profileFields.map(({ key, label }) => (
+              <div key={key} style={S.field}>
+                <div style={{ ...S.fieldLabel, marginBottom: 8 }}>{label}</div>
+                <div style={{ position: 'relative' }}>
+                  <textarea
+                    rows={3}
+                    defaultValue={(client as any)[key] || ''}
+                    placeholder={`Enter ${label.toLowerCase()}...`}
+                    onBlur={e => saveClientField(key, e.target.value)}
+                    style={{
+                      width: '100%',
+                      background: 'var(--surface-2)',
+                      border: '1px solid var(--border)',
+                      borderRadius: 'var(--radius)',
+                      padding: '8px 10px',
+                      color: 'var(--text)',
+                      fontFamily: 'var(--font-sans)',
+                      fontSize: 13,
+                      lineHeight: 1.5,
+                      resize: 'vertical',
+                      boxSizing: 'border-box' as const,
+                    }}
+                  />
+                  {savedField === key && (
+                    <span style={{ position: 'absolute', right: 8, bottom: 8, fontSize: 11, color: 'var(--green)', fontWeight: 600 }}>Saved ✓</span>
+                  )}
                 </div>
-              )
-            })}
+              </div>
+            ))}
           </div>
 
           {/* ── Brand & Voice collapsible ── */}
@@ -1030,6 +1049,14 @@ export default function ClientDetail() {
                           <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', marginBottom: 2 }}>{c.name || c.url}</div>
                           <a href={c.url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} style={{ fontSize: 12, color: 'var(--accent)', fontFamily: 'var(--font-mono)' }}>{c.url}</a>
                           {c.last_crawled_at && <span style={{ fontSize: 11, color: 'var(--text-dim)', marginLeft: 10 }}>Crawled {new Date(c.last_crawled_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}</span>}
+                          {(() => {
+                            const pages = compPages[c.id] || []
+                            const withSummary = pages.filter((p: any) => p.content_summary)
+                            if (withSummary.length > 0) {
+                              return <span style={{ fontSize: 11, color: 'var(--accent)', marginLeft: 8, fontWeight: 500 }}>{withSummary.length} pages analysed</span>
+                            }
+                            return null
+                          })()}
                         </div>
                         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                           {justAddedCompId === c.id && (

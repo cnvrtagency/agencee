@@ -115,6 +115,7 @@ export default function AgentCalendarPage() {
   const [genStage, setGenStage] = useState(0)
   const [genError, setGenError] = useState<string | null>(null)
   const [genSummary, setGenSummary] = useState<string | null>(null)
+  const [genIntelligenceNotes, setGenIntelligenceNotes] = useState('')
 
   const calendarRef = useRef<HTMLDivElement>(null)
 
@@ -155,6 +156,7 @@ export default function AgentCalendarPage() {
     setGenStage(0)
     setGenError(null)
     setGenSummary(null)
+    setGenIntelligenceNotes('')
     try {
       const res = await fetch('/api/calendar/generate-plan', {
         method: 'POST',
@@ -166,6 +168,7 @@ export default function AgentCalendarPage() {
         setGenError(data.error || 'Generation failed')
       } else {
         setGenSummary(data.summary || null)
+        setGenIntelligenceNotes(data.intelligence_notes || '')
         await load()
         setTimeout(() => calendarRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100)
       }
@@ -362,8 +365,13 @@ export default function AgentCalendarPage() {
 
       {/* Ada summary */}
       {genSummary && (
-        <div style={{ marginBottom: 20, padding: '14px 18px', borderRadius: 'var(--radius-lg)', background: 'var(--accent-bg)', border: '1px solid var(--accent)', fontSize: 13, color: 'var(--text)', lineHeight: 1.6 }}>
+        <div style={{ marginBottom: genIntelligenceNotes ? 8 : 20, padding: '14px 18px', borderRadius: 'var(--radius-lg)', background: 'var(--accent-bg)', border: '1px solid var(--accent)', fontSize: 13, color: 'var(--text)', lineHeight: 1.6 }}>
           <span style={{ fontWeight: 700, color: 'var(--accent)', marginRight: 8 }}>Ada's plan:</span>{genSummary}
+        </div>
+      )}
+      {genIntelligenceNotes && (
+        <div style={{ marginBottom: 20, padding: '10px 14px', borderRadius: 'var(--radius)', background: 'rgba(217,119,6,0.08)', border: '1px solid rgba(217,119,6,0.2)', fontSize: 12, color: 'var(--text-2)', lineHeight: 1.6 }}>
+          <span style={{ fontWeight: 600, color: 'var(--amber)' }}>Ada flagged: </span>{genIntelligenceNotes}
         </div>
       )}
 

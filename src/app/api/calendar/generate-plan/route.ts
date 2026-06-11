@@ -16,15 +16,38 @@ export async function POST(req: NextRequest) {
       { data: keywords },
       { data: history },
       { data: existingPlan },
+      { data: compSites },
     ] = await Promise.all([
       supabase.from('client_profiles').select('*').eq('id', client_id).single(),
       supabase.from('client_knowledge').select('*').eq('client_id', client_id).maybeSingle(),
       supabase.from('keyword_banks').select('keyword,intent,funnel_stage,monthly_volume,difficulty,current_position,content_targeting_this,priority,opportunity_score').eq('client_id', client_id).order('opportunity_score', { ascending: false, nullsFirst: false }).limit(100),
       supabase.from('content_history').select('title,primary_keyword,url,published_at').eq('client_id', client_id).order('published_at', { ascending: false }).limit(40),
       supabase.from('content_calendar').select('title,primary_keyword,status,scheduled_date').eq('client_id', client_id).not('status', 'in', '("cancelled","published")'),
+      supabase.from('competitor_sites').select('id,name,url').eq('client_id', client_id),
     ])
 
     if (!client) return NextResponse.json({ error: 'Client not found' }, { status: 404 })
+
+    // Load top competitor pages with summaries
+    let competitorContext = ''
+    if (compSites && compSites.length > 0) {
+      const compPageResults = await Promise.all(
+        compSites.map((site: any) =>
+          supabase.from('competitor_pages')
+            .select('url,title,content_summary,word_count')
+            .eq('competitor_id', site.id)
+            .not('content_summary', 'is', null)
+            .order('word_count', { ascending: false })
+            .limit(15)
+        )
+      )
+      const compLines = compSites.map((site: any, i: number) => {
+        const pages = compPageResults[i].data || []
+        if (pages.length === 0) return `${site.name || site.url}: not yet crawled`
+        return `${site.name || site.url}:\n${pages.map((p: any) => `  "${p.title || p.url}" — ${p.content_summary || ''}`).join('\n')}`
+      })
+      competitorContext = compLines.join('\n\n')
+    }
 
     const totalPieces = weeks * posts_per_week
     const today = new Date()
@@ -66,6 +89,8 @@ ${sitePageLines || 'No crawl data'}
 GSC PERFORMANCE:
 ${gscBlock}
 
+${competitorContext ? `COMPETITOR CONTENT (what they cover that you might not):\n${competitorContext}` : 'No competitor data — add and crawl competitors in the client Competitors tab.'}
+
 KEYWORD BANK (targeting:NOTHING means genuinely untargeted):
 ${kwLines || 'Empty'}
 
@@ -77,27 +102,49 @@ ${existingLines || 'None'}
 
 TASK:
 Create a ${weeks}-week content plan of exactly ${totalPieces} pieces (${posts_per_week} per week), starting ${today.toISOString().split('T')[0]}.
-${focus ? `Focus area: ${focus}` : 'Focus on the highest-opportunity gaps.'}
+${focus ? `Focus area: ${focus}` : ''}
+
+You are an elite SEO strategist finding opportunities a human would miss. Before sequencing, identify:
+
+1. NEAR-MISS WINS: Keywords already ranking position 3-15 with no dedicated page -- these are the fastest ranking improvements possible. A page built for the keyword it's already ranking for will almost always jump to page 1.
+
+2. FEATURED SNIPPET GAPS: Informational keywords with high impressions where the current page doesn't have a direct answer block in the first 100 words. A concise answer block added to (or a new page targeting) these queries can claim position 0.
+
+3. COMPETITOR GAPS: Topics your competitors cover that the client doesn't. Look at the site pages -- what clusters are missing entirely?
+
+4. CANNIBALISATION RISKS: Multiple pages targeting the same or very similar keywords. Do not plan more content for cannibalised clusters -- flag them instead in the rationale field.
+
+5. CONTENT DECAY CANDIDATES: Keywords where a page exists but is likely thin or outdated (word_count < 600, no recent update). These are refresh opportunities, not new pages.
+
+6. TOPICAL AUTHORITY GAPS: Are there entire topic areas the site hasn't touched that are directly relevant to the business?
 
 Sequencing rules:
-1. Fastest ranking wins first (near-miss keywords with no dedicated page, low KD untargeted keywords)
-2. Hub/pillar pages before supporting content
-3. Commercial intent before informational
-4. Never plan a piece that duplicates a live page or already-planned item
-5. Spread publish dates evenly: ${posts_per_week} per week, weekdays only (Mon-Fri)
+1. Near-miss keywords with no dedicated page come first -- fastest ROI
+2. High-volume untargeted keywords with KD under 40 come second
+3. Featured snippet opportunities third
+4. Authority-building pillars and hub pages before supporting posts
+5. Commercial intent before informational at equal difficulty
+6. Never plan content that duplicates a live page URL or already-planned item
+7. Vary content types -- not every piece should be a blog_post. Location pages, pillar pages, FAQ pages, and comparison pages all have different ranking dynamics.
+8. Never plan 3+ pieces targeting the same location in a row -- spread geography across the plan
+9. Spread publish dates evenly: ${posts_per_week} per week, weekdays only (Mon-Fri)
+10. If the keyword bank lacks enough high-value untargeted keywords, say so in the summary rather than padding with low-value variations
+
+Each entry's rationale must explain WHY this specific piece in this specific position -- not just "good keyword". Reference the actual data: position, impressions, competitor coverage, or topical gap that makes it the right move.
 
 Respond with ONLY a JSON object, no markdown fences, no preamble:
 {
-  "summary": "2-3 sentence explanation of your strategy and sequencing logic",
+  "summary": "3-4 sentences explaining your strategy: what opportunities you found, what you prioritised and why, and what gaps remain after this plan",
+  "intelligence_notes": "Any cannibalisation risks, decay candidates, or structural issues found that are NOT in the plan but need attention",
   "entries": [
     {
       "title": "Working title",
       "primary_keyword": "target keyword",
-      "content_type": "blog_post | pillar_page | category_page | local_seo",
+      "content_type": "blog_post | pillar_page | category_page | local_seo | faq_page | comparison_page",
       "scheduled_date": "YYYY-MM-DD",
       "priority": 1,
-      "rationale": "One sentence: why this piece, why this position in the sequence",
-      "notes": "Angle or approach in one sentence"
+      "rationale": "Why this piece, why now, what specific data point justifies it",
+      "notes": "Angle, approach, or structural note in one sentence"
     }
   ]
 }`
@@ -111,7 +158,7 @@ Respond with ONLY a JSON object, no markdown fences, no preamble:
       },
       body: JSON.stringify({
         model: 'claude-sonnet-4-6',
-        max_tokens: 4000,
+        max_tokens: 6000,
         messages: [{ role: 'user', content: prompt }],
       }),
     })
@@ -124,7 +171,7 @@ Respond with ONLY a JSON object, no markdown fences, no preamble:
     const aiData = await aiRes.json()
     const raw = (aiData.content || []).filter((b: any) => b.type === 'text').map((b: any) => b.text).join('').trim()
 
-    let parsed: { summary: string; entries: any[] }
+    let parsed: { summary: string; intelligence_notes?: string; entries: any[] }
     try {
       const clean = raw.replace(/```json|```/g, '').trim()
       parsed = JSON.parse(clean)
@@ -136,7 +183,7 @@ Respond with ONLY a JSON object, no markdown fences, no preamble:
       return NextResponse.json({ error: 'No entries in plan' }, { status: 500 })
     }
 
-    const VALID_TYPES = ['blog_post', 'pillar_page', 'category_page', 'local_seo']
+    const VALID_TYPES = ['blog_post', 'pillar_page', 'category_page', 'local_seo', 'faq_page', 'comparison_page']
     const inserts = parsed.entries
       .filter((e: any) => e.title && e.primary_keyword)
       .map((e: any) => ({
@@ -164,6 +211,7 @@ Respond with ONLY a JSON object, no markdown fences, no preamble:
 
     return NextResponse.json({
       summary: parsed.summary || '',
+      intelligence_notes: parsed.intelligence_notes || '',
       created: created?.length || 0,
       entries: created,
     })

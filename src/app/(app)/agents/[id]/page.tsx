@@ -1294,19 +1294,52 @@ export default function AgentPage() {
       }
     }
 
-    // ── analyse_competitors: Ada summarises competitor insights ───────────────
+    // ── analyse_competitors: Ada summarises competitor insights + gap analysis ──
     if (toolName === 'analyse_competitors') {
       const client = clients.find(c => c.name.toLowerCase().includes((toolInput.client_name || '').toLowerCase()))
       if (!client) return `Could not find client matching "${toolInput.client_name}".`
       const { data: compSites } = await supabase.from('competitor_sites').select('id,url,name').eq('client_id', client.id)
       if (!compSites || compSites.length === 0) return `No competitors registered for ${client.name}. Add them in the Competitors tab on the client page.`
       const { data: compPages } = await supabase.from('competitor_pages').select('url,title,h1,word_count,keywords,content_summary,competitor_id').eq('client_id', client.id).order('word_count', { ascending: false }).limit(50)
+
+      const { data: clientPages } = await supabase
+        .from('site_pages')
+        .select('url,title,h1,content_summary')
+        .eq('client_id', client.id)
+        .limit(60)
+
+      const clientTopics = (clientPages || []).map(p =>
+        `${p.title || ''} ${p.h1 || ''} ${p.content_summary || ''}`.toLowerCase()
+      ).join(' ')
+
       const perSite = compSites.map(site => {
         const pages = (compPages || []).filter(p => p.competitor_id === site.id)
-        return `${site.name || site.url} (${pages.length} pages crawled):\n${pages.slice(0, 10).map(p => `  ${p.url} — ${p.word_count || 0}w — ${p.content_summary || p.title || 'No summary'}`).join('\n') || '  No pages crawled yet.'}`
+        const withSummaries = pages.filter(p => p.content_summary)
+        const gaps = withSummaries.filter(p => {
+          const pageTopics = `${p.title || ''} ${p.content_summary || ''}`.toLowerCase()
+          const keyTerms = pageTopics.split(/\s+/).filter((w: string) => w.length > 5).slice(0, 6)
+          const matchCount = keyTerms.filter((term: string) => clientTopics.includes(term)).length
+          return matchCount < 2
+        })
+
+        const pageList = pages.slice(0, 15).map((p: any) =>
+          `  ${p.url.replace(/^https?:\/\/[^/]+/, '') || '/'} | ${p.word_count || 0}w | ${p.content_summary || 'no summary'}`
+        ).join('\n')
+
+        const gapList = gaps.slice(0, 8).map((p: any) =>
+          `  GAP: ${p.title || p.url} — ${p.content_summary || 'no summary'}`
+        ).join('\n')
+
+        return `${site.name || site.url} — ${pages.length} pages crawled, ${withSummaries.length} summarised\n${pageList}${gapList ? `\n\nPotential content gaps vs this competitor:\n${gapList}` : ''}`
       })
-      await fetch('/api/agent-activity', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent_id: id, client_id: client.id, action: 'competitor_analysis', detail: `Analysed ${compSites.length} competitors`, tokens_used: 0 }) })
-      return `Competitor analysis for ${client.name}:\n\n${perSite.join('\n\n')}`
+
+      await fetch('/api/agent-activity', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agent_id: id, client_id: client.id, action: 'competitor_analysis', detail: `Analysed ${compSites.length} competitors`, tokens_used: 0 })
+      })
+
+      return `Competitor analysis for ${client.name} — ${compSites.length} competitors:\n\nNote: gaps are identified by comparing competitor page topics against your live site. Verify before acting.\n\n${perSite.join('\n\n')}`
     }
 
     // ── suggest_internal_links ─────────────────────────────────────────────────

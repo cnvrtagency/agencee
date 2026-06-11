@@ -142,6 +142,50 @@ export async function POST(req: NextRequest) {
       await supabase.from('competitor_pages').insert(pages.slice(i, i + batchSize))
     }
     await supabase.from('competitor_sites').update({ last_crawled_at: new Date().toISOString() }).eq('id', competitor_id)
+
+    // Generate content summaries for competitor pages using Haiku
+    const apiKey = process.env.ANTHROPIC_API_KEY
+    if (apiKey && pages.length > 0) {
+      const pagesToSummarise = pages.slice(0, 20)
+      const summaries = await Promise.all(
+        pagesToSummarise.map(async (page) => {
+          if (!page.content || page.content.length < 100) return { url: page.url, summary: null }
+          try {
+            const res = await fetch('https://api.anthropic.com/v1/messages', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'x-api-key': apiKey,
+                'anthropic-version': '2023-06-01',
+              },
+              body: JSON.stringify({
+                model: 'claude-haiku-4-5-20251001',
+                max_tokens: 200,
+                messages: [{
+                  role: 'user',
+                  content: `Summarise this page in 1-2 sentences. Focus on: what service or topic it covers, what keywords it appears to target, and who it's for. Be specific and concrete.\n\nPage title: ${page.title || 'Unknown'}\nURL: ${page.url}\nContent (first 800 chars):\n${page.content.slice(0, 800)}`,
+                }],
+              }),
+            })
+            const data = await res.json()
+            const summary = data.content?.[0]?.text?.trim() || null
+            return { url: page.url, summary }
+          } catch {
+            return { url: page.url, summary: null }
+          }
+        })
+      )
+      for (const { url, summary } of summaries) {
+        if (summary) {
+          await supabase
+            .from('competitor_pages')
+            .update({ content_summary: summary })
+            .eq('competitor_id', competitor_id)
+            .eq('url', url)
+        }
+      }
+    }
+
     return NextResponse.json({ success: true, pages_crawled: pages.length, competitor: comp.name })
   }
 
