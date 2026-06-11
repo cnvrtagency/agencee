@@ -8,13 +8,22 @@ const supabase = createClient(
 
 // Called by Vercel cron — triggers any schedules that are due
 export async function GET(req: NextRequest) {
-  // Verify cron secret — fail closed: reject if CRON_SECRET not set or secret doesn't match
+  // Verify cron secret — fail closed: reject if CRON_SECRET not set or secret doesn't match.
+  // Accepts three forms:
+  //   1. Vercel's own x-vercel-cron-signature header (automated cron calls)
+  //   2. Authorization: Bearer <CRON_SECRET> (manual curl tests, repair routes)
+  //   3. x-cron-secret: <CRON_SECRET> (legacy)
   const cronSecret = process.env.CRON_SECRET
-  const providedSecret = req.headers.get('x-cron-secret')
   const vercelSignature = req.headers.get('x-vercel-cron-signature')
+  const authHeader = req.headers.get('authorization')
+  const legacySecret = req.headers.get('x-cron-secret')
 
-  // Accept Vercel's own cron signature OR our CRON_SECRET header
-  if (!vercelSignature && (!cronSecret || providedSecret !== cronSecret)) {
+  const authorised =
+    !!vercelSignature ||
+    (!!cronSecret && authHeader === `Bearer ${cronSecret}`) ||
+    (!!cronSecret && legacySecret === cronSecret)
+
+  if (!authorised) {
     return NextResponse.json({ error: 'Unauthorised' }, { status: 401 })
   }
 
