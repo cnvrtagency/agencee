@@ -436,7 +436,8 @@ export default function ClientDetail() {
   async function saveGithub() {
     setSavingGithub(true)
     setSyncError('')
-    const payload: any = { github_repo: githubForm.github_repo, github_branch: githubForm.github_branch || 'main' }
+    setSyncSuccess('')
+    const payload: any = { github_repo: githubForm.github_repo, github_branch: githubForm.github_branch.trim() }
     if (githubTokenDirty && githubForm.github_token.trim()) {
       payload.github_token = githubForm.github_token.trim()
     }
@@ -451,6 +452,14 @@ export default function ClientDetail() {
         setSyncError(data.error || 'Failed to save GitHub config')
         setSavingGithub(false)
         return
+      }
+      if (data.github_repo || data.github_branch) {
+        setGithubForm(f => ({
+          ...f,
+          github_repo: data.github_repo || f.github_repo,
+          github_branch: data.github_branch || f.github_branch,
+        }))
+        setSyncSuccess(`Repo saved. Using ${data.github_branch || 'default'} branch.`)
       }
     } catch {
       setSyncError('Failed to save GitHub config')
@@ -1027,7 +1036,7 @@ export default function ClientDetail() {
               <div style={S.inputRow}>
                 <div>
                   <label style={S.label}>Branch</label>
-                  <input value={githubForm.github_branch} onChange={e => setGithubForm(f => ({ ...f, github_branch: e.target.value }))} placeholder="main" />
+                  <input value={githubForm.github_branch} onChange={e => setGithubForm(f => ({ ...f, github_branch: e.target.value }))} placeholder="Leave blank for repo default" />
                 </div>
               </div>
               <div style={S.inlineField}>
