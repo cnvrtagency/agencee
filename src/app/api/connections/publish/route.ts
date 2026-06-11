@@ -327,6 +327,15 @@ export async function POST(req: NextRequest) {
       })
       .eq('id', output_id)
 
+    // Update keyword_banks with the live URL now that it exists
+    if (output.primary_keyword && output.client_id && published_url) {
+      await supabase
+        .from('keyword_banks')
+        .update({ content_targeting_this: published_url })
+        .eq('client_id', output.client_id)
+        .ilike('keyword', output.primary_keyword)
+    }
+
     return NextResponse.json({ success: true, published_url, platform })
   } catch (err: any) {
     return fail(500, err.message || 'Publish failed', output_id)

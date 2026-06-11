@@ -71,6 +71,13 @@ function PendingOutputRow({ output: o, fmt, onRemove, onApprove }: { output: any
       summary: o.meta_description || `Approved output: ${o.title}`,
       published_at: new Date().toISOString(),
     })
+    if (o.primary_keyword && o.client_id) {
+      await supabase
+        .from('keyword_banks')
+        .update({ content_targeting_this: `/outputs/${o.id}` })
+        .eq('client_id', o.client_id)
+        .ilike('keyword', o.primary_keyword)
+    }
     setFading(true)
     setTimeout(() => { onRemove(o.id); onApprove() }, 350)
   }

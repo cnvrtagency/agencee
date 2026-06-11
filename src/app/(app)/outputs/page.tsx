@@ -69,6 +69,13 @@ export default function OutputsPage() {
       summary: o.meta_description || o.title || '',
       published_at: new Date().toISOString(),
     })
+    if (o.primary_keyword && o.client_id) {
+      await supabase
+        .from('keyword_banks')
+        .update({ content_targeting_this: o.published_url || `/outputs/${o.id}` })
+        .eq('client_id', o.client_id)
+        .ilike('keyword', o.primary_keyword)
+    }
     setFadingIds(prev => new Set(prev).add(o.id))
     setTimeout(() => {
       setOutputs(prev => prev.map(x => x.id === o.id ? { ...x, approved: true } : x))

@@ -903,6 +903,15 @@ export default function AgentPage() {
           body: JSON.stringify({ agent_id: id, client_id: client.id, action: 'content_created', detail: { output_id: output.id, title: toolInput.title, slug: toolInput.slug, primary_keyword: toolInput.primary_keyword }, tokens_used: tokenAccumRef.current }),
         }).catch((err: any) => console.error('[write_content] agent-activity log failed:', err?.message))
 
+        // Mark keyword as targeted — draft URL, overwritten with live URL on publish
+        if (toolInput.primary_keyword && client.id && output?.id) {
+          void supabase
+            .from('keyword_banks')
+            .update({ content_targeting_this: `/outputs/${output.id}` })
+            .eq('client_id', client.id)
+            .ilike('keyword', toolInput.primary_keyword)
+        }
+
         if (workspaceId) {
           fetch('/api/notifications/output-ready', {
             method: 'POST',
