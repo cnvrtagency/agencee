@@ -655,9 +655,55 @@ function parseSuggestions(content: string): { clean: string; suggestions: string
   }
 }
 
+type Automation = {
+  id: string
+  agent_id: string
+  automation_type: string
+  name: string
+  description: string | null
+  enabled: boolean
+  cadence: string
+  run_day: string | null
+  run_hour: number | null
+  last_run_at: string | null
+  last_run_status: string | null
+  last_run_summary: string | null
+  next_run_at: string | null
+  config: Record<string, any>
+  created_at: string
+}
+
+const SEO_DEFAULT_AUTOMATIONS: Omit<Automation, 'id' | 'agent_id' | 'created_at' | 'last_run_at' | 'last_run_status' | 'last_run_summary' | 'next_run_at'>[] = [
+  { automation_type: 'weekly_keyword_scan', name: 'Weekly keyword scan', description: 'Scans the keyword bank for new opportunities and flags gaps in coverage.', enabled: true, cadence: 'weekly', run_day: 'monday', run_hour: 8, config: {} },
+  { automation_type: 'monthly_content_plan', name: 'Monthly content plan', description: 'Generates a prioritised content plan for the coming month based on keyword data and gaps.', enabled: true, cadence: 'monthly', run_day: null, run_hour: 9, config: {} },
+  { automation_type: 'competitor_analysis', name: 'Competitor analysis', description: 'Crawls competitor sites and summarises content gaps and opportunities.', enabled: false, cadence: 'monthly', run_day: null, run_hour: 10, config: {} },
+  { automation_type: 'site_audit', name: 'Site audit', description: 'Full technical and content audit of the client site. Flags issues and prioritises fixes.', enabled: false, cadence: 'weekly', run_day: 'sunday', run_hour: 7, config: {} },
+  { automation_type: 'gsc_review', name: 'GSC performance review', description: 'Reviews Search Console data for ranking drops, CTR improvements and quick wins.', enabled: true, cadence: 'weekly', run_day: 'monday', run_hour: 9, config: {} },
+  { automation_type: 'internal_link_audit', name: 'Internal link audit', description: 'Finds internal linking opportunities across existing content and drafts a fix list.', enabled: false, cadence: 'monthly', run_day: null, run_hour: 8, config: {} },
+]
+
+function getNextRunAt(cadence: string, runDay: string | null, runHour: number): Date {
+  const now = new Date()
+  const next = new Date(now)
+  next.setMinutes(0, 0, 0)
+  next.setHours(runHour)
+  if (cadence === 'daily') {
+    if (next <= now) next.setDate(next.getDate() + 1)
+  } else if (cadence === 'weekly') {
+    const days = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday']
+    const targetDay = days.indexOf((runDay || 'monday').toLowerCase())
+    const diff = (targetDay - now.getDay() + 7) % 7 || 7
+    next.setDate(now.getDate() + diff)
+  } else if (cadence === 'monthly') {
+    next.setDate(1)
+    next.setMonth(next.getMonth() + 1)
+  }
+  return next
+}
+
 export default function AgentPage() {
   const { id } = useParams<{ id: string }>()
-  const [tab, setTab] = useState<'chat' | 'settings'>('chat')
+  const [tab, setTab] = useState<'chat' | 'automations' | 'settings'>('chat')
   const [agent, setAgent] = useState<Agent | null>(null)
   const [clients, setClients] = useState<Client[]>([])
   const [conversations, setConversations] = useState<Conversation[]>([])
@@ -680,6 +726,9 @@ export default function AgentPage() {
   const [workspaceId, setWorkspaceId] = useState<string | null>(null)
   const [gscRows, setGscRows] = useState<Record<string, GscRow[]>>({})
   const [knowledgePanels, setKnowledgePanels] = useState<Record<string, any>>({})
+  const [automations, setAutomations] = useState<Automation[]>([])
+  const [togglingAutomation, setTogglingAutomation] = useState<string | null>(null)
+  const [runningAutomation, setRunningAutomation] = useState<string | null>(null)
   const scroller = useRef<HTMLDivElement>(null)
 
   // Map tool names → human-readable status labels
@@ -713,7 +762,7 @@ export default function AgentPage() {
         if (ws) setWorkspaceId(ws.id)
       }
     })
-    loadAgent(); loadClients(); loadConversations(); loadPlannedTasks()
+    loadAgent(); loadClients(); loadConversations(); loadPlannedTasks(); loadAutomations()
     const params = new URLSearchParams(window.location.search)
     const convParam = params.get('conversation')
     if (convParam) loadMessages(convParam)
@@ -828,6 +877,55 @@ export default function AgentPage() {
   async function loadPlannedTasks() {
     const { data } = await supabase.from('planned_tasks').select('*').eq('agent_id', id).neq('status', 'scheduled').order('created_at', { ascending: false })
     setPlannedTasks(data || [])
+  }
+
+  async function loadAutomations() {
+    const { data } = await supabase.from('agent_automations').select('*').eq('agent_id', id).order('created_at')
+    if (!data || data.length === 0) {
+      const seeds = SEO_DEFAULT_AUTOMATIONS.map(a => ({
+        ...a,
+        agent_id: id,
+        next_run_at: getNextRunAt(a.cadence, a.run_day, a.run_hour ?? 8).toISOString(),
+      }))
+      const { data: seeded } = await supabase.from('agent_automations').insert(seeds).select()
+      setAutomations(seeded || [])
+    } else {
+      setAutomations(data)
+    }
+  }
+
+  async function toggleAutomation(automationId: string, enabled: boolean) {
+    setTogglingAutomation(automationId)
+    const next = !enabled
+    await supabase.from('agent_automations').update({ enabled: next }).eq('id', automationId)
+    setAutomations(prev => prev.map(a => a.id === automationId ? { ...a, enabled: next } : a))
+    setTogglingAutomation(null)
+  }
+
+  async function runAutomationNow(automation: Automation) {
+    setRunningAutomation(automation.id)
+    try {
+      const res = await fetch('/api/intelligence/run-automation', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ automation_id: automation.id, agent_id: id }),
+      })
+      const data = await res.json()
+      const status = res.ok ? 'success' : 'error'
+      const summary = data.summary || data.error || ''
+      await supabase.from('agent_automations').update({
+        last_run_at: new Date().toISOString(),
+        last_run_status: status,
+        last_run_summary: summary,
+        next_run_at: getNextRunAt(automation.cadence, automation.run_day, automation.run_hour ?? 8).toISOString(),
+      }).eq('id', automation.id)
+      setAutomations(prev => prev.map(a => a.id === automation.id ? { ...a, last_run_at: new Date().toISOString(), last_run_status: status, last_run_summary: summary } : a))
+    } catch (e: any) {
+      const summary = e?.message || 'Failed'
+      await supabase.from('agent_automations').update({ last_run_at: new Date().toISOString(), last_run_status: 'error', last_run_summary: summary }).eq('id', automation.id)
+    } finally {
+      setRunningAutomation(null)
+    }
   }
 
   async function newConversation() {
@@ -1789,8 +1887,15 @@ export default function AgentPage() {
               {Object.values(sitePages).reduce((a, b) => a + b.length, 0)} pages loaded
             </span>
           )}
-          {(['chat', 'settings'] as const).map(t => (
-            <button key={t} onClick={() => setTab(t)} style={{ ...S.btnSm, background: tab === t ? 'var(--brand)' : 'var(--surface-2)', color: tab === t ? '#fff' : 'var(--text-2)', border: tab === t ? 'none' : '1px solid var(--border)', textTransform: 'capitalize', borderRadius: 'var(--radius-md)', letterSpacing: '0.3px' }}>{t}</button>
+          {(['chat', 'automations', 'settings'] as const).map(t => (
+            <button key={t} onClick={() => setTab(t)} style={{ ...S.btnSm, background: tab === t ? 'var(--brand)' : 'var(--surface-2)', color: tab === t ? '#fff' : 'var(--text-2)', border: tab === t ? 'none' : '1px solid var(--border)', textTransform: 'capitalize', borderRadius: 'var(--radius-md)', letterSpacing: '0.3px', display: 'flex', alignItems: 'center', gap: 5 }}>
+              {t}
+              {t === 'automations' && automations.filter(a => a.enabled).length > 0 && (
+                <span style={{ background: tab === 'automations' ? 'rgba(255,255,255,0.25)' : 'var(--brand)', color: '#fff', borderRadius: 99, fontSize: 10, padding: '1px 5px', fontWeight: 700, lineHeight: 1.4 }}>
+                  {automations.filter(a => a.enabled).length}
+                </span>
+              )}
+            </button>
           ))}
         </div>
       </div>
@@ -1982,6 +2087,64 @@ export default function AgentPage() {
             <div style={{ display: 'flex', alignItems: 'center', gap: 12, paddingBottom: 40 }}>
               <button style={S.btn} onClick={saveSettings} disabled={saving}>{saving ? 'Saving...' : 'Save changes'}</button>
               {saved && <span style={{ fontSize: 13, color: 'var(--green)', fontWeight: 500 }}>Saved</span>}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {tab === 'automations' && (
+        <div style={{ overflow: 'auto', flex: 1 }}>
+          <div style={{ maxWidth: 720 }}>
+            <p style={{ fontSize: 13.5, color: 'var(--text-2)', marginBottom: 24, lineHeight: 1.6 }}>Background tasks that run automatically on a schedule. Toggle them on or off, or run any of them immediately.</p>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {automations.map(a => (
+                <div key={a.id} style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: '14px 16px', display: 'flex', alignItems: 'center', gap: 14, opacity: a.enabled ? 1 : 0.65 }}>
+                  {/* Toggle */}
+                  <button
+                    onClick={() => toggleAutomation(a.id, a.enabled)}
+                    disabled={togglingAutomation === a.id}
+                    style={{ flexShrink: 0, width: 36, height: 20, borderRadius: 99, border: 'none', cursor: 'pointer', background: a.enabled ? 'var(--brand)' : 'var(--border)', position: 'relative', transition: 'background 0.15s', padding: 0 }}
+                    title={a.enabled ? 'Disable' : 'Enable'}
+                  >
+                    <span style={{ position: 'absolute', top: 2, left: a.enabled ? 18 : 2, width: 16, height: 16, borderRadius: '50%', background: '#fff', transition: 'left 0.15s', display: 'block' }} />
+                  </button>
+
+                  {/* Info */}
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+                      <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>{a.name}</span>
+                      <span style={{ fontSize: 11, color: 'var(--text-dim)', textTransform: 'capitalize', fontFamily: 'var(--font-mono)' }}>{a.cadence}{a.run_day ? ` · ${a.run_day}` : ''}</span>
+                    </div>
+                    {a.description && <div style={{ fontSize: 12.5, color: 'var(--text-2)', marginTop: 2, lineHeight: 1.5 }}>{a.description}</div>}
+                    <div style={{ display: 'flex', gap: 12, marginTop: 5, fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--text-dim)' }}>
+                      {a.last_run_at && (
+                        <span style={{ color: a.last_run_status === 'error' ? 'var(--red, #f87171)' : a.last_run_status === 'success' ? 'var(--green)' : 'var(--text-dim)' }}>
+                          Last: {fmt(a.last_run_at)} {a.last_run_status === 'error' ? '(error)' : a.last_run_status === 'success' ? '(ok)' : ''}
+                        </span>
+                      )}
+                      {!a.last_run_at && <span>Never run</span>}
+                      {a.next_run_at && a.enabled && <span>Next: {fmt(a.next_run_at)}</span>}
+                    </div>
+                    {a.last_run_summary && (
+                      <div style={{ marginTop: 5, fontSize: 12, color: 'var(--text-2)', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 4, padding: '5px 8px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 520 }} title={a.last_run_summary}>
+                        {a.last_run_summary}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Run now */}
+                  <button
+                    onClick={() => runAutomationNow(a)}
+                    disabled={runningAutomation === a.id}
+                    style={{ flexShrink: 0, ...S.btnSm, background: 'var(--surface-2)', border: '1px solid var(--border)', color: 'var(--text-2)', whiteSpace: 'nowrap' }}
+                  >
+                    {runningAutomation === a.id ? 'Running...' : 'Run now'}
+                  </button>
+                </div>
+              ))}
+              {automations.length === 0 && (
+                <div style={{ color: 'var(--text-2)', fontSize: 13.5, padding: '24px 0' }}>Loading automations...</div>
+              )}
             </div>
           </div>
         </div>

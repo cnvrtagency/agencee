@@ -104,6 +104,30 @@ export async function GET(req: NextRequest) {
     }).catch(console.error)
   }
 
+  // Trigger due agent automations
+  const { data: dueAutomations } = await supabase
+    .from('agent_automations')
+    .select('id, agent_id')
+    .eq('enabled', true)
+    .lte('next_run_at', new Date().toISOString())
+    .neq('last_run_status', 'running')
+
+  for (const automation of dueAutomations ?? []) {
+    fetch(`${baseUrl}/api/intelligence/run-automation`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ automation_id: automation.id, agent_id: automation.agent_id }),
+    }).then(async (r) => {
+      const status = r.ok ? 'success' : 'error'
+      const data = await r.json().catch(() => ({}))
+      await supabase.from('agent_automations').update({
+        last_run_at: new Date().toISOString(),
+        last_run_status: status,
+        last_run_summary: (data.summary || data.error || '').slice(0, 500),
+      }).eq('id', automation.id)
+    }).catch(console.error)
+  }
+
   // Send daily digest
   await fetch(`${baseUrl}/api/notifications/digest`, {
     method: 'POST',
