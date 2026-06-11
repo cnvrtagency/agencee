@@ -478,6 +478,25 @@ Fonts: `--font-display` (Instrument Serif italic), `--font-sans` (Inter), `--fon
 
 ## Session Change Log
 
+### 2026-06-11 — Production Deploy + Frontmatter Repair
+
+**Files changed:**
+- `vercel.json` — cron schedule finalised at `0 7 * * *` (Hobby plan; `*/15` requires Pro)
+- `src/app/api/schedule/check/route.ts` — added `Authorization: Bearer` auth alongside legacy `x-cron-secret`
+
+**What happened:**
+- Deployed to Vercel at **https://agencee.vercel.app** (team: `liam-hobson-s-projects`)
+- 13 env vars set on Vercel production (all from `.env.local`)
+- Cron registered at 07:00 UTC daily — confirmed via `GET /api/schedule/check` → `200 {"triggered":0}`
+- Repair route ran: patched `microsuction-near-me-north-east.mdx` (missing `image:` field). `microsuction-near-me-what-it-is-how-it-works-at-home.mdx` already had correct frontmatter.
+
+**Still needed:**
+- Add `https://agencee.vercel.app/api/auth/google/callback` to Google Cloud Console OAuth redirect URIs (required for GSC reconnect in production)
+- `RESEND_API_KEY` not in `.env.local` — notification emails will fail silently until set
+- Cron plan: Hobby = daily only. Upgrade to Vercel Pro if `*/15` schedule is needed.
+
+---
+
 ### 2026-06-11 — Frontmatter Image Fix
 
 **Files changed:**
@@ -536,4 +555,6 @@ Fonts: `--font-display` (Instrument Serif italic), `--font-sans` (Inter), `--fon
 - `analyse_gsc` thresholds in `agents/[id]/page.tsx` differ slightly from GSC sync thresholds (positions 5–15 in tool vs 3–20 in sync) — not a bug but worth noting
 - `agents/[id]/outputs/page.tsx` still exists as a route (not removed) — now orphaned since nav link is gone
 - No per-tool `conversation_id` logging in `agent_activity` (task log lives only in message `__META__` encoding)
-- One-off repair still needed for already-published posts: `POST /api/repair/frontmatter-images` (safe, idempotent — skips posts that already have `image: /assets/...`)
+- ~~One-off repair~~ **Done** — `POST /api/repair/frontmatter-images` ran on 2026-06-11; patched `microsuction-near-me-north-east.mdx`
+- `RESEND_API_KEY` not set — notification emails will fail silently until added to Vercel env vars
+- Google OAuth redirect URI needs adding in Google Cloud Console for production GSC reconnect
