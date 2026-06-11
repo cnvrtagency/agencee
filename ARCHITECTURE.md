@@ -663,6 +663,7 @@ GET /api/schedule/check
 
 **Verification:**
 - `npx tsc --noEmit` passes.
+- `npm run build` passes.
 - Local `/usage` smoke passes: `GET /usage 200` in Next dev and no browser console errors.
 - `npm audit --audit-level=moderate` reports only Next bundled PostCSS moderate advisories; npm's proposed fix downgrades Next and was not applied.
 - `npm run lint` still fails on broad pre-existing strict lint debt, especially `no-explicit-any` and unused variables across older routes/components.

@@ -52,6 +52,7 @@ Branch: `main`
 | Check | Result | Notes |
 |---|---|---|
 | `npx tsc --noEmit` | PASS | Run after security/cost changes and again after `/usage`, queue schema fix, and sidebar usage filter. |
+| `npm run build` | PASS | Next 16 production build completed; all 53 app routes generated/validated. |
 | Browser smoke `/usage` | PASS | Local dev server returned `GET /usage 200`; in-app browser saw the Usage page and no console errors. |
 | `npm run lint` | FAIL | Existing strict lint debt remains repo-wide. Not a clean regression signal for this pass. |
 | `npm audit --audit-level=moderate --json` | ACCEPTED | Two moderate advisories via Next bundled PostCSS; suggested npm fix is an unsafe major downgrade. |
@@ -71,3 +72,4 @@ Branch: `main`
 - 2026-06-11T21:42:17Z: Progress file created after repo sync and architecture read.
 - 2026-06-11T22:06:00Z: Security/cost first pass complete. Added client auth fetch wrapper, shared server auth/rate/budget helpers, closed most open service-role routes, fixed cron early return, and verified `npx tsc --noEmit` passes.
 - 2026-06-11T22:10:54Z: Usage page linked, queue runtime migration added, Theo upload icon mapping fixed, architecture/progress docs updated, and validation status recorded.
+- 2026-06-11T22:14:56Z: Production build passed after checkpoint commit/push.
