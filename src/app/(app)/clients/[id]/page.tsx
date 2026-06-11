@@ -76,6 +76,8 @@ export default function ClientDetail() {
   const [saving, setSaving] = useState(false)
   const [crawling, setCrawling] = useState(false)
   const [crawlError, setCrawlError] = useState('')
+  const [refreshing, setRefreshing] = useState(false)
+  const [refreshed, setRefreshed] = useState<string | null>(null)
   const [syncing, setSyncing] = useState(false)
   const [syncError, setSyncError] = useState('')
   const [syncSuccess, setSyncSuccess] = useState('')
@@ -337,6 +339,29 @@ export default function ClientDetail() {
     loadScheduledJobs()
   }
 
+  async function refreshKnowledge() {
+    if (!client?.website) return
+    setRefreshing(true)
+    try {
+      await Promise.all([
+        fetch('/api/crawl', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ client_id: id, website: client.website }),
+        }),
+        fetch('/api/gsc/sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ client_id: id }),
+        }),
+      ])
+      setRefreshed(new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }))
+    } catch (e) {
+      console.error('Knowledge refresh failed:', e)
+    }
+    setRefreshing(false)
+  }
+
   async function crawl() {
     if (!client?.website) { setCrawlError('No website URL set.'); return }
     setCrawling(true); setCrawlError('')
@@ -504,6 +529,14 @@ export default function ClientDetail() {
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           {crawlError && <span style={{ fontSize: 12, color: 'var(--red)' }}>{crawlError}</span>}
+          {refreshed && !refreshing && <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>Refreshed at {refreshed}</span>}
+          <button
+            style={{ ...S.btnSm, color: refreshing ? 'var(--text-2)' : 'var(--accent)', borderColor: refreshing ? 'var(--border)' : 'rgba(79,127,255,0.3)' }}
+            onClick={refreshKnowledge}
+            disabled={refreshing || !client?.website}
+          >
+            {refreshing ? 'Refreshing...' : 'Refresh knowledge panel'}
+          </button>
           <button style={S.btnSm} onClick={crawl} disabled={crawling}>{crawling ? 'Crawling...' : sitePages.length > 0 ? 'Re-crawl' : 'Crawl site'}</button>
           {(client as any).github_repo && (
             <button style={{ ...S.btnSm, color: syncing ? 'var(--text-2)' : 'var(--green)', borderColor: syncing ? 'var(--border)' : 'rgba(45,212,160,0.3)' }} onClick={syncRepo} disabled={syncing}>

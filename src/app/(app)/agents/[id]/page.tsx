@@ -73,7 +73,9 @@ Before making any substantive recommendation or starting any task:
 When a task is clear: acknowledge briefly and start working immediately.
 When a task is ambiguous or broad: ask one focused question before starting. Offer 2-3 specific options as part of that question so the user can respond quickly.
 
-Always reconcile all available data sources before drawing conclusions. If the keyword bank says a keyword is untargeted but the knowledge panel shows a live page covering that topic, say so — and read that page before recommending new content on the same angle.`)
+Always reconcile all available data sources before drawing conclusions. If the keyword bank says a keyword is untargeted but the knowledge panel shows a live page covering that topic, say so — and read that page before recommending new content on the same angle.
+
+- Use update_agent_notes at the end of any conversation where you learned something useful about a client — preferences, patterns, things to avoid, tone adjustments. This persists across sessions and makes you more useful over time.`)
 
   // Client context
   if (clients.length > 0) {
@@ -579,6 +581,18 @@ Supports: wordpress, shopify, github (MDX), webflow`,
       required: ['client_name'],
     },
   },
+  {
+    name: 'update_agent_notes',
+    description: `Save persistent notes about a client to your knowledge panel. These notes survive across conversations and sessions -- use them to record things worth remembering: tone preferences, topics to avoid, recurring issues, successful content patterns, things the user has asked you to keep in mind. Call this at the end of any conversation where you learned something useful about the client or their preferences.`,
+    input_schema: {
+      type: 'object',
+      properties: {
+        client_name: { type: 'string', description: 'The client these notes are about' },
+        notes: { type: 'string', description: 'The notes to save. These replace your existing notes for this client, so include anything worth keeping from before.' },
+      },
+      required: ['client_name', 'notes'],
+    },
+  },
 ]
 
 function getToolsForAgent(_agentType: string) {
@@ -743,6 +757,33 @@ export default function AgentPage() {
         const res = await fetch(`/api/knowledge/${c.id}`)
         const { knowledge } = await res.json()
         if (knowledge) panels[c.id] = knowledge
+
+        const now = Date.now()
+        const sevenDays = 7 * 24 * 60 * 60 * 1000
+        const twoDays = 48 * 60 * 60 * 1000
+
+        const needsCrawlBackfill = !knowledge ||
+          !knowledge.site_pages_updated_at ||
+          (now - new Date(knowledge.site_pages_updated_at).getTime()) > sevenDays
+
+        if (needsCrawlBackfill && c.website) {
+          fetch('/api/crawl', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ website: c.website, client_id: c.id }),
+          }).catch(() => {})
+        }
+
+        const needsGscBackfill = !knowledge?.gsc_snapshot_updated_at ||
+          (now - new Date(knowledge.gsc_snapshot_updated_at).getTime()) > twoDays
+
+        if (needsGscBackfill) {
+          fetch('/api/gsc/sync', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ client_id: c.id }),
+          }).catch(() => {})
+        }
       } catch { /* non-critical */ }
     }))
     setKnowledgePanels(panels)
@@ -1370,6 +1411,33 @@ export default function AgentPage() {
         insight_count: nearMisses.length + lowCtr.length,
         keyword_discovery: { new_suggestions: newSuggestions },
       }, null, 2)
+    }
+
+    if (toolName === 'update_agent_notes') {
+      const client = clients.find(c => c.name.toLowerCase() === (toolInput.client_name || '').toLowerCase())
+        || clients.find(c => c.name.toLowerCase().includes((toolInput.client_name || '').toLowerCase()))
+      if (!client) return `Client "${toolInput.client_name}" not found.`
+
+      const { data: existing } = await supabase
+        .from('client_knowledge')
+        .select('agent_notes')
+        .eq('client_id', client.id)
+        .maybeSingle()
+
+      const currentNotes = ((existing?.agent_notes as Record<string, string>) || {})
+      currentNotes[agent?.slug ?? 'agent'] = toolInput.notes
+
+      const { error } = await supabase
+        .from('client_knowledge')
+        .upsert({
+          client_id: client.id,
+          workspace_id: workspaceId,
+          agent_notes: currentNotes,
+          updated_at: new Date().toISOString(),
+        }, { onConflict: 'client_id' })
+
+      if (error) return `Failed to save notes: ${error.message}`
+      return `Notes saved for ${client.name}.`
     }
 
     return 'Unknown tool.'

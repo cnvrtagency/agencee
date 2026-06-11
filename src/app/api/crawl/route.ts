@@ -240,5 +240,64 @@ export async function POST(req: NextRequest) {
     updated_at: new Date().toISOString(),
   }, { onConflict: 'client_id' })
 
+  // Generate content summary via Haiku — runs after site_pages are written
+  try {
+    const [{ data: contentHistory }, { data: keywordBank }] = await Promise.all([
+      supabase.from('content_history')
+        .select('title, published_at, primary_keyword')
+        .eq('client_id', client_id)
+        .order('published_at', { ascending: false })
+        .limit(30),
+      supabase.from('keyword_banks')
+        .select('keyword, intent, content_targeting_this')
+        .eq('client_id', client_id)
+        .limit(50),
+    ])
+
+    const publishedTitles = (contentHistory || [])
+      .map((c: any) => `- "${c.title}" (${c.primary_keyword || 'no keyword'}, ${c.published_at ? new Date(c.published_at).toLocaleDateString('en-GB') : 'unknown'})`)
+      .join('\n')
+
+    const targeted = (keywordBank || []).filter((k: any) => k.content_targeting_this).length
+    const total = (keywordBank || []).length
+
+    const summaryPrompt = `You are an SEO analyst. Write a 2-3 sentence summary of this client's content state. Be specific and factual. UK English. No em dashes. No filler.
+
+Published content (${contentHistory?.length || 0} pieces):
+${publishedTitles || 'None'}
+
+Keyword bank: ${total} keywords total, ${targeted} have content targeting them.
+
+Summarise: what topics are covered, what is the overall content depth, and what is the most obvious gap.`
+
+    const aiRes = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': process.env.ANTHROPIC_API_KEY!,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 300,
+        messages: [{ role: 'user', content: summaryPrompt }],
+      }),
+    })
+
+    if (aiRes.ok) {
+      const aiData = await aiRes.json()
+      const contentSummary = aiData.content?.[0]?.text?.trim()
+      if (contentSummary) {
+        await supabase.from('client_knowledge').upsert({
+          client_id,
+          workspace_id: workspaceId,
+          content_summary: contentSummary,
+          content_updated_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        }, { onConflict: 'client_id' })
+      }
+    }
+  } catch { /* non-critical — don't block crawl response */ }
+
   return NextResponse.json({ success: true, pages_crawled: pages.length, workspace_id: workspaceId })
 }

@@ -276,32 +276,66 @@ export async function POST(req: NextRequest) {
   // Write GSC snapshot to knowledge panel
   try {
     const rows28d = p28.rows
-    const nearMissKeywords = rows28d
-      .filter((r: any) => r.position >= 5 && r.position <= 15 && r.impressions > 50)
+
+    const nearMiss = rows28d
+      .filter((r: any) => r.position >= 3 && r.position <= 20 && r.impressions > 15)
       .sort((a: any, b: any) => b.impressions - a.impressions)
-      .slice(0, 20)
-      .map((r: any) => ({ query: r.keys[0], position: Math.round(r.position * 10) / 10, impressions: r.impressions, clicks: r.clicks, ctr: r.ctr }))
-    const lowCtrPages = rows28d
-      .filter((r: any) => r.position <= 10 && r.ctr < 0.03 && r.impressions > 100)
-      .slice(0, 10)
-      .map((r: any) => ({ url: r.keys[1], query: r.keys[0], position: Math.round(r.position * 10) / 10, impressions: r.impressions, ctr: r.ctr }))
+      .slice(0, 25)
+      .map((r: any) => ({
+        query: r.keys[0],
+        page: r.keys[1],
+        position: Math.round(r.position * 10) / 10,
+        impressions: r.impressions,
+        clicks: r.clicks,
+        ctr: Math.round(r.ctr * 1000) / 10,
+      }))
+
+    const lowCtr = rows28d
+      .filter((r: any) => r.position <= 10 && r.ctr < 0.03 && r.impressions > 30 && r.keys[0] !== '__total__')
+      .sort((a: any, b: any) => b.impressions - a.impressions)
+      .slice(0, 15)
+      .map((r: any) => ({
+        query: r.keys[0],
+        url: r.keys[1],
+        position: Math.round(r.position * 10) / 10,
+        impressions: r.impressions,
+        clicks: r.clicks,
+        ctr: Math.round(r.ctr * 1000) / 10,
+      }))
+
     const topQueries = rows28d
-      .slice(0, 20)
-      .map((r: any) => ({ query: r.keys[0], position: Math.round(r.position * 10) / 10, clicks: r.clicks, impressions: r.impressions }))
-    const totalClicks = p28.totals?.clicks ?? 0
-    const totalImpressions = p28.totals?.impressions ?? 0
-    const avgPosition = p28.totals?.position != null ? Math.round(p28.totals.position * 10) / 10 : null
-    const snapshot = {
+      .filter((r: any) => r.keys[0] !== '__total__')
+      .sort((a: any, b: any) => b.clicks - a.clicks)
+      .slice(0, 30)
+      .map((r: any) => ({
+        query: r.keys[0],
+        clicks: r.clicks,
+        impressions: r.impressions,
+        position: Math.round(r.position * 10) / 10,
+        ctr: Math.round(r.ctr * 1000) / 10,
+      }))
+
+    const totalRow = p28.totals
+    const totals = totalRow ? {
+      clicks: totalRow.clicks || 0,
+      impressions: totalRow.impressions || 0,
+      avg_position: Math.round((totalRow.position || 0) * 10) / 10,
+      ctr: Math.round((totalRow.ctr || 0) * 1000) / 10,
+    } : null
+
+    const gscSnapshot = {
       synced_at: new Date().toISOString(),
-      near_miss: nearMissKeywords,
-      low_ctr: lowCtrPages,
+      period: '28d',
+      totals,
+      near_miss: nearMiss,
+      low_ctr: lowCtr,
       top_queries: topQueries,
-      totals: { clicks: totalClicks, impressions: totalImpressions, avg_position: avgPosition },
     }
+
     await supabase.from('client_knowledge').upsert({
       client_id: conn.client_id,
       workspace_id: conn.workspace_id,
-      gsc_snapshot: snapshot,
+      gsc_snapshot: gscSnapshot,
       gsc_snapshot_updated_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     }, { onConflict: 'client_id' })
