@@ -197,7 +197,12 @@ export default function ClientDetail() {
   }, [activeTab, gscConn])
 
   async function loadGscConnection() {
-    const { data } = await supabase.from('google_connections').select('*').eq('client_id', id).eq('status', 'active').maybeSingle()
+    const { data } = await supabase
+      .from('google_connections')
+      .select('*')
+      .eq('client_id', id)
+      .in('status', ['active', 'connected', 'needs_reconnect'])
+      .maybeSingle()
     setGscConn(data || null)
   }
 
@@ -264,7 +269,7 @@ export default function ClientDetail() {
     setGscSyncing(true); setGscMsg('')
     const res = await fetch('/api/gsc/sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ connection_id: gscConn.id }) })
     const data = await res.json()
-    if (data.error) setGscMsg(`Error: ${data.error}`)
+    if (data.error) { setGscMsg(`Error: ${data.error}`); loadGscConnection() }
     else { setGscMsg(`Synced — 7d: ${data.synced?.['7d'] ?? data.synced}, 28d: ${data.synced?.['28d'] ?? ''}, 90d: ${data.synced?.['90d'] ?? ''} rows`); loadGscConnection(); loadSearchPerformance() }
     setGscSyncing(false); setTimeout(() => setGscMsg(''), 4000)
   }
@@ -617,6 +622,7 @@ export default function ClientDetail() {
 
   const fileTree = (client as any).file_tree
   const githubSyncedAt = (client as any).github_synced_at
+  const gscNeedsReconnect = gscConn?.status === 'needs_reconnect' || gscMsg.toLowerCase().includes('reconnect')
 
   const tabs: { key: TabKey; label: string }[] = [
     { key: 'profile', label: 'Profile' },
@@ -1027,7 +1033,7 @@ export default function ClientDetail() {
               <div style={S.inlineField}>
                 <label style={S.label}>Personal access token</label>
                 <input type="password" value={githubForm.github_token} onChange={e => { setGithubForm(f => ({ ...f, github_token: e.target.value })); setGithubTokenDirty(true) }} placeholder="ghp_..." />
-                <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 6 }}>Stored securely. Needs repo read/write access.</div>
+                <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 6 }}>Stored securely. Needs Contents read/write access for this repository.</div>
               </div>
               <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
                 <button style={S.btn} onClick={saveGithub} disabled={savingGithub}>{savingGithub ? 'Saving...' : 'Save'}</button>
@@ -1118,14 +1124,19 @@ export default function ClientDetail() {
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
                     <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>{gscConn.google_account_email}</span>
-                    <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 99, background: 'var(--green-bg)', color: 'var(--green)', fontWeight: 600 }}>Connected</span>
+                    <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 99, background: gscNeedsReconnect ? 'var(--red-bg)' : 'var(--green-bg)', color: gscNeedsReconnect ? 'var(--red)' : 'var(--green)', fontWeight: 600 }}>
+                      {gscNeedsReconnect ? 'Reconnect needed' : 'Connected'}
+                    </span>
                   </div>
                   <div style={{ fontSize: 12, color: 'var(--text-2)' }}>{gscConn.property_url}</div>
                   {gscConn.last_synced_at && <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 2 }}>Last synced: {new Date(gscConn.last_synced_at).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</div>}
                 </div>
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexShrink: 0 }}>
                   {gscMsg && <span style={{ fontSize: 12, color: gscMsg.startsWith('Error') ? 'var(--red)' : 'var(--green)' }}>{gscMsg}</span>}
-                  <button style={S.btnSm} onClick={syncGsc} disabled={gscSyncing}>{gscSyncing ? 'Syncing...' : 'Sync now'}</button>
+                  <button style={S.btnSm} onClick={connectGsc} disabled={gscConnecting}>
+                    {gscConnecting ? 'Connecting...' : 'Reconnect'}
+                  </button>
+                  <button style={S.btnSm} onClick={syncGsc} disabled={gscSyncing || gscNeedsReconnect}>{gscSyncing ? 'Syncing...' : 'Sync now'}</button>
                   <button style={{ ...S.btnSm, color: 'var(--red)', borderColor: 'rgba(239,68,68,0.3)' }} onClick={disconnectGsc}>Disconnect</button>
                 </div>
               </div>
@@ -1517,7 +1528,12 @@ export default function ClientDetail() {
                     ))}
                     <div style={{ width: 1, height: 14, background: 'var(--border)', margin: '0 2px' }} />
                     <button style={{ ...S.btnSm, fontSize: 11 }} onClick={() => exportCsv(searchView === 'queries' ? queryRows : pageRows, searchPeriod)}>Export CSV</button>
-                    <button style={{ ...S.btnSm, display: 'flex', alignItems: 'center', gap: 4 }} onClick={async () => { await syncGsc(); loadSearchPerformance() }} disabled={gscSyncing}>
+                    {gscNeedsReconnect && (
+                      <button style={{ ...S.btnSm, fontSize: 11 }} onClick={connectGsc} disabled={gscConnecting}>
+                        {gscConnecting ? 'Connecting...' : 'Reconnect GSC'}
+                      </button>
+                    )}
+                    <button style={{ ...S.btnSm, display: 'flex', alignItems: 'center', gap: 4 }} onClick={async () => { await syncGsc(); loadSearchPerformance() }} disabled={gscSyncing || gscNeedsReconnect}>
                       <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ animation: gscSyncing ? 'spin 1s linear infinite' : 'none' }}><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg>
                       {gscSyncing ? 'Syncing…' : 'Re-sync'}
                     </button>
@@ -1527,7 +1543,11 @@ export default function ClientDetail() {
                 {searchRows.length === 0 ? (
                   <div style={{ padding: '40px 20px', textAlign: 'center' }}>
                     <div style={{ fontSize: 14, color: 'var(--text-2)', marginBottom: 16 }}>No search performance data yet.</div>
-                    <button style={S.btn} onClick={syncGsc} disabled={gscSyncing}>{gscSyncing ? 'Syncing...' : 'Sync from Search Console'}</button>
+                    {gscNeedsReconnect ? (
+                      <button style={S.btn} onClick={connectGsc} disabled={gscConnecting}>{gscConnecting ? 'Connecting...' : 'Reconnect Search Console'}</button>
+                    ) : (
+                      <button style={S.btn} onClick={syncGsc} disabled={gscSyncing}>{gscSyncing ? 'Syncing...' : 'Sync from Search Console'}</button>
+                    )}
                   </div>
                 ) : searchView === 'queries' ? (
                   <table style={S.table}>

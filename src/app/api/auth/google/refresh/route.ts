@@ -40,12 +40,19 @@ export async function POST(req: NextRequest) {
     }),
   })
   const tokens = await tokenRes.json()
-  if (tokens.error) return NextResponse.json({ error: tokens.error_description || 'Token refresh failed' }, { status: 400 })
+  if (tokens.error) {
+    await supabase.from('google_connections').update({
+      status: 'needs_reconnect',
+      updated_at: new Date().toISOString(),
+    }).eq('id', connection_id)
+    return NextResponse.json({ error: `${tokens.error_description || 'Token refresh failed'}. Reconnect Google Search Console from the client Connections tab.` }, { status: 400 })
+  }
 
   const expiresAt = new Date(Date.now() + (tokens.expires_in || 3600) * 1000).toISOString()
   await supabase.from('google_connections').update({
     access_token: encrypt(tokens.access_token),
     token_expires_at: expiresAt,
+    status: 'active',
     updated_at: new Date().toISOString(),
   }).eq('id', connection_id)
 

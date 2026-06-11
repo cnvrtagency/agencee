@@ -4,6 +4,8 @@ import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import Link from 'next/link'
 
+const MASKED_SECRET = '****************'
+
 const S: Record<string, React.CSSProperties> = {
   section: { background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: '28px 32px', marginBottom: 20 },
   sectionHead: { fontSize: 15, fontWeight: 600, color: 'var(--text)', marginBottom: 4 },
@@ -20,6 +22,8 @@ export default function Settings() {
   const [workspaceName, setWorkspaceName] = useState('')
   const [apiKey, setApiKey] = useState('')
   const [geminiKey, setGeminiKey] = useState('')
+  const [apiKeyDirty, setApiKeyDirty] = useState(false)
+  const [geminiKeyDirty, setGeminiKeyDirty] = useState(false)
   const [budget, setBudget] = useState('500000')
   const [tokensUsed, setTokensUsed] = useState(0)
   const [saving, setSaving] = useState(false)
@@ -57,8 +61,10 @@ export default function Settings() {
       // Load workspace settings (API keys, budget)
       const { data } = await supabase.from('workspace_settings').select('*').eq('user_id', user.id).maybeSingle()
       if (data) {
-        setApiKey(data.anthropic_api_key || '')
-        setGeminiKey(data.gemini_api_key || '')
+        setApiKey(data.anthropic_api_key ? MASKED_SECRET : '')
+        setGeminiKey(data.gemini_api_key ? MASKED_SECRET : '')
+        setApiKeyDirty(false)
+        setGeminiKeyDirty(false)
         setBudget(String(data.monthly_token_budget || 500000))
         setTokensUsed(data.tokens_used_this_month || 0)
       }
@@ -79,17 +85,17 @@ export default function Settings() {
       await supabase.from('workspaces').update({ name: workspaceName }).eq('id', workspaceId)
     }
     // Save encrypted API keys via server route
-    if (userId) {
+    if (userId && (apiKeyDirty || geminiKeyDirty)) {
+      const keyPayload: Record<string, string | null> = {}
+      if (apiKeyDirty) keyPayload.anthropic_api_key = apiKey && apiKey !== MASKED_SECRET ? apiKey : null
+      if (geminiKeyDirty) keyPayload.gemini_api_key = geminiKey && geminiKey !== MASKED_SECRET ? geminiKey : null
       await fetch('/api/workspace/api-key', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          user_id: userId,
-          workspace_id: workspaceId || undefined,
-          anthropic_api_key: apiKey,
-          gemini_api_key: geminiKey || null,
-        }),
+        body: JSON.stringify(keyPayload),
       })
+      setApiKeyDirty(false)
+      setGeminiKeyDirty(false)
     }
     // Update budget + workspace name in workspace_settings
     await supabase.from('workspace_settings').upsert({
@@ -170,7 +176,7 @@ export default function Settings() {
         <div style={S.sectionSub}>Powers all your agents. Stored securely and never shared.</div>
         <div style={S.field}>
           <label style={S.label}>API key</label>
-          <input type="password" value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder="sk-ant-..." />
+          <input type="password" value={apiKey} onChange={e => { setApiKey(e.target.value); setApiKeyDirty(true) }} placeholder="sk-ant-..." />
         </div>
       </div>
 
@@ -180,7 +186,7 @@ export default function Settings() {
         <div style={S.sectionSub}>Optional. Used for additional AI capabilities when available.</div>
         <div style={S.field}>
           <label style={S.label}>Gemini API key</label>
-          <input type="password" value={geminiKey} onChange={e => setGeminiKey(e.target.value)} placeholder="AIza..." />
+          <input type="password" value={geminiKey} onChange={e => { setGeminiKey(e.target.value); setGeminiKeyDirty(true) }} placeholder="AIza..." />
         </div>
       </div>
 

@@ -42,8 +42,8 @@ export default function AgentKeywordsPage() {
   const [clientFilter, setClientFilter] = useState('all')
   const [acting, setActing] = useState<string | null>(null)
   const [toast, setToast] = useState<string | null>(null)
-  const [rejectInputId, setRejectInputId] = useState<string | null>(null)
-  const [rejectReason, setRejectReason] = useState('')
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [bulkActing, setBulkActing] = useState<'approved' | 'rejected' | null>(null)
 
   useEffect(() => {
     supabase.from('agents').select('name').eq('id', agentId).single().then(({ data }) => setAgent(data))
@@ -84,6 +84,7 @@ export default function AgentKeywordsPage() {
     const { data } = await q
     const sorted = [...(data || [])].sort((a: any, b: any) => importanceScore(b) - importanceScore(a))
     setSuggestions(sorted)
+    setSelectedIds(new Set())
   }
 
   function fadeOut(id: string, callback: () => void) {
@@ -95,22 +96,26 @@ export default function AgentKeywordsPage() {
     }, 350)
   }
 
+  async function reviewSuggestion(id: string, status: 'approved' | 'rejected') {
+    const res = await fetch(status === 'approved' ? '/api/keywords/approve' : '/api/keywords/reject', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ suggestion_id: id, reason: '' }),
+    })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || `Failed to ${status === 'approved' ? 'approve' : 'reject'} keyword`)
+  }
+
   async function approve(id: string) {
     const s = suggestions.find(x => x.id === id)
     setActing(id)
     try {
-      const res = await fetch('/api/keywords/approve', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ suggestion_id: id }),
-      })
-      const data = await res.json()
-      if (!res.ok) {
-        console.error('Approve failed:', data.error)
-        showToast(`Failed to approve: ${data.error}`)
-        return
-      }
+      await reviewSuggestion(id, 'approved')
+      setSelectedIds(prev => { const n = new Set(prev); n.delete(id); return n })
       fadeOut(id, () => showToast(`"${s?.keyword}" added to keyword bank`))
+    } catch (err: any) {
+      console.error('Approve failed:', err.message)
+      showToast(`Failed to approve: ${err.message}`)
     } finally {
       setActing(null)
     }
@@ -118,32 +123,75 @@ export default function AgentKeywordsPage() {
 
   async function reject(id: string) {
     const s = suggestions.find(x => x.id === id)
-    const reason = rejectReason.trim()
-    const res = await fetch('/api/keywords/reject', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ suggestion_id: id, reason }),
-    })
-    const data = await res.json()
-    if (!res.ok) {
-      console.error('Reject failed:', data.error)
-      showToast(`Failed to reject: ${data.error}`)
-      return
+    setActing(id)
+    try {
+      await reviewSuggestion(id, 'rejected')
+      setSelectedIds(prev => { const n = new Set(prev); n.delete(id); return n })
+      fadeOut(id, () => showToast(`"${s?.keyword}" rejected`))
+    } catch (err: any) {
+      console.error('Reject failed:', err.message)
+      showToast(`Failed to reject: ${err.message}`)
+    } finally {
+      setActing(null)
     }
-    setRejectInputId(null)
-    setRejectReason('')
-    fadeOut(id, () => showToast(`"${s?.keyword}" rejected`))
   }
 
   async function unreject(id: string) {
     await supabase.from('keyword_suggestions').update({ status: 'pending' }).eq('id', id)
+    setSelectedIds(prev => { const n = new Set(prev); n.delete(id); return n })
     fadeOut(id, () => showToast('Keyword moved back to pending'))
   }
 
-  async function approveAll() {
-    for (const s of suggestions) {
-      await approve(s.id)
+  function toggleSelected(id: string) {
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      next.has(id) ? next.delete(id) : next.add(id)
+      return next
+    })
+  }
+
+  function toggleAllVisible() {
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      const allSelected = suggestions.length > 0 && suggestions.every(s => next.has(s.id))
+      for (const s of suggestions) {
+        allSelected ? next.delete(s.id) : next.add(s.id)
+      }
+      return next
+    })
+  }
+
+  const selectedVisible = suggestions.filter(s => selectedIds.has(s.id))
+  const allVisibleSelected = suggestions.length > 0 && selectedVisible.length === suggestions.length
+
+  async function bulkReview(status: 'approved' | 'rejected', rows?: typeof suggestions) {
+    const targets = rows ?? selectedVisible
+    if (targets.length === 0) return
+    setBulkActing(status)
+    const completed: string[] = []
+    try {
+      for (const s of targets) {
+        try {
+          await reviewSuggestion(s.id, status)
+          completed.push(s.id)
+        } catch (err: any) {
+          console.error(`Bulk keyword ${status} failed:`, err.message)
+        }
+      }
+      if (completed.length > 0) {
+        setSuggestions(prev => prev.filter(s => !completed.includes(s.id)))
+        setSelectedIds(new Set())
+        showToast(`${completed.length} keyword${completed.length === 1 ? '' : 's'} ${status}`)
+      } else {
+        showToast(`No keywords ${status}`)
+      }
+    } finally {
+      setBulkActing(null)
     }
+  }
+
+  async function approveAll() {
+    await bulkReview('approved', suggestions)
   }
 
   return (
@@ -177,10 +225,26 @@ export default function AgentKeywordsPage() {
         <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', fontSize: 11, fontWeight: 600, color: 'var(--text-2)', textTransform: 'uppercase', letterSpacing: '1px', display: 'flex', justifyContent: 'space-between' }}>
           <span>{filter.charAt(0).toUpperCase() + filter.slice(1)} ({suggestions.length})</span>
           {filter === 'pending' && suggestions.length > 0 && (
-            <button onClick={approveAll}
-              style={{ fontSize: 11, padding: '4px 12px', borderRadius: 99, background: 'var(--green)', color: '#fff', border: 'none', cursor: 'pointer', fontWeight: 600 }}>
-              Approve all
-            </button>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              {selectedVisible.length > 0 ? (
+                <>
+                  <span style={{ fontSize: 11, color: 'var(--text-dim)', textTransform: 'none', letterSpacing: 0 }}>{selectedVisible.length} selected</span>
+                  <button disabled={bulkActing !== null} onClick={() => bulkReview('approved')}
+                    style={{ fontSize: 11, padding: '4px 12px', borderRadius: 99, background: 'var(--green)', color: '#fff', border: 'none', cursor: 'pointer', fontWeight: 600 }}>
+                    {bulkActing === 'approved' ? 'Approving...' : 'Approve selected'}
+                  </button>
+                  <button disabled={bulkActing !== null} onClick={() => bulkReview('rejected')}
+                    style={{ fontSize: 11, padding: '4px 12px', borderRadius: 99, background: 'transparent', color: 'var(--red)', border: '1px solid rgba(242,107,107,0.35)', cursor: 'pointer', fontWeight: 600 }}>
+                    {bulkActing === 'rejected' ? 'Rejecting...' : 'Reject selected'}
+                  </button>
+                </>
+              ) : (
+                <button onClick={approveAll}
+                  style={{ fontSize: 11, padding: '4px 12px', borderRadius: 99, background: 'var(--green)', color: '#fff', border: 'none', cursor: 'pointer', fontWeight: 600 }}>
+                  Approve all
+                </button>
+              )}
+            </div>
           )}
         </div>
         {suggestions.length === 0 ? (
@@ -190,7 +254,19 @@ export default function AgentKeywordsPage() {
         ) : (
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
-              <tr>{['Keyword', 'Priority', 'Source', 'Client', 'Intent', 'Vol', 'KD', 'Rationale', ''].map(h => <th key={h} style={S.th}>{h}</th>)}</tr>
+              <tr>
+                <th style={{ ...S.th, width: 34, paddingRight: 4 }}>
+                  {filter === 'pending' && (
+                    <input
+                      type="checkbox"
+                      checked={allVisibleSelected}
+                      onChange={toggleAllVisible}
+                      aria-label={allVisibleSelected ? 'Clear selected keywords' : 'Select all visible keywords'}
+                    />
+                  )}
+                </th>
+                {['Keyword', 'Priority', 'Source', 'Client', 'Intent', 'Vol', 'KD', 'Rationale', ''].map(h => <th key={h} style={S.th}>{h}</th>)}
+              </tr>
             </thead>
             <tbody>
               {suggestions.map((s, i) => {
@@ -203,6 +279,16 @@ export default function AgentKeywordsPage() {
                   onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
                   style={{ borderBottom: i < suggestions.length - 1 ? '1px solid var(--border)' : 'none', transition: 'opacity 0.35s, transform 0.35s', opacity: isFading ? 0 : 1, transform: isFading ? 'translateX(-8px)' : 'none' }}
                 >
+                  <td style={{ ...S.td, width: 34, paddingRight: 4 }}>
+                    {filter === 'pending' && (
+                      <input
+                        type="checkbox"
+                        checked={selectedIds.has(s.id)}
+                        onChange={() => toggleSelected(s.id)}
+                        aria-label={`Select ${s.keyword}`}
+                      />
+                    )}
+                  </td>
                   <td style={{ ...S.td, fontWeight: 600 }}>
                     {s.keyword}
                     {gscMeta?.position && <div style={{ fontSize: 11, color: 'var(--text-2)', marginTop: 2 }}>pos #{gscMeta.position}{gscMeta.impressions ? ` · ${gscMeta.impressions} imp` : ''}</div>}
@@ -227,23 +313,7 @@ export default function AgentKeywordsPage() {
                     {filter === 'pending' && (
                       <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
                         <button disabled={acting === s.id} onClick={() => approve(s.id)} style={{ padding: '3px 10px', borderRadius: 99, fontSize: 11, fontWeight: 600, cursor: 'pointer', border: 'none', background: 'var(--green)', color: '#fff' }}>Approve ✓</button>
-                        {rejectInputId === s.id ? (
-                          <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-                            <input
-                              autoFocus
-                              value={rejectReason}
-                              onChange={e => setRejectReason(e.target.value)}
-                              placeholder="Reason (optional)"
-                              maxLength={500}
-                              style={{ fontSize: 11, padding: '3px 8px', borderRadius: 99, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)', width: 140 }}
-                              onKeyDown={e => { if (e.key === 'Enter') reject(s.id); if (e.key === 'Escape') { setRejectInputId(null); setRejectReason('') } }}
-                            />
-                            <button onClick={() => reject(s.id)} style={{ padding: '3px 8px', borderRadius: 99, fontSize: 11, cursor: 'pointer', border: 'none', background: 'rgba(242,107,107,0.2)', color: 'var(--red)', fontWeight: 600 }}>Reject</button>
-                            <button onClick={() => { setRejectInputId(null); setRejectReason('') }} style={{ padding: '3px 6px', borderRadius: 99, fontSize: 11, cursor: 'pointer', border: 'none', background: 'none', color: 'var(--text-dim)' }}>✕</button>
-                          </div>
-                        ) : (
-                          <button disabled={acting === s.id} onClick={() => { setRejectInputId(s.id); setRejectReason('') }} style={{ padding: '3px 10px', borderRadius: 99, fontSize: 11, cursor: 'pointer', border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-2)' }}>Reject</button>
-                        )}
+                        <button disabled={acting === s.id} onClick={() => reject(s.id)} style={{ padding: '3px 10px', borderRadius: 99, fontSize: 11, cursor: 'pointer', border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-2)' }}>Reject</button>
                       </div>
                     )}
                     {filter === 'approved' && <span style={{ fontSize: 11, color: 'var(--green)', fontWeight: 600 }}>In bank</span>}

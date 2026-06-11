@@ -11,6 +11,7 @@ const supabase = createClient(
 )
 
 export const maxDuration = 60
+const FETCH_TIMEOUT_MS = 15_000
 
 function normaliseUrl(href: string, base: string): string | null {
   try {
@@ -23,6 +24,18 @@ function normaliseUrl(href: string, base: string): string | null {
     const clean = url.toString().replace(/\/$/, '') || url.origin
     return clean
   } catch { return null }
+}
+
+function normaliseBaseUrl(value: string): string | null {
+  try {
+    const withProtocol = /^https?:\/\//i.test(value) ? value : `https://${value}`
+    const url = new URL(withProtocol)
+    url.hash = ''
+    url.search = ''
+    return url.toString().replace(/\/$/, '')
+  } catch {
+    return null
+  }
 }
 
 function extractText(html: string, tag: string): string | null {
@@ -101,7 +114,7 @@ async function fetchPage(url: string): Promise<{ html: string; finalUrl: string 
         'Cache-Control': 'no-cache',
       },
       redirect: 'follow',
-      signal: AbortSignal.timeout(5000),
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     })
     if (!res.ok) return null
     const contentType = res.headers.get('content-type') || ''
@@ -125,7 +138,7 @@ async function fetchSitemapUrls(baseUrl: string): Promise<string[]> {
           'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
           'Accept': 'text/html,application/xml,application/xhtml+xml,text/xml,*/*',
         },
-        signal: AbortSignal.timeout(5000),
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
       })
       if (!res.ok) continue
       const text = await res.text()
@@ -137,7 +150,7 @@ async function fetchSitemapUrls(baseUrl: string): Promise<string[]> {
           try {
             const subRes = await fetch(subUrl, {
               headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' },
-              signal: AbortSignal.timeout(5000),
+              signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
             })
             if (!subRes.ok) continue
             const subText = await subRes.text()
@@ -207,7 +220,8 @@ export async function POST(req: NextRequest) {
       compWorkspaceId = wsRow2?.id ?? null
     }
 
-    const baseUrl = comp.url.replace(/\/$/, '')
+    const baseUrl = normaliseBaseUrl(comp.url)
+    if (!baseUrl) return NextResponse.json({ error: 'Competitor site URL is invalid.' }, { status: 400 })
     const visited = new Set<string>()
     const pages: any[] = []
     const maxPages = 20
@@ -334,7 +348,10 @@ export async function POST(req: NextRequest) {
     workspaceId = wsRow?.id ?? null
   }
 
-  const baseUrl = website.replace(/\/$/, '')
+  const baseUrl = normaliseBaseUrl(website)
+  if (!baseUrl) {
+    return NextResponse.json({ error: 'Website URL is invalid.' }, { status: 400 })
+  }
   const visited = new Set<string>()
   const pages: any[] = []
   const maxPages = 30
@@ -398,7 +415,7 @@ export async function POST(req: NextRequest) {
   }
 
   if (pages.length === 0) {
-    return NextResponse.json({ error: 'Could not crawl site. Check the URL is correct and publicly accessible.' }, { status: 400 })
+    return NextResponse.json({ error: 'Could not crawl site. Check the URL is correct, publicly accessible, and returns HTML within 15 seconds.' }, { status: 400 })
   }
 
   // Delete old crawl data

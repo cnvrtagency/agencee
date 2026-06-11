@@ -9,14 +9,36 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_KEY!
 )
 
+class GitHubApiError extends Error {
+  status: number
+
+  constructor(message: string, status: number) {
+    super(message)
+    this.status = status
+  }
+}
+
+function githubErrorMessage(status: number, message: string, owner: string, repo: string, branch: string): string {
+  if (status === 401) {
+    return 'GitHub token was rejected. Paste a fresh token with repo Contents read/write access, then save and sync again.'
+  }
+  if (status === 404) {
+    return `GitHub repo or branch not found, or this token cannot access ${owner}/${repo}@${branch}. Check the repository URL, branch, and token permissions.`
+  }
+  if (status === 403) {
+    return `GitHub refused access to ${owner}/${repo}@${branch}. Check that the token has Contents read/write access and has not hit a rate or policy limit.`
+  }
+  return message || `GitHub API error ${status}`
+}
+
 async function fetchTree(owner: string, repo: string, branch: string, token: string): Promise<any[]> {
   const res = await fetch(
     `https://api.github.com/repos/${owner}/${repo}/git/trees/${branch}?recursive=1`,
     { headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github.v3+json' } }
   )
   if (!res.ok) {
-    const err = await res.json()
-    throw new Error(err.message || `GitHub API error ${res.status}`)
+    const err = await res.json().catch(() => ({}))
+    throw new GitHubApiError(githubErrorMessage(res.status, err.message, owner, repo, branch), res.status)
   }
   const data = await res.json()
   return data.tree || []
@@ -94,7 +116,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ success: true, total_files: totalFiles, tree: formatted })
   } catch (err: any) {
     console.error('[github] POST error:', err.message)
-    return NextResponse.json({ error: err.message }, { status: 500 })
+    const status = err instanceof GitHubApiError ? (err.status === 401 ? 401 : 400) : 500
+    return NextResponse.json({ error: err.message }, { status })
   }
 }
 

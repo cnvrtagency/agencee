@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js'
-import { safeDecrypt } from '@/lib/crypto'
+import { encrypt, safeDecrypt } from '@/lib/crypto'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -46,6 +46,11 @@ export async function getValidAccessToken(connectionId: string): Promise<string>
   const data = await res.json()
 
   if (!res.ok || !data.access_token) {
+    await supabase.from('google_connections').update({
+      status: 'needs_reconnect',
+      updated_at: new Date().toISOString(),
+    }).eq('id', connectionId)
+
     throw new Error(
       `Token refresh failed: ${data.error_description || data.error || `HTTP ${res.status}`}. Reconnect Google Search Console from the client Connections tab.`
     )
@@ -53,8 +58,10 @@ export async function getValidAccessToken(connectionId: string): Promise<string>
 
   // Store new access token
   await supabase.from('google_connections').update({
-    access_token: data.access_token,
+    access_token: encrypt(data.access_token),
     token_expires_at: new Date(Date.now() + (data.expires_in || 3600) * 1000).toISOString(),
+    status: 'active',
+    updated_at: new Date().toISOString(),
   }).eq('id', connectionId)
 
   return data.access_token

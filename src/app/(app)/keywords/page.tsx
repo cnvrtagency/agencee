@@ -32,6 +32,8 @@ export default function KeywordsPage() {
   const [clients, setClients] = useState<{ id: string; name: string }[]>([])
   const [clientFilter, setClientFilter] = useState<string>('all')
   const [acting, setActing] = useState<string | null>(null)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [bulkActing, setBulkActing] = useState<'approved' | 'rejected' | null>(null)
 
   useEffect(() => {
     supabase.from('client_profiles').select('id,name').order('name').then(({ data }) => setClients(data || []))
@@ -48,31 +50,73 @@ export default function KeywordsPage() {
     if (clientFilter !== 'all') q = q.eq('client_id', clientFilter) as any
     const { data } = await q
     setSuggestions(data || [])
+    setSelectedIds(new Set())
   }
 
-  async function act(id: string, status: 'approved' | 'rejected') {
+  async function act(id: string, status: 'approved' | 'rejected', reload = true): Promise<boolean> {
     setActing(id)
-    await supabase.from('keyword_suggestions').update({ status }).eq('id', id)
-    if (status === 'approved') {
-      const s = suggestions.find(x => x.id === id)
-      if (s) {
-        await supabase.from('keyword_banks').insert({
-          client_id: s.client_id,
-          keyword: s.keyword,
-          cluster: s.cluster || null,
-          intent: s.intent || 'informational',
-          funnel_stage: s.funnel_stage || 'tofu',
-          monthly_volume: s.monthly_volume_estimate != null ? Math.round(s.monthly_volume_estimate) : null,
-          difficulty: s.difficulty_estimate != null ? Math.round(s.difficulty_estimate) : null,
-          priority: 5,
-        })
+    try {
+      const res = await fetch(status === 'approved' ? '/api/keywords/approve' : '/api/keywords/reject', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ suggestion_id: id, reason: '' }),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        console.error(`Keyword ${status} failed:`, data.error)
+        return false
       }
+      setSelectedIds(prev => {
+        const next = new Set(prev)
+        next.delete(id)
+        return next
+      })
+      return true
+    } finally {
+      setActing(null)
+      if (reload) load()
     }
-    setActing(null)
-    load()
+  }
+
+  function toggleSelected(id: string) {
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      next.has(id) ? next.delete(id) : next.add(id)
+      return next
+    })
+  }
+
+  function toggleAllVisible() {
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      const allSelected = suggestions.length > 0 && suggestions.every(s => next.has(s.id))
+      for (const s of suggestions) {
+        allSelected ? next.delete(s.id) : next.add(s.id)
+      }
+      return next
+    })
   }
 
   const pending = suggestions.filter(s => s.status === 'pending')
+  const selectedVisible = suggestions.filter(s => selectedIds.has(s.id))
+  const allVisibleSelected = suggestions.length > 0 && selectedVisible.length === suggestions.length
+
+  async function bulkAct(status: 'approved' | 'rejected', rows?: typeof suggestions) {
+    const targets = rows ?? selectedVisible
+    if (targets.length === 0) return
+    setBulkActing(status)
+    try {
+      for (const s of targets) await act(s.id, status, false)
+    } finally {
+      setBulkActing(null)
+      setSelectedIds(new Set())
+      load()
+    }
+  }
+
+  async function approveAll() {
+    await bulkAct('approved', pending)
+  }
 
   return (
     <div>
@@ -100,11 +144,23 @@ export default function KeywordsPage() {
         <div style={S.panelHead}>
           <span>{filter.charAt(0).toUpperCase() + filter.slice(1)} keywords ({suggestions.length})</span>
           {filter === 'pending' && suggestions.length > 0 && (
-            <button onClick={async () => {
-              for (const s of pending) await act(s.id, 'approved')
-            }} style={{ fontSize: 11, padding: '4px 10px', borderRadius: 'var(--radius)', background: 'var(--brand)', color: 'var(--brand-accent)', border: 'none', cursor: 'pointer', fontWeight: 700 }}>
-              Approve all ({pending.length})
-            </button>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              {selectedVisible.length > 0 ? (
+                <>
+                  <span style={{ fontSize: 11, color: 'var(--text-dim)', textTransform: 'none', letterSpacing: 0 }}>{selectedVisible.length} selected</span>
+                  <button disabled={bulkActing !== null} onClick={() => bulkAct('approved')} style={{ fontSize: 11, padding: '4px 10px', borderRadius: 'var(--radius)', background: 'var(--brand)', color: 'var(--brand-accent)', border: 'none', cursor: 'pointer', fontWeight: 700 }}>
+                    {bulkActing === 'approved' ? 'Approving...' : 'Approve selected'}
+                  </button>
+                  <button disabled={bulkActing !== null} onClick={() => bulkAct('rejected')} style={{ fontSize: 11, padding: '4px 10px', borderRadius: 'var(--radius)', background: 'transparent', color: 'var(--red)', border: '1px solid rgba(239,68,68,0.35)', cursor: 'pointer', fontWeight: 700 }}>
+                    {bulkActing === 'rejected' ? 'Rejecting...' : 'Reject selected'}
+                  </button>
+                </>
+              ) : (
+                <button onClick={approveAll} style={{ fontSize: 11, padding: '4px 10px', borderRadius: 'var(--radius)', background: 'var(--brand)', color: 'var(--brand-accent)', border: 'none', cursor: 'pointer', fontWeight: 700 }}>
+                  Approve all ({pending.length})
+                </button>
+              )}
+            </div>
           )}
         </div>
 
@@ -120,6 +176,16 @@ export default function KeywordsPage() {
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
               <tr>
+                <th style={{ ...S.th, width: 36, paddingRight: 4 }}>
+                  {filter === 'pending' && (
+                    <input
+                      type="checkbox"
+                      checked={allVisibleSelected}
+                      onChange={toggleAllVisible}
+                      aria-label={allVisibleSelected ? 'Clear selected keywords' : 'Select all visible keywords'}
+                    />
+                  )}
+                </th>
                 {['Keyword', 'Client', 'Intent', 'Stage', 'Vol est.', 'KD est.', 'Rationale', ''].map(h => (
                   <th key={h} style={S.th}>{h}</th>
                 ))}
@@ -132,6 +198,16 @@ export default function KeywordsPage() {
                   onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
                   style={{ borderBottom: i < suggestions.length - 1 ? '1px solid var(--border)' : 'none' }}
                 >
+                  <td style={{ ...S.td, width: 36, paddingRight: 4 }}>
+                    {filter === 'pending' && (
+                      <input
+                        type="checkbox"
+                        checked={selectedIds.has(s.id)}
+                        onChange={() => toggleSelected(s.id)}
+                        aria-label={`Select ${s.keyword}`}
+                      />
+                    )}
+                  </td>
                   <td style={{ ...S.td, fontWeight: 600, color: 'var(--text)' }}>{s.keyword}</td>
                   <td style={{ ...S.td, color: 'var(--text-2)' }}>{(s as any).client_profiles?.name || '—'}</td>
                   <td style={S.td}>

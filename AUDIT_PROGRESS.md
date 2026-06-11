@@ -23,6 +23,7 @@ Branch: `main`
 | Phase 2.7: Security and cost protection | DONE | Service-role auth pass, budget/rate guards, OAuth signed-state, server-side OAuth session, and token-in-URL removal patched. |
 | Phase 2.8: Performance, scale, lifecycle | DONE | Hot-path index SQL prepared for manual apply in `20260611_audit_hardening.sql`. |
 | Phase 2.9: Product flows | DONE | `/usage` added, agent nav live rows checked, Theo upload icon fixed, image generation route fixed and SDK-smoked. |
+| Phase 2.10: Live error follow-ups | DONE | Keyword bulk review, GSC reconnect state, slow crawler handling, GitHub credential validation, and Gemini key fallback patched. |
 | Phase 3: Fixes | DONE | P0/P1 API auth, cron, queue, usage tracking, budget/rate guard, OAuth, image generation, proxy, and payload limit fixes implemented. |
 | Phase 4: Usage page | DONE | `/usage` route built and linked from Sidebar/Settings. |
 | Phase 5: ARCHITECTURE.md update | DONE | Architecture updated with auth model, usage page, queue migration, findings, env notes, and changelog. |
@@ -51,20 +52,27 @@ Branch: `main`
 | F-018 | Medium | FIXED | Next 16 deprecated `middleware.ts` convention. | `npm run build` warned to use `proxy`. | Moved `src/middleware.ts` to `src/proxy.ts` and exported `proxy`; build warning is gone. |
 | F-019 | Medium | FIXED | Expensive JSON routes had no explicit request body caps. | Static route inventory showed unbounded `req.json()` on AI routes. | Added `readJsonWithLimit` and wired it into chat, image generation, crawl, calendar plan generation, reports, and run-task. |
 | F-020 | Medium | READY_FOR_SQL | Hot table indexes, queue/calendar/output constraints, storage public-read policy, and OAuth session table need remote SQL apply. | Code migration added at `supabase/migrations/20260611_audit_hardening.sql`. | Apply the SQL block printed in the assistant response. |
+| F-021 | Medium | FIXED | GSC refresh failures left an expired connection showing as Connected. | User saw `Token refresh failed: Bad Request` while the connection badge still said Connected. | Refresh failures now mark `google_connections.status = needs_reconnect`; client UI shows Reconnect needed and disables sync until OAuth is reconnected. |
+| F-022 | Medium | FIXED | Crawl could falsely report a public site as inaccessible when the homepage was slow. | Top Draw responded publicly, but the crawler used 5s fetch/sitemap timeouts. | Crawler now normalises bare domains and allows 15s for page and sitemap fetches; failure copy names the HTML/timeout requirement. |
+| F-023 | Medium | FIXED | GitHub bad tokens were saved successfully and only failed later during file-tree sync. | User saw Repo saved followed by `Bad credentials`. | GitHub save validates repo/branch/token access before storing new config; sync route maps 401/403/404 to actionable credential messages. |
+| F-024 | Low | FIXED | Keyword review lacked selected bulk accept/reject, and agent reject asked for an optional reason. | Global and agent keyword pages only had row actions or approve-all. | Added checkbox selection with Approve selected / Reject selected; rejection now sends a blank reason directly. |
+| F-025 | High | FIXED | Image generation ignored stored workspace Gemini keys, and Settings could resave encrypted key ciphertext. | `/api/generate-image` only read `process.env.GEMINI_API_KEY`; Settings loaded encrypted key values into password inputs. | Image route now unwraps workspace/env Gemini keys, uses current image config with SDK plus REST fallback, and Settings masks secrets with dirty-field upserts. |
 
 ## Verification
 
 | Check | Result | Notes |
 |---|---|---|
-| `npx tsc --noEmit` | PASS | Run after security/cost changes and again after `/usage`, queue schema fix, and sidebar usage filter. |
-| `npm run build` | PASS | Next 16 production build completed; all 53 app routes generated/validated. |
+| `npx tsc --noEmit` | PASS | Run after security/cost changes, `/usage`, queue schema fix, sidebar usage filter, and live error follow-up patches. |
+| `npm run build` | PASS | Next 16 production build completed after live error follow-up patches; all 53 app routes generated/validated. |
 | Browser smoke `/usage` | PASS | Local dev server returned `GET /usage 200`; in-app browser saw the Usage page and no console errors. |
+| Browser smoke `/settings`, `/keywords` | PASS | Local dev server rendered both changed screens with no browser console errors. |
 | `npm run lint` | FAIL | Existing strict lint debt remains repo-wide. Not a clean regression signal for this pass. |
 | `npm audit --audit-level=moderate --json` | ACCEPTED | Two moderate advisories via Next bundled PostCSS; suggested npm fix is an unsafe major downgrade. |
 | Supabase live data probes | PARTIAL PASS | Agents, automations, queue count, calendar orphan count, GSC connections, and storage buckets checked. Full schema/RLS/index blocked. |
 | Queue migration live verification | PASS | `content_queue` runtime columns and `content_outputs.queue_item_id` are readable from the app service client after manual SQL apply. |
 | AI cost-protection matrix | PASS | Static scan found no Anthropic/Gemini routes without a budget gate and no Anthropic routes without usage recording after F-016 patch. |
 | Gemini SDK image smoke | PASS | `@google/genai` generated a JPEG with `gemini-3.1-flash-image` using 512px test config. |
+| Gemini key probe | ACTION NEEDED | Local `.env.local` `GEMINI_API_KEY` does not unwrap to a Google AI Studio-style `AIza...` key, and no workspace Gemini key exists in the local Supabase snapshot. Add a valid key in Settings or Vercel before real image generation can pass. |
 | Route/page inventory | PASS | `AUDIT_ROUTE_MATRIX.md` records 40 API routes and 27 app pages. |
 
 ## Manual Checks To Carry Forward
@@ -78,10 +86,12 @@ Branch: `main`
 
 ## Remaining Audit Queue
 
-1. Apply `20260611_audit_hardening.sql` remotely and run a live probe against `google_oauth_sessions`.
-2. Verify GSC OAuth end-to-end in browser after SQL apply.
-3. Verify one real Ada image generation call after deploy.
-4. Decide whether repo-wide lint debt should be a separate cleanup sprint; compile/build gate is green.
+1. Apply and verify `20260611_audit_hardening.sql` remotely if it has not already been applied.
+2. Deploy the live error follow-up patch.
+3. Reconnect Google Search Console for any client showing `Reconnect needed`.
+4. Save a fresh GitHub token with Contents read/write access, then sync the file tree.
+5. Add a valid Google AI Studio Gemini key in Settings or Vercel, then verify one real Ada image generation call.
+6. Decide whether repo-wide lint debt should be a separate cleanup sprint; compile/build gate is green.
 
 ## Checkpoints
 
@@ -92,3 +102,4 @@ Branch: `main`
 - 2026-06-11T22:19:57Z: User applied queue runtime SQL in Supabase; app service-client probe verified `content_queue` runtime columns and `content_outputs.queue_item_id`.
 - 2026-06-11T22:23:41Z: AI cost matrix tightened: crawl/image/digest budget gates patched, crawl Haiku usage logging added, and static scan now shows no Anthropic/Gemini route missing budget protection.
 - 2026-06-11T22:38:30Z: Image generation fixed with official Google SDK/current Nano Banana models; OAuth signed state/server-side session patched; middleware migrated to proxy; high-risk payload limits added; route/page matrix added; audit hardening SQL prepared.
+- 2026-06-11T22:58:00Z: Live error follow-ups patched: keyword bulk accept/reject, no-reason rejection, GSC reconnect-needed state, slower crawler timeout/domain normalisation, GitHub token validation/actionable errors, Gemini workspace-key fallback, Settings secret masking, and REST image fallback. `npx tsc --noEmit` and `npm run build` pass.

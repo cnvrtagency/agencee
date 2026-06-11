@@ -15,7 +15,17 @@ export async function POST(req: NextRequest) {
   const { anthropic_api_key, gemini_api_key } = await req.json()
   const user_id = authResult.auth.user.id
 
-  const updates: Record<string, any> = { updated_at: new Date().toISOString() }
+  const { data: workspace } = await supabase
+    .from('workspaces')
+    .select('id')
+    .eq('owner_id', user_id)
+    .maybeSingle()
+
+  const updates: Record<string, any> = {
+    user_id,
+    workspace_id: workspace?.id || null,
+    updated_at: new Date().toISOString(),
+  }
   try {
     if (anthropic_api_key !== undefined) {
       updates.anthropic_api_key = anthropic_api_key ? encrypt(anthropic_api_key) : null
@@ -31,8 +41,7 @@ export async function POST(req: NextRequest) {
 
   const { error } = await supabase
     .from('workspace_settings')
-    .update(updates)
-    .eq('user_id', user_id)
+    .upsert(updates, { onConflict: 'user_id' })
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
   return NextResponse.json({ ok: true })

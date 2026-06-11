@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { GoogleGenAI } from '@google/genai'
+import { safeDecrypt } from '@/lib/crypto'
 import { forbiddenResponse, requireUser, userCanAccessClient } from '@/lib/server/auth'
 import { checkRateLimit, getRateLimitIdentity } from '@/lib/server/rate-limit'
 import { readJsonWithLimit } from '@/lib/server/request-body'
@@ -41,11 +42,38 @@ function buildGenerationConfig(model: string, aspectRatio: string, imageSize: st
   }
 
   return {
-    responseModalities: ['IMAGE'],
+    responseModalities: ['TEXT', 'IMAGE'],
     responseFormat: {
       image: imageConfig,
     },
   }
+}
+
+function unwrapSecret(value: string | null | undefined): string {
+  if (!value) return ''
+  const first = safeDecrypt(value) || value
+  return safeDecrypt(first) || first
+}
+
+async function getGeminiApiKey(userId: string, workspaceId: string | null): Promise<string> {
+  const { data: userSettings } = await supabase
+    .from('workspace_settings')
+    .select('gemini_api_key')
+    .eq('user_id', userId)
+    .maybeSingle()
+
+  if (userSettings?.gemini_api_key) return unwrapSecret(userSettings.gemini_api_key)
+
+  if (workspaceId) {
+    const { data: workspaceSettings } = await supabase
+      .from('workspace_settings')
+      .select('gemini_api_key')
+      .eq('workspace_id', workspaceId)
+      .maybeSingle()
+    if (workspaceSettings?.gemini_api_key) return unwrapSecret(workspaceSettings.gemini_api_key)
+  }
+
+  return unwrapSecret(process.env.GEMINI_API_KEY)
 }
 
 function findInlineImage(data: any): { data: string; mimeType: string } | null {
@@ -60,6 +88,38 @@ function findInlineImage(data: any): { data: string; mimeType: string } | null {
     }
   }
   return null
+}
+
+async function generateWithRest(apiKey: string, model: string, prompt: string, config: Record<string, any>) {
+  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: config,
+    }),
+  })
+  const data = await res.json()
+  if (!res.ok || data.error) {
+    throw new Error(data.error?.message || data.error_description || `REST API error ${res.status}`)
+  }
+  return data
+}
+
+async function generateImageContent(ai: GoogleGenAI, apiKey: string, model: string, prompt: string, config: Record<string, any>) {
+  try {
+    return await ai.models.generateContent({
+      model,
+      contents: prompt,
+      config,
+    })
+  } catch (sdkErr: any) {
+    try {
+      return await generateWithRest(apiKey, model, prompt, config)
+    } catch (restErr: any) {
+      throw new Error(`${sdkErr.message}; REST fallback: ${restErr.message}`)
+    }
+  }
 }
 
 export async function POST(req: NextRequest) {
@@ -97,11 +157,11 @@ export async function POST(req: NextRequest) {
   const imageSize = normaliseImageSize(resolution)
   const requestedAspectRatio = normaliseAspectRatio(aspect_ratio || aspectRatio)
 
-  const apiKey = process.env.GEMINI_API_KEY
+  const apiKey = await getGeminiApiKey(authResult.auth.user.id, workspaceId)
   if (!apiKey) {
-    console.error('[generate-image] GEMINI_API_KEY not set')
+    console.error('[generate-image] Gemini API key not set')
     return NextResponse.json({
-      error: 'Image generation not configured. Set GEMINI_API_KEY in Vercel environment variables.',
+      error: 'Image generation not configured. Set a Gemini API key in Settings or GEMINI_API_KEY in Vercel environment variables.',
       skipped: true,
     }, { status: 200 })
   }
@@ -115,11 +175,8 @@ export async function POST(req: NextRequest) {
   for (const model of GEMINI_IMAGE_MODELS) {
     attemptedModels.push(model)
     try {
-      const geminiData = await ai.models.generateContent({
-        model,
-        contents: String(prompt),
-        config: buildGenerationConfig(model, requestedAspectRatio, imageSize),
-      })
+      const config = buildGenerationConfig(model, requestedAspectRatio, imageSize)
+      const geminiData = await generateImageContent(ai, apiKey, model, String(prompt), config)
 
       const imagePart = findInlineImage(geminiData)
       if (!imagePart) {
