@@ -73,7 +73,7 @@ export async function POST(req: NextRequest) {
 Client: ${clientProfile.name}
 Period: ${period_start} to ${period_end}
 Content published: ${(outputs || []).length} pieces
-Top keywords: ${gscRows.slice(0, 5).map(r => `"${r.query}" (#${r.position.toFixed(0)})`).join(', ') || 'no data'}
+Top keywords: ${gscRows.slice(0, 5).map(r => `"${r.query}" (avg pos ${r.position.toFixed(1)})`).join(', ') || 'no data'}
 Total clicks: ${totalClicks.toLocaleString()}
 Total impressions: ${totalImpressions.toLocaleString()}
 Near-miss opportunities: ${nearMiss.length}

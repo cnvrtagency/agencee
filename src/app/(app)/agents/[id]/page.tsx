@@ -138,10 +138,10 @@ General questions (how does X work, what is Y) can be answered without specifyin
       const synced = k.gsc_snapshot_updated_at ? new Date(k.gsc_snapshot_updated_at).toLocaleDateString('en-GB') : 'unknown'
       kParts.push(`GSC snapshot (${synced}): ${(clicks || 0).toLocaleString()} clicks, ${(impressions || 0).toLocaleString()} impressions, avg pos ${avg_position ?? 'n/a'}`)
       if (k.gsc_snapshot.near_miss?.length) {
-        kParts.push(`Near-miss: ${k.gsc_snapshot.near_miss.slice(0, 10).map((r: any) => `"${r.query}" #${Math.round(r.position)} (${r.impressions}imp)`).join(' | ')}`)
+        kParts.push(`Near-miss: ${k.gsc_snapshot.near_miss.slice(0, 10).map((r: any) => `"${r.query}" avg pos ${Math.round(r.position * 10) / 10} (${r.impressions}imp)`).join(' | ')}`)
       }
       if (k.gsc_snapshot.low_ctr?.length) {
-        kParts.push(`Low CTR on page 1: ${k.gsc_snapshot.low_ctr.slice(0, 5).map((r: any) => `${r.url} ${(r.ctr * 100).toFixed(1)}%`).join(' | ')}`)
+        kParts.push(`Low CTR with strong average position: ${k.gsc_snapshot.low_ctr.slice(0, 5).map((r: any) => `${r.url} ${(r.ctr * 100).toFixed(1)}%`).join(' | ')}`)
       }
     }
 
@@ -196,7 +196,7 @@ Tool usage guide:
 - analyse_gsc: call when you need fresher data than the snapshot, or a deeper breakdown
 - get_site_pages: call when you need pages the knowledge panel does not have, or to filter by specific criteria
 - search_history: call before writing anything to avoid repeating angles and find linking opportunities
-- get_keywords: call to see the full keyword bank with targets and current ranking positions
+- get_keywords: call to see the full keyword bank with targets and current average GSC positions
 - audit_site: call when doing a full site health review
 - analyse_competitors: call when evaluating content gaps against competitors
 - startup_seo_brief: call when a site is new, has no/low GSC history, has a thin keyword bank, or the user asks how to grow a startup from scratch
@@ -215,6 +215,9 @@ Before claiming any keyword is "untargeted" or any topic "has not been covered,"
 3. search_history — has a draft or published piece covered this angle?
 All three must agree before you say something is a gap. If they conflict, read the relevant page before concluding.
 If get_keywords reports "inferred coverage" for a keyword, treat it as already targeted unless the user explicitly asks for a stronger/dedicated page.
+
+GSC POSITION RULE:
+Search Console "position" is average position, not a fixed live Google rank. Always say "average position" or "avg position"; never say "ranking #7", "currently #7", or promise a move to page 1 from that number alone. Treat near-miss positions as directional signals that need SERP/page validation.
 
 STARTUP / NO-GSC RULE:
 Google Search Console is useful but optional. If a client is new, has no GSC rows, has not connected GSC, or has too little historical search data, do not stop or tell the user to wait for GSC. Switch to startup SEO mode: use startup_seo_brief, the client profile, services, locations, site pages, keyword bank, competitor URLs/pages, and web_search/SERP research to build a seed keyword strategy. Be clear when volume/difficulty is estimated, then use suggest_keyword for valuable seed opportunities that are missing from the bank.
@@ -537,12 +540,12 @@ Supports: wordpress, shopify, github (MDX), webflow`,
   },
   {
     name: 'get_keywords',
-    description: 'Fetch the full keyword bank for a client. Returns all keywords with their intent, funnel stage, monthly volume, difficulty, current ranking position, and any existing content targeting them. Call this when planning content strategy, identifying gaps, or deciding what to write next.',
+    description: 'Fetch the full keyword bank for a client. Returns all keywords with their intent, funnel stage, monthly volume, difficulty, current average GSC position, and any existing content targeting them. Call this when planning content strategy, identifying gaps, or deciding what to write next.',
     input_schema: {
       type: 'object',
       properties: {
         client_name: { type: 'string', description: 'The client' },
-        filter: { type: 'string', enum: ['all', 'untargeted', 'ranking', 'high_volume'], description: 'all = full list, untargeted = no content yet, ranking = currently ranking, high_volume = 1000+ monthly searches' },
+        filter: { type: 'string', enum: ['all', 'untargeted', 'ranking', 'high_volume'], description: 'all = full list, untargeted = no content yet, ranking = has average GSC position data, high_volume = 1000+ monthly searches' },
       },
       required: ['client_name'],
     },
@@ -629,7 +632,7 @@ Supports: wordpress, shopify, github (MDX), webflow`,
   },
   {
     name: 'analyse_gsc',
-    description: 'Analyse Google Search Console data for a client. Returns near-miss keywords (ranking 5-15 with good impressions), declining pages, top performing queries, and specific content opportunities. Call this at the start of any conversation to understand the current SEO performance landscape before making recommendations.',
+    description: 'Analyse Google Search Console data for a client. Returns near-miss keywords (average position 5-15 with good impressions), declining pages by average position, top performing queries, and specific content opportunities. Call this at the start of any conversation to understand the current SEO performance landscape before making recommendations.',
     input_schema: {
       type: 'object',
       properties: {
@@ -826,7 +829,7 @@ export default function AgentPage() {
     const briefPos = params.get('position')
     const briefImpressions = params.get('impressions')
     if (brief) {
-      const msg = `I want to push "${decodeURIComponent(brief)}" from position ${briefPos || '?'} to page 1. It's currently getting ${briefImpressions || '?'} impressions. Analyse this keyword and recommend a content approach.`
+      const msg = `I want to improve "${decodeURIComponent(brief)}" from average position ${briefPos || '?'} in Search Console. It's currently getting ${briefImpressions || '?'} impressions. Analyse this keyword and recommend a content approach without treating average position as a fixed live rank.`
       setDraft(msg)
       autoSendRef.current = true
     } else if (prefill) {
@@ -1281,7 +1284,7 @@ export default function AgentPage() {
         ? `${list.length} of ${data.length} pieces match "${toolInput.query}" for ${client.name}:`
         : `Full content history for ${client.name} (${data.length} pieces):`
       return header + '\n\n' + (list.length > 0 ? list : data).map(h =>
-        `• "${h.title}" [${h.primary_keyword || 'no keyword'}]${h.url ? ` → ${h.url}` : ' (not published)'}\n  Published: ${h.published_at ? new Date(h.published_at).toLocaleDateString('en-GB') : 'unknown'} | Angle: ${h.summary || 'no summary'}${h.ranking_position ? ` | Ranking: #${h.ranking_position}` : ''}${h.ranking_date ? ` (as of ${new Date(h.ranking_date).toLocaleDateString('en-GB')})` : ''}${h.traffic_notes ? ` | Traffic: ${h.traffic_notes}` : ''}`
+        `• "${h.title}" [${h.primary_keyword || 'no keyword'}]${h.url ? ` → ${h.url}` : ' (not published)'}\n  Published: ${h.published_at ? new Date(h.published_at).toLocaleDateString('en-GB') : 'unknown'} | Angle: ${h.summary || 'no summary'}${h.ranking_position ? ` | Avg GSC position: ${h.ranking_position}` : ''}${h.ranking_date ? ` (as of ${new Date(h.ranking_date).toLocaleDateString('en-GB')})` : ''}${h.traffic_notes ? ` | Traffic: ${h.traffic_notes}` : ''}`
       ).join('\n')
     }
 
@@ -1350,7 +1353,7 @@ export default function AgentPage() {
         const targetingText = targeting.value
           ? `${targeting.value}${targeting.inferred ? ` (${targeting.reason})` : ''}`
           : 'nothing yet'
-        return `• "${k.keyword}" | ${k.intent || '—'} | ${k.funnel_stage || '—'} | vol: ${k.monthly_volume || '?'} | KD: ${k.difficulty || '?'} | pos: ${k.current_position || 'not ranking'} | opp_score: ${k.opportunity_score ?? '—'} | targeting: ${targetingText}${k.cluster ? ` | cluster: ${k.cluster}` : ''}`
+        return `• "${k.keyword}" | ${k.intent || '—'} | ${k.funnel_stage || '—'} | vol: ${k.monthly_volume || '?'} | KD: ${k.difficulty || '?'} | avg GSC pos: ${k.current_position || 'not enough data'} | opp_score: ${k.opportunity_score ?? '—'} | targeting: ${targetingText}${k.cluster ? ` | cluster: ${k.cluster}` : ''}`
       }).join('\n')
     }
 
@@ -1595,7 +1598,7 @@ export default function AgentPage() {
 
       const targetedCount = (keywords || []).filter((k: any) => k.content_targeting_this).length
       const keywordLines = keywords && keywords.length > 0
-        ? keywords.slice(0, 40).map((k: any) => `- ${k.keyword} | ${k.intent || 'unknown intent'} | ${k.funnel_stage || 'unknown stage'} | vol ${k.monthly_volume ?? 'est needed'} | KD ${k.difficulty ?? 'est needed'} | ${k.content_targeting_this ? `targeted by ${k.content_targeting_this}` : 'not targeted'}`).join('\n')
+        ? keywords.slice(0, 40).map((k: any) => `- ${k.keyword} | ${k.intent || 'unknown intent'} | ${k.funnel_stage || 'unknown stage'} | vol ${k.monthly_volume ?? 'est needed'} | KD ${k.difficulty ?? 'est needed'} | avg GSC pos ${k.current_position ?? 'not enough data'} | ${k.content_targeting_this ? `targeted by ${k.content_targeting_this}` : 'not targeted'}`).join('\n')
         : 'No keyword bank entries yet. Build seed ideas from services, locations, problems, comparisons, pricing, credentials, and competitor SERPs.'
 
       const historyLines = history && history.length > 0
@@ -1706,21 +1709,21 @@ How to use this brief:
         .slice(0, 10)
         .map((r: any) => ({
           query: r.query,
-          position: Math.round(r.position * 10) / 10,
+          average_position: Math.round(r.position * 10) / 10,
           impressions: r.impressions,
           clicks: r.clicks,
           ctr: (r.ctr * 100).toFixed(1) + '%',
-          opportunity: `Moving from position ${Math.round(r.position)} to page 1 could drive ~${Math.round(r.impressions * 0.28)} additional clicks/month`,
+          opportunity: `Average position ${Math.round(r.position * 10) / 10} suggests this may be a near-miss. Validate the SERP and page intent before forecasting gains.`,
         }))
 
       const lowCtr = rows
         .filter((r: any) => r.position <= 10 && r.ctr < 0.03 && r.impressions > 100)
         .map((r: any) => ({
           query: r.query,
-          position: Math.round(r.position * 10) / 10,
+          average_position: Math.round(r.position * 10) / 10,
           impressions: r.impressions,
           ctr: (r.ctr * 100).toFixed(1) + '%',
-          issue: 'Ranking well but low CTR — title tag or meta description likely needs improvement',
+          issue: 'Strong average position but low CTR — title tag or meta description likely needs improvement',
         }))
 
       // Discover new keywords from GSC data
@@ -1747,7 +1750,7 @@ How to use this brief:
         },
         near_misses: nearMisses,
         low_ctr_opportunities: lowCtr.slice(0, 5),
-        top_queries: rows.slice(0, 10).map((r: any) => ({ query: r.query, position: Math.round(r.position * 10) / 10, clicks: r.clicks, impressions: r.impressions })),
+        top_queries: rows.slice(0, 10).map((r: any) => ({ query: r.query, average_position: Math.round(r.position * 10) / 10, clicks: r.clicks, impressions: r.impressions })),
         insight_count: nearMisses.length + lowCtr.length,
         keyword_discovery: { new_suggestions: newSuggestions },
       }, null, 2)

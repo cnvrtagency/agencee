@@ -16,7 +16,7 @@ const sourceLabel: Record<string, { label: string; bg: string; color: string }> 
 }
 
 function parseGscMeta(rationale: string): { position?: string; impressions?: string } {
-  const pos = rationale.match(/Position (\d+)/)
+  const pos = rationale.match(/Average position ([\d.]+)/i) || rationale.match(/Position ([\d.]+)/)
   const imp = rationale.match(/(\d+) impressions/)
   return { position: pos?.[1], impressions: imp?.[1] }
 }
@@ -291,7 +291,7 @@ export default function AgentKeywordsPage() {
                   </td>
                   <td style={{ ...S.td, fontWeight: 600 }}>
                     {s.keyword}
-                    {gscMeta?.position && <div style={{ fontSize: 11, color: 'var(--text-2)', marginTop: 2 }}>pos #{gscMeta.position}{gscMeta.impressions ? ` · ${gscMeta.impressions} imp` : ''}</div>}
+                    {gscMeta?.position && <div style={{ fontSize: 11, color: 'var(--text-2)', marginTop: 2 }}>avg pos {gscMeta.position}{gscMeta.impressions ? ` · ${gscMeta.impressions} imp` : ''}</div>}
                   </td>
                   <td style={{ ...S.td, fontSize: 12, color: importanceScore(s) > 60 ? 'var(--amber)' : importanceScore(s) > 30 ? 'var(--text-2)' : 'var(--text-dim)', whiteSpace: 'nowrap' }}>
                     {importanceStar(s)}

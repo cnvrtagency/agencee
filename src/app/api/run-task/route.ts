@@ -101,7 +101,7 @@ export async function POST(req: NextRequest) {
     ).join('\n')
 
     const keywordList = (keywords || []).map((k: any) =>
-      `"${k.keyword}" | ${k.intent || '-'} | vol: ${k.monthly_volume || '?'} | KD: ${k.difficulty || '?'} | pos: ${k.current_position || 'not ranking'} | targeting: ${k.content_targeting_this || 'nothing yet'}`
+      `"${k.keyword}" | ${k.intent || '-'} | vol: ${k.monthly_volume || '?'} | KD: ${k.difficulty || '?'} | avg GSC pos: ${k.current_position || 'not enough data'} | targeting: ${k.content_targeting_this || 'nothing yet'}`
     ).join('\n')
 
     const gscSnapshot = knowledge?.gsc_snapshot as any
@@ -109,7 +109,7 @@ export async function POST(req: NextRequest) {
       `Total clicks (28d): ${gscSnapshot.total_clicks ?? '-'}`,
       `Total impressions (28d): ${gscSnapshot.total_impressions ?? '-'}`,
       `Average position: ${gscSnapshot.avg_position ?? '-'}`,
-      gscSnapshot.near_misses?.length ? `Near-miss keywords: ${(gscSnapshot.near_misses as any[]).slice(0, 5).map((m: any) => `"${m.query}" pos ${m.position}`).join(', ')}` : '',
+      gscSnapshot.near_misses?.length ? `Near-miss keywords: ${(gscSnapshot.near_misses as any[]).slice(0, 5).map((m: any) => `"${m.query}" avg pos ${m.position}`).join(', ')}` : '',
     ].filter(Boolean).join('\n') : null
 
     const systemPrompt = [

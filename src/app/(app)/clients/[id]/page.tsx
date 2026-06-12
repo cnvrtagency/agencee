@@ -1145,7 +1145,7 @@ export default function ClientDetail() {
           <div style={{ padding: 20 }}>
             {!gscConn ? (
               <div>
-                <p style={{ fontSize: 13, color: 'var(--text-2)', marginBottom: 16, lineHeight: 1.6 }}>Connect Google Search Console to import real ranking data for this client's keywords and pages.</p>
+                <p style={{ fontSize: 13, color: 'var(--text-2)', marginBottom: 16, lineHeight: 1.6 }}>Connect Google Search Console to import search performance data for this client's keywords and pages.</p>
                 {gscMsg && <div style={{ fontSize: 12, color: gscMsg.startsWith('Error') ? 'var(--red)' : 'var(--green)', marginBottom: 12 }}>{gscMsg}</div>}
                 <button style={{ ...S.btn, padding: '8px 16px' }} onClick={connectGsc} disabled={gscConnecting}>
                   {gscConnecting ? 'Connecting...' : 'Connect Search Console'}
@@ -1496,7 +1496,7 @@ export default function ClientDetail() {
           {!gscConn ? (
             <div style={{ ...S.panel, padding: '48px 20px', textAlign: 'center' }}>
               <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)', marginBottom: 8 }}>No Search Console connected</div>
-              <p style={{ fontSize: 13, color: 'var(--text-2)', marginBottom: 16 }}>Connect Google Search Console in the Connections tab to see ranking data.</p>
+              <p style={{ fontSize: 13, color: 'var(--text-2)', marginBottom: 16 }}>Connect Google Search Console in the Connections tab to see search performance data.</p>
               <button style={S.btn} onClick={() => setActiveTab('connections')}>Go to Connections</button>
             </div>
           ) : (() => {
@@ -1593,7 +1593,7 @@ export default function ClientDetail() {
                       <tr>
                         <th style={S.th}>Query</th>
                         <th style={S.th}>Page</th>
-                        <th style={{ ...S.th, textAlign: 'right' as const }}>Position</th>
+                        <th style={{ ...S.th, textAlign: 'right' as const }}>Avg position</th>
                         <th style={{ ...S.th, textAlign: 'right' as const }}>Trend</th>
                         <th style={{ ...S.th, textAlign: 'right' as const }}>Impressions</th>
                         <th style={{ ...S.th, textAlign: 'right' as const }}>Clicks</th>
@@ -1630,7 +1630,7 @@ export default function ClientDetail() {
                               <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{(r.page || '').replace(/^https?:\/\/[^/]+/, '') || '/'}</div>
                             </td>
                             <td style={{ ...S.td, textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 12, color: r.position <= 3 ? 'var(--green)' : r.position <= 10 ? 'var(--accent)' : r.position <= 20 ? 'var(--amber)' : 'var(--text-2)' }}>
-                              #{r.position.toFixed(1)}
+                              avg {r.position.toFixed(1)}
                             </td>
                             <td style={{ ...S.td, textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 13, color: trendColor, fontWeight: 600 }}>{trendIcon}</td>
                             <td style={{ ...S.td, textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--text-2)' }}>{r.impressions.toLocaleString()}</td>
@@ -1656,7 +1656,7 @@ export default function ClientDetail() {
                     <thead>
                       <tr>
                         <th style={S.th}>URL</th>
-                        <th style={{ ...S.th, textAlign: 'right' as const }}>Position</th>
+                        <th style={{ ...S.th, textAlign: 'right' as const }}>Avg position</th>
                         <th style={{ ...S.th, textAlign: 'right' as const }}>Impressions</th>
                         <th style={{ ...S.th, textAlign: 'right' as const }}>Clicks</th>
                         <th style={{ ...S.th, textAlign: 'right' as const }}>CTR</th>
@@ -1673,13 +1673,13 @@ export default function ClientDetail() {
                               {(r.page || '').replace(/^https?:\/\/[^/]+/, '') || '/'}
                             </a>
                           </td>
-                          <td style={{ ...S.td, textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 12, color: r.position <= 3 ? 'var(--green)' : r.position <= 10 ? 'var(--accent)' : 'var(--text-2)' }}>#{r.position.toFixed(1)}</td>
+                          <td style={{ ...S.td, textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 12, color: r.position <= 3 ? 'var(--green)' : r.position <= 10 ? 'var(--accent)' : 'var(--text-2)' }}>avg {r.position.toFixed(1)}</td>
                           <td style={{ ...S.td, textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--text-2)' }}>{r.impressions.toLocaleString()}</td>
                           <td style={{ ...S.td, textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 12 }}>{r.clicks.toLocaleString()}</td>
                           <td style={{ ...S.td, textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--text-2)' }}>{(r.ctr * 100).toFixed(1)}%</td>
                           <td style={{ ...S.td }}>
                             {adaAgentId && (
-                              <a href={`/agents/${adaAgentId}?brief=${encodeURIComponent(`This page ${r.page} is getting ${r.impressions} impressions but ranking at position ${r.position.toFixed(1)}. Review it and recommend improvements.`)}&send=1`}
+                              <a href={`/agents/${adaAgentId}?brief=${encodeURIComponent(`This page ${r.page} is getting ${r.impressions} impressions with average GSC position ${r.position.toFixed(1)}. Review it and recommend improvements without treating that as a fixed live rank.`)}&send=1`}
                                 style={{ ...S.btnSm, fontSize: 10, padding: '4px 8px', textDecoration: 'none', display: 'inline-block', whiteSpace: 'nowrap' as const }}>
                                 Brief Ada
                               </a>

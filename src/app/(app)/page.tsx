@@ -233,11 +233,10 @@ export default function Dashboard() {
                 <>
                   {visible.map((item, i) => {
                     const colors = BADGE_COLORS[item.type] || BADGE_COLORS.suggestion
-                    // Extract position + impressions from body for data line
-                    const posMatch = item.body.match(/Ranking #(\d+)/)
+                    // Extract average position + impressions from body for data line
+                    const posMatch = item.body.match(/Average position ([\d.]+)/i)
                     const impMatch = item.body.match(/(\d[\d,]*) impressions/)
-                    const clickMatch = item.body.match(/~(\d+) additional clicks/)
-                    const dataLine = posMatch ? `Position #${posMatch[1]}${impMatch ? ` · ${impMatch[1]} impressions/month` : ''}${clickMatch ? ` · est. ${clickMatch[1]} additional clicks if page 1` : ''}` : item.body
+                    const dataLine = posMatch ? `Avg position ${posMatch[1]}${impMatch ? ` · ${impMatch[1]} impressions/month` : ''}` : item.body
                     // Extract the keyword from title (e.g. Near-miss: "keyword")
                     const kwMatch = item.title.match(/"([^"]+)"/)
                     const displayTitle = kwMatch ? `"${kwMatch[1]}"` : item.title

@@ -51,7 +51,7 @@ export async function POST(req: NextRequest) {
   }
 
   if (meta?.impressions !== undefined) insertObj.monthly_volume = Math.round(meta.impressions)
-  if (position !== null) insertObj.current_position = Math.round(position)
+  if (position !== null) insertObj.current_position = Math.round(position * 10) / 10
   if (meta?.difficulty !== undefined) insertObj.difficulty = Math.round(meta.difficulty)
 
   const { data: banked, error: bankError } = await supabase

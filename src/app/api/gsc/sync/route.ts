@@ -150,7 +150,7 @@ export async function POST(req: NextRequest) {
     // Update content_history.ranking_position for matching URLs
     for (const row of rows28.slice(0, 100)) {
       await supabase.from('content_history')
-        .update({ ranking_position: Math.round(row.position) })
+        .update({ ranking_position: Math.round(row.position * 10) / 10 })
         .eq('client_id', conn.client_id)
         .ilike('url', `%${row.keys[1].replace(/^https?:\/\/[^/]+/, '')}%`)
     }
@@ -158,7 +158,7 @@ export async function POST(req: NextRequest) {
     // Update opportunity scores in keyword_banks where keyword matches a query
     for (const row of rows28.slice(0, 100)) {
       await supabase.from('keyword_banks')
-        .update({ current_position: Math.round(row.position) })
+        .update({ current_position: Math.round(row.position * 10) / 10 })
         .eq('client_id', conn.client_id)
         .ilike('keyword', row.keys[0])
     }
@@ -174,7 +174,7 @@ export async function POST(req: NextRequest) {
       keyword: r.keys[0],
       impressions: r.impressions || 0,
       clicks: r.clicks || 0,
-      position: Math.round(r.position) || 0,
+      position: Math.round(r.position * 10) / 10 || 0,
       recorded_at: now,
     }))
     const perfBatch = 20
@@ -234,9 +234,9 @@ export async function POST(req: NextRequest) {
           client_id: conn.client_id,
           type: 'opportunity',
           title: `Near-miss: "${kwQuery}"`,
-          body: `Ranking #${Math.round(kw.position)} with ${kw.impressions} impressions/month. Moving to page 1 could drive ~${Math.round(kw.impressions * 0.28)} additional clicks.`,
+          body: `Average position ${Math.round(kw.position * 10) / 10} with ${kw.impressions} impressions/month. Improving this average ranking range could drive additional clicks, but exact gains depend on query mix and SERP layout.`,
           action_label: 'Brief Ada',
-          action_url: `/agents/seo?brief=${encodeURIComponent(kwQuery)}&position=${Math.round(kw.position)}&impressions=${kw.impressions}`,
+          action_url: `/agents/seo?brief=${encodeURIComponent(kwQuery)}&position=${Math.round(kw.position * 10) / 10}&impressions=${kw.impressions}`,
           priority: Math.round(kw.impressions / 100),
           dismissed: false,
         }, { onConflict: 'workspace_id,client_id,title' })
@@ -253,7 +253,7 @@ export async function POST(req: NextRequest) {
         client_id: conn.client_id,
         type: 'opportunity',
         title: `Low CTR: "${row.keys[0]}"`,
-        body: `Ranking #${Math.round(row.position)} but only ${(row.ctr * 100).toFixed(1)}% CTR with ${row.impressions} impressions. Title tag or meta description likely needs improvement.`,
+        body: `Average position ${Math.round(row.position * 10) / 10} but only ${(row.ctr * 100).toFixed(1)}% CTR with ${row.impressions} impressions. Title tag or meta description likely needs improvement.`,
         action_label: 'Brief Ada',
         priority: Math.round(row.impressions / 50),
         dismissed: false,

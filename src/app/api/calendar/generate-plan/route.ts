@@ -79,7 +79,7 @@ export async function POST(req: NextRequest) {
     const totalPieces = weeks * posts_per_week
     const today = new Date()
     const kwLines = (keywords || []).map((k: any) =>
-      `"${k.keyword}" | ${k.intent || '?'} | vol:${k.monthly_volume || '?'} | KD:${k.difficulty || '?'} | pos:${k.current_position || 'not ranking'} | targeting:${k.content_targeting_this || 'NOTHING'}`
+      `"${k.keyword}" | ${k.intent || '?'} | vol:${k.monthly_volume || '?'} | KD:${k.difficulty || '?'} | avg GSC pos:${k.current_position || 'not enough data'} | targeting:${k.content_targeting_this || 'NOTHING'}`
     ).join('\n')
 
     const historyLines = (history || []).map((h: any) =>
@@ -96,8 +96,8 @@ export async function POST(req: NextRequest) {
 
     const gsc = knowledge?.gsc_snapshot || {}
     const gscBlock = gsc.totals
-      ? `Totals (28d): ${gsc.totals.clicks} clicks, ${gsc.totals.impressions} impressions, avg pos ${gsc.totals.avg_position}
-Near-miss keywords: ${(gsc.near_miss || []).map((n: any) => `"${n.query}" #${n.position} (${n.impressions}imp)`).join(', ') || 'none'}
+      ? `Totals (28d): ${gsc.totals.clicks} clicks, ${gsc.totals.impressions} impressions, avg position ${gsc.totals.avg_position}
+Near-miss keywords: ${(gsc.near_miss || []).map((n: any) => `"${n.query}" avg pos ${n.position} (${n.impressions}imp)`).join(', ') || 'none'}
 Low CTR pages: ${(gsc.low_ctr || []).map((l: any) => `${l.url} ${l.ctr}%`).join(', ') || 'none'}`
       : 'No GSC data available. Treat this as a startup/no-history plan: use the client profile, services, locations, target keyword seeds, live pages, competitor coverage, and sensible SERP intent assumptions. Label inferred opportunities clearly in rationales.'
 
@@ -136,9 +136,9 @@ ${focus ? `Focus area: ${focus}` : ''}
 
 You are an elite SEO strategist finding opportunities a human would miss. Before sequencing, identify:
 
-1. NEAR-MISS WINS: Keywords already ranking position 3-15 with no dedicated page -- these are the fastest ranking improvements possible. A page built for the keyword it's already ranking for will almost always jump to page 1.
+1. NEAR-MISS WINS: Keywords with average GSC position 3-15 and no dedicated page. Treat these as directional signals, not exact live ranks. Validate page intent and SERP fit before recommending them as quick wins.
 
-2. FEATURED SNIPPET GAPS: Informational keywords with high impressions where the current page doesn't have a direct answer block in the first 100 words. A concise answer block added to (or a new page targeting) these queries can claim position 0.
+2. FEATURED SNIPPET GAPS: Informational keywords with high impressions where the current page doesn't have a direct answer block in the first 100 words. A concise answer block can improve eligibility, but do not promise a featured snippet.
 
 3. COMPETITOR GAPS: Topics your competitors cover that the client doesn't. Look at the site pages -- what clusters are missing entirely?
 
@@ -160,7 +160,7 @@ Sequencing rules:
 9. Spread publish dates evenly: ${posts_per_week} per week, weekdays only (Mon-Fri)
 10. If the keyword bank lacks enough high-value untargeted keywords, create seed opportunities from services, locations, target keyword seeds, and competitor coverage. Say which ideas are inferred rather than GSC-proven, and do not pad with low-value variations.
 
-Each entry's rationale must explain WHY this specific piece in this specific position -- not just "good keyword". Reference the actual data where available: position, impressions, competitor coverage, live page gap, target keyword seed, service/location fit, or startup topical gap that makes it the right move.
+Each entry's rationale must explain WHY this specific piece in this specific sequence -- not just "good keyword". Reference the actual data where available: average position, impressions, competitor coverage, live page gap, target keyword seed, service/location fit, or startup topical gap that makes it the right move.
 
 Respond with ONLY a JSON object, no markdown fences, no preamble:
 {

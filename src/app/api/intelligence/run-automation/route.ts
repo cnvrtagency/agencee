@@ -98,14 +98,14 @@ export async function POST(req: NextRequest) {
 
           if (keywords && keywords.length > 0) {
             const top = keywords[0]
-            results.push(`${client.name}: ${keywords.length} untargeted keywords. Top opportunity: "${top.keyword}" (vol: ${top.monthly_volume || '?'}, KD: ${top.difficulty || '?'}, pos: ${top.current_position || 'not ranking'})`)
+            results.push(`${client.name}: ${keywords.length} untargeted keywords. Top opportunity: "${top.keyword}" (vol: ${top.monthly_volume || '?'}, KD: ${top.difficulty || '?'}, avg GSC pos: ${top.current_position || 'not enough data'})`)
 
             await supabase.from('briefing_items').upsert({
               client_id: client.id,
               workspace_id: client.workspace_id || null,
               type: 'opportunity',
               title: `Keyword gap: "${top.keyword}"`,
-              body: `${keywords.length} untargeted keywords found. Top opportunity: "${top.keyword}" — ${top.monthly_volume || '?'} searches/month, KD ${top.difficulty || '?'}${top.current_position ? `, currently ranking #${Math.round(top.current_position)}` : ', not ranking'}. No content targeting this keyword yet.`,
+              body: `${keywords.length} untargeted keywords found. Top opportunity: "${top.keyword}" — ${top.monthly_volume || '?'} searches/month, KD ${top.difficulty || '?'}${top.current_position ? `, average GSC position ${Math.round(top.current_position * 10) / 10}` : ', not enough GSC position data'}. No content targeting this keyword yet.`,
               priority: top.opportunity_score || 50,
               dismissed: false,
             }, { onConflict: 'client_id,title' })

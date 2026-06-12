@@ -226,7 +226,7 @@ export default function Settings() {
       {/* Notifications */}
       <div style={S.section}>
         <div style={S.sectionHead}>Notifications</div>
-        <div style={S.sectionSub}>Get notified when Ada produces content, rankings change, or schedules run.</div>
+        <div style={S.sectionSub}>Get notified when Ada produces content, average positions change, or schedules run.</div>
 
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 0', borderBottom: '1px solid var(--border)', marginBottom: 16 }}>
           <div>
@@ -248,15 +248,15 @@ export default function Settings() {
         </div>
 
         <div style={S.field}>
-          <label style={S.label}>Ranking change threshold (positions)</label>
+          <label style={S.label}>Average position change threshold</label>
           <input type="number" value={notifPrefs.notify_ranking_threshold} onChange={e => setNotifPrefs(p => ({ ...p, notify_ranking_threshold: parseInt(e.target.value) || 3 }))} style={{ width: 80 }} min={1} max={20} />
-          <div style={{ fontSize: 12, color: 'var(--text-2)', marginTop: 4 }}>Notify when a keyword drops more than this many positions.</div>
+          <div style={{ fontSize: 12, color: 'var(--text-2)', marginTop: 4 }}>Notify when a keyword's average GSC position worsens by more than this amount.</div>
         </div>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           {[
             { key: 'notify_output_ready', label: 'Content ready for review', desc: 'When Ada produces a new draft' },
-            { key: 'notify_ranking_changes', label: 'Ranking changes', desc: 'When keyword positions change significantly' },
+            { key: 'notify_ranking_changes', label: 'Average position changes', desc: 'When keyword average positions change significantly' },
             { key: 'notify_schedule_complete', label: 'Schedule complete', desc: 'When an autonomous schedule runs successfully' },
             { key: 'notify_schedule_failed', label: 'Schedule failed', desc: 'When a scheduled run encounters an error' },
           ].map(({ key, label, desc }) => (

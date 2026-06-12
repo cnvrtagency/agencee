@@ -42,11 +42,11 @@ export async function discoverKeywordsFromGSC(
     const intent = c.position <= 10 ? 'commercial' :
       c.query.includes('what') || c.query.includes('how') ? 'informational' : 'commercial'
     const opportunity = c.position <= 10
-      ? `Already ranking #${Math.round(c.position)} — content could push to page 1`
+      ? `Average position ${Math.round(c.position * 10) / 10} — close enough to investigate as a near-miss opportunity`
       : `${c.impressions} impressions/month — untapped keyword with existing search demand`
 
     // Try with metadata first, fall back without if column doesn't exist
-    const rationale = `Discovered from GSC data. ${opportunity}. Position ${Math.round(c.position)}, ${c.impressions} impressions, ${c.clicks} clicks.`
+    const rationale = `Discovered from GSC data. ${opportunity}. Average position ${Math.round(c.position * 10) / 10}, ${c.impressions} impressions, ${c.clicks} clicks.`
 
     // Try full insert first (with source + metadata)
     const { error: e1 } = await supabase.from('keyword_suggestions').insert({

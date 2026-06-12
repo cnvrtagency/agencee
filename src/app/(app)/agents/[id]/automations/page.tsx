@@ -26,7 +26,7 @@ const SEO_DEFAULT_AUTOMATIONS: Omit<Automation, 'id' | 'agent_id' | 'created_at'
   { automation_type: 'monthly_content_plan', name: 'Monthly content plan', description: 'Generates a prioritised content plan for the coming month based on keyword data and gaps.', enabled: true, cadence: 'monthly', run_day: null, run_hour: 9, config: {} },
   { automation_type: 'competitor_analysis', name: 'Competitor analysis', description: 'Crawls competitor sites and summarises content gaps and opportunities.', enabled: false, cadence: 'monthly', run_day: null, run_hour: 10, config: {} },
   { automation_type: 'site_audit', name: 'Site audit', description: 'Full technical and content audit of the client site. Flags issues and prioritises fixes.', enabled: false, cadence: 'weekly', run_day: 'sunday', run_hour: 7, config: {} },
-  { automation_type: 'gsc_review', name: 'GSC performance review', description: 'Reviews Search Console data for ranking drops, CTR improvements and quick wins.', enabled: true, cadence: 'weekly', run_day: 'monday', run_hour: 9, config: {} },
+  { automation_type: 'gsc_review', name: 'GSC performance review', description: 'Reviews Search Console data for average position drops, CTR improvements and quick wins.', enabled: true, cadence: 'weekly', run_day: 'monday', run_hour: 9, config: {} },
   { automation_type: 'internal_link_audit', name: 'Internal link audit', description: 'Finds internal linking opportunities across existing content and drafts a fix list.', enabled: false, cadence: 'monthly', run_day: null, run_hour: 8, config: {} },
 ]
 

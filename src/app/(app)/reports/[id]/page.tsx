@@ -144,7 +144,7 @@ export default function ReportPage() {
               <tr>
                 <th style={S.th}>Query</th>
                 <th style={S.th}>Page</th>
-                <th style={{ ...S.th, textAlign: 'right' as const }}>Position</th>
+                <th style={{ ...S.th, textAlign: 'right' as const }}>Avg position</th>
                 <th style={{ ...S.th, textAlign: 'right' as const }}>Clicks</th>
                 <th style={{ ...S.th, textAlign: 'right' as const }}>Impressions</th>
                 <th style={{ ...S.th, textAlign: 'right' as const }}>CTR</th>
@@ -160,7 +160,7 @@ export default function ReportPage() {
                     <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.page?.replace(/^https?:\/\/[^/]+/, '') || '/'}</div>
                   </td>
                   <td style={{ ...S.td, textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 12, color: r.position <= 3 ? 'var(--green)' : r.position <= 10 ? 'var(--accent)' : r.position <= 20 ? 'var(--amber)' : 'var(--text-2)' }}>
-                    #{typeof r.position === 'number' ? r.position.toFixed(1) : r.position}
+                    avg {typeof r.position === 'number' ? r.position.toFixed(1) : r.position}
                   </td>
                   <td style={{ ...S.td, textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--text)' }}>{(r.clicks || 0).toLocaleString()}</td>
                   <td style={{ ...S.td, textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--text-2)' }}>{(r.impressions || 0).toLocaleString()}</td>
@@ -201,7 +201,7 @@ export default function ReportPage() {
             <thead>
               <tr>
                 <th style={S.th}>Keyword</th>
-                <th style={{ ...S.th, textAlign: 'right' as const }}>Position</th>
+                <th style={{ ...S.th, textAlign: 'right' as const }}>Avg position</th>
                 <th style={{ ...S.th, textAlign: 'right' as const }}>Impressions</th>
                 <th style={S.th}>Recommendation</th>
               </tr>
@@ -210,9 +210,9 @@ export default function ReportPage() {
               {nearMiss.map((r: any, i: number) => (
                 <tr key={i} style={{ background: 'rgba(245,158,11,0.04)' }}>
                   <td style={{ ...S.td, color: 'var(--text)', fontWeight: 500 }}>{r.query}</td>
-                  <td style={{ ...S.td, textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--amber)' }}>#{typeof r.position === 'number' ? r.position.toFixed(1) : r.position}</td>
+                  <td style={{ ...S.td, textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--amber)' }}>avg {typeof r.position === 'number' ? r.position.toFixed(1) : r.position}</td>
                   <td style={{ ...S.td, textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--text-2)' }}>{(r.impressions || 0).toLocaleString()}</td>
-                  <td style={{ ...S.td, fontSize: 12, color: 'var(--text-2)' }}>Refresh or expand existing content to move into top 5</td>
+                  <td style={{ ...S.td, fontSize: 12, color: 'var(--text-2)' }}>Refresh or expand existing content to improve average position and CTR</td>
                 </tr>
               ))}
             </tbody>

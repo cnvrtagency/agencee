@@ -81,8 +81,8 @@ export async function POST(req: NextRequest) {
           client_id: conn.client_id,
           workspace_id: conn.workspace_id || null,
           type: 'decay',
-          title: `Ranking drop: "${r.query}"`,
-          body: `"${r.query}" dropped from #${prev.position.toFixed(0)} to #${r.position.toFixed(0)} (${worsened.toFixed(0)} positions). ${r.impressions} impressions at risk. Review and refresh this content.`,
+          title: `Average position drop: "${r.query}"`,
+          body: `"${r.query}" worsened from average position ${prev.position.toFixed(1)} to ${r.position.toFixed(1)} (${worsened.toFixed(1)} positions). ${r.impressions} impressions at risk. Review and refresh this content.`,
           action_url: `/clients/${conn.client_id}?tab=search`,
           priority: Math.round(r.impressions / 10),
           dismissed: false,
@@ -94,7 +94,7 @@ export async function POST(req: NextRequest) {
           client_id: conn.client_id,
           workspace_id: conn.workspace_id || null,
           action: 'decay_detected',
-          detail: `Ranking decay: "${r.query}" dropped ${worsened.toFixed(0)} positions (${r.impressions} impressions)`,
+          detail: `Average position decay: "${r.query}" worsened ${worsened.toFixed(1)} positions (${r.impressions} impressions)`,
           tokens_used: 0,
         })
       }

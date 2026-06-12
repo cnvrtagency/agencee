@@ -90,8 +90,8 @@ GSC Performance (last 28 days):
 - Total clicks: ${totalClicks.toLocaleString()}
 - Total impressions: ${totalImpressions.toLocaleString()}
 - Average position: ${avgPosition ?? 'unknown'}
-- Near-miss keywords (position 5-15): ${nearMissCount}
-- Low CTR pages ranking on page 1: ${lowCtrCount}
+- Near-miss keywords (average position 5-15): ${nearMissCount}
+- Low CTR pages with strong average position: ${lowCtrCount}
 
 Content:
 - Total published pieces: ${contentCount ?? 0}
