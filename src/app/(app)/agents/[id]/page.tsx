@@ -48,6 +48,18 @@ type Client = {
 type PlannedTask = { id: string; primary_keyword: string; content_type: string; supporting_keywords: string[]; title_brief: string; word_count: number; internal_links: string; notes: string; status: string }
 type SitePage = { url: string; title: string | null; h1: string | null; meta_description: string | null; word_count: number | null; content_summary: string | null }
 type GscRow = { query: string; page: string; position: number; impressions: number; clicks: number; ctr: number; period_start?: string; period_end?: string }
+type CompetitorSiteRow = { id: string; url: string; name: string | null }
+type CompetitorPageRow = {
+  url: string
+  title: string | null
+  h1: string | null
+  meta_description: string | null
+  word_count: number | null
+  keywords?: string[] | null
+  content?: string | null
+  content_summary: string | null
+  competitor_id: string
+}
 
 function buildSystemPrompt(agent: Agent, clients: Client[], knowledgePanels: Record<string, any> = {}, digest?: { summary: string; week_of: string } | null): string {
   const parts: string[] = []
@@ -203,7 +215,7 @@ Tool usage guide:
 - search_history: call before writing anything to avoid repeating angles and find linking opportunities
 - get_keywords: call to see the full keyword bank with targets and current average GSC positions
 - audit_site: call when doing a full site health review
-- analyse_competitors: call when evaluating content gaps against competitors
+- analyse_competitors: call only after confirming the client and specific competitor to analyse
 - startup_seo_brief: call when a site is new, has no/low GSC history, has a thin keyword bank, or the user asks how to grow a startup from scratch
 - read_page: call when you need the full content of a specific page before writing something adjacent
 - generate_images: call after writing the draft, not before
@@ -226,6 +238,17 @@ Search Console "position" is average position, not a fixed live Google rank. Alw
 
 STARTUP / NO-GSC RULE:
 Google Search Console is useful but optional. If a client is new, has no GSC rows, has not connected GSC, or has too little historical search data, do not stop or tell the user to wait for GSC. Switch to startup SEO mode: use startup_seo_brief, the client profile, services, locations, site pages, keyword bank, competitor URLs/pages, and web_search/SERP research to build a seed keyword strategy. Be clear when volume/difficulty is estimated, then use suggest_keyword for valuable seed opportunities that are missing from the bank.
+
+COMPETITOR ANALYSIS WORKFLOW - follow this exact sequence:
+1. If the user asks about competitors without naming a client, ask which client they mean. Use these available client names: ${clients.map(c => c.name).join(', ') || 'the available clients'}.
+2. Wait for the client confirmation.
+3. Once the client is confirmed, use any registered competitors already visible in the client context or knowledge panel. If the competitor is still ambiguous, ask which specific competitor they want analysed.
+4. Wait for the competitor confirmation.
+5. Call analyse_competitors with both client_name and competitor_name.
+6. Structure the answer as: overview of the competitor, what they cover, where the client is stronger, and 2-3 recommendations.
+7. The tool saves useful opportunities to the briefing room automatically, so mention the strongest saved opportunities when relevant.
+8. End with a focused next step, such as whether to turn one gap into a content brief or plan.
+Never call analyse_competitors speculatively. Do not analyse every registered competitor unless the user explicitly asks for all of them.
 
 BLOG POST WORKFLOW:
 1. search_history — check what exists on this topic
@@ -603,11 +626,12 @@ Supports: wordpress, shopify, github (MDX), webflow`,
   },
   {
     name: 'analyse_competitors',
-    description: 'Retrieve and analyse crawled competitor data for a client. Returns a summary of what competitors cover, their top pages, and content patterns. Use this to identify content gaps and opportunities before planning new content.',
+    description: 'Retrieve and analyse crawled competitor data for a client. Call this only after confirming which client AND which specific competitor to analyse - never call this speculatively. Returns competitor page inventory, content summaries, and gap analysis.',
     input_schema: {
       type: 'object',
       properties: {
         client_name: { type: 'string', description: 'The client to analyse competitors for' },
+        competitor_name: { type: 'string', description: 'Optional. The specific competitor to focus on. If omitted, returns all registered competitors. Ask the user which competitor they want before calling if context is ambiguous.' },
       },
       required: ['client_name'],
     },
@@ -1484,7 +1508,31 @@ export default function AgentPage() {
       if (!client) return `Could not find client matching "${toolInput.client_name}".`
       const { data: compSites } = await supabase.from('competitor_sites').select('id,url,name').eq('client_id', client.id)
       if (!compSites || compSites.length === 0) return `No competitors registered for ${client.name}. Add them in the Competitors tab on the client page.`
-      const { data: compPages } = await supabase.from('competitor_pages').select('url,title,h1,meta_description,word_count,keywords,content,content_summary,competitor_id').eq('client_id', client.id).order('word_count', { ascending: false }).limit(50)
+      const competitorSites = compSites as CompetitorSiteRow[]
+
+      const requestedCompetitor = String(toolInput.competitor_name || '').trim().toLowerCase()
+      let filteredSites = competitorSites
+      let competitorFilterNote = ''
+      if (requestedCompetitor) {
+        const matches = competitorSites.filter(site =>
+          (site.name || '').toLowerCase().includes(requestedCompetitor) ||
+          (site.url || '').toLowerCase().includes(requestedCompetitor)
+        )
+        if (matches.length > 0) {
+          filteredSites = matches
+        } else {
+          competitorFilterNote = `\n\nNo registered competitor matched "${toolInput.competitor_name}", so this analysis includes all registered competitors.`
+        }
+      }
+
+      const competitorIds = filteredSites.map(site => site.id)
+      const { data: compPages } = await supabase
+        .from('competitor_pages')
+        .select('url,title,h1,meta_description,word_count,keywords,content,content_summary,competitor_id')
+        .eq('client_id', client.id)
+        .in('competitor_id', competitorIds)
+        .order('word_count', { ascending: false })
+        .limit(50)
 
       const { data: clientPages } = await supabase
         .from('site_pages')
@@ -1496,13 +1544,16 @@ export default function AgentPage() {
         `${p.title || ''} ${p.h1 || ''} ${p.content_summary || ''}`.toLowerCase()
       ).join(' ')
 
-      const perSite = compSites.map(site => {
-        const pages = (compPages || []).filter(p => p.competitor_id === site.id)
+      const opportunities: { title: string; body: string }[] = []
+      const competitorPages = (compPages || []) as CompetitorPageRow[]
+
+      const perSite = filteredSites.map(site => {
+        const pages = competitorPages.filter(p => p.competitor_id === site.id)
         if (pages.length === 0) {
           const host = (() => {
             try { return new URL(site.url).hostname } catch { return site.url }
           })()
-          return `${site.name || site.url} — no pages crawled yet. Re-crawl this competitor from the Competitors tab. If the crawl still finds no pages, use web_search with site:${host} plus the client's service/location themes to inspect public competitor content manually.`
+          return `${site.name || site.url} - no pages crawled yet. Re-crawl this competitor from the Competitors tab. If the crawl still finds no pages, use web_search with site:${host} plus the client's service/location themes to inspect public competitor content manually.`
         }
         const withSummaries = pages.filter(p => p.content_summary)
         const gaps = withSummaries.filter(p => {
@@ -1512,21 +1563,55 @@ export default function AgentPage() {
           return matchCount < 2
         })
 
-        const pageList = pages.slice(0, 15).map((p: any) =>
-          `  ${p.url.replace(/^https?:\/\/[^/]+/, '') || '/'} | ${p.word_count || 0}w | ${p.title || p.h1 || 'untitled'} | ${p.meta_description || p.content_summary || 'no summary'}`
+        gaps.slice(0, 3).forEach((p: CompetitorPageRow) => {
+          const pageTitle = p.title || p.h1 || p.url
+          opportunities.push({
+            title: `Competitor gap: ${String(pageTitle).slice(0, 90)}`.slice(0, 120),
+            body: `${site.name || site.url} has a crawled page covering "${pageTitle}". Summary: ${p.content_summary || p.meta_description || 'No summary available'}. Review whether ${client.name} needs a stronger page or content angle for this topic.`.slice(0, 1000),
+          })
+        })
+
+        const pageList = pages.slice(0, 15).map((p: CompetitorPageRow) =>
+          `  ${String(p.url || '').replace(/^https?:\/\/[^/]+/, '') || '/'} | ${p.word_count || 0}w | ${p.title || p.h1 || 'untitled'} | ${p.meta_description || p.content_summary || 'no summary'}`
         ).join('\n')
 
-        const gapList = gaps.slice(0, 8).map((p: any) =>
-          `  GAP: ${p.title || p.url} — ${p.content_summary || 'no summary'}`
+        const gapList = gaps.slice(0, 8).map((p: CompetitorPageRow) =>
+          `  GAP: ${p.title || p.url} - ${p.content_summary || 'no summary'}`
         ).join('\n')
 
-        return `${site.name || site.url} — ${pages.length} pages crawled, ${withSummaries.length} summarised\n${pageList}${gapList ? `\n\nPotential content gaps vs this competitor:\n${gapList}` : ''}`
+        return `${site.name || site.url} - ${pages.length} pages crawled, ${withSummaries.length} summarised\n${pageList}${gapList ? `\n\nPotential content gaps vs this competitor:\n${gapList}` : ''}`
       })
+
+      if (opportunities.length > 0) {
+        await supabase.from('briefing_items').upsert(
+          opportunities.slice(0, 6).map((opp, index) => ({
+            client_id: client.id,
+            workspace_id: workspaceId || null,
+            type: 'opportunity',
+            title: opp.title,
+            body: opp.body,
+            priority: Math.max(45, 60 - index * 3),
+            dismissed: false,
+          })),
+          { onConflict: 'client_id,title' }
+        )
+      }
 
       await fetch('/api/agent-activity', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ agent_id: id, client_id: client.id, action: 'competitor_analysis', detail: `Analysed ${compSites.length} competitors`, tokens_used: 0 })
+        body: JSON.stringify({
+          agent_id: id,
+          client_id: client.id,
+          action: 'competitor_analysis',
+          detail: {
+            competitors: filteredSites.map(site => site.name || site.url),
+            count: filteredSites.length,
+            requested_competitor: toolInput.competitor_name || null,
+            opportunities_saved: Math.min(opportunities.length, 6),
+          },
+          tokens_used: 0,
+        })
       })
 
       // Store result in client_knowledge so it can be injected into future prompts without re-running
@@ -1555,7 +1640,7 @@ export default function AgentPage() {
       const emptyCrawlNote = crawledPageCount === 0
         ? '\n\nNo crawled competitor pages are stored yet, so do not present this as a complete competitor gap analysis. Use the registered competitor URLs as seed sites for web_search, or ask the user to re-crawl after checking the diagnostics in the Competitors tab.'
         : ''
-      return `Competitor analysis for ${client.name} — ${compSites.length} competitors:\n\nNote: gaps are identified by comparing competitor page topics against your live site. Verify before acting.${emptyCrawlNote}\n\n${perSite.join('\n\n')}`
+      return `Competitor analysis for ${client.name} - ${filteredSites.length} competitor${filteredSites.length === 1 ? '' : 's'}:${competitorFilterNote}\n\nNote: gaps are identified by comparing competitor page topics against your live site. Verify before acting. ${Math.min(opportunities.length, 6)} briefing opportunit${Math.min(opportunities.length, 6) === 1 ? 'y was' : 'ies were'} saved.${emptyCrawlNote}\n\n${perSite.join('\n\n')}`
     }
 
     // ── startup_seo_brief: seed SEO strategy without relying on GSC ───────────

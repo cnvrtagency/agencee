@@ -62,6 +62,14 @@ type ReportRow = {
   data: any
 }
 
+type JobRunRow = {
+  id: string
+  status: string | null
+  summary: string | null
+  completed_at: string | null
+  started_at: string | null
+}
+
 export default function ClientDetail() {
   const { id } = useParams<{ id: string }>()
   const searchParams = useSearchParams()
@@ -131,6 +139,8 @@ export default function ClientDetail() {
   // New scheduled_jobs state
   const [scheduledJobs, setScheduledJobs] = useState<any[]>([])
   const [jobRuns, setJobRuns] = useState<any[]>([])
+  const [jobRunsByJob, setJobRunsByJob] = useState<Record<string, JobRunRow[]>>({})
+  const [expandedJob, setExpandedJob] = useState<string | null>(null)
   const [expandedRunId, setExpandedRunId] = useState<string | null>(null)
   const [jobWizard, setJobWizard] = useState<{ open: boolean; editId: string | null; step: 1 | 2 | 3; type: string; cadence: string; runDay: string; runHour: number; name: string }>({
     open: false, editId: null, step: 1, type: '', cadence: 'weekly', runDay: 'monday', runHour: 8, name: '',
@@ -355,6 +365,17 @@ export default function ClientDetail() {
     setJobRuns(data || [])
   }
 
+  async function loadJobRunsForJob(jobId: string, force = false) {
+    if (!force && jobRunsByJob[jobId]) return
+    const { data } = await supabase
+      .from('job_runs')
+      .select('id,status,summary,completed_at,started_at')
+      .eq('job_id', jobId)
+      .order('completed_at', { ascending: false, nullsFirst: false })
+      .limit(10)
+    setJobRunsByJob(prev => ({ ...prev, [jobId]: (data || []) as JobRunRow[] }))
+  }
+
   async function loadSchedule() {
     const { data } = await supabase.from('client_schedules').select('*').eq('client_id', id).maybeSingle()
     if (data) {
@@ -382,7 +403,9 @@ export default function ClientDetail() {
     setRunningJobId(jobId)
     await fetch('/api/jobs/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ job_id: jobId }) })
     setRunningJobId(null)
-    loadScheduledJobs(); loadJobRuns()
+    await loadScheduledJobs()
+    await loadJobRuns()
+    await loadJobRunsForJob(jobId, true)
   }
 
   async function toggleJob(jobId: string, enabled: boolean) {
@@ -1321,38 +1344,71 @@ export default function ClientDetail() {
               </div>
             ) : scheduledJobs.map((job, i) => {
               const jt = JOB_TYPES.find(x => x.type === job.job_type)
+              const expanded = expandedJob === job.id
+              const runsForJob = jobRunsByJob[job.id]
+              const toggleExpandedJob = () => {
+                setExpandedJob(expanded ? null : job.id)
+                if (!expanded) loadJobRunsForJob(job.id)
+              }
               return (
-                <div key={job.id} style={{ padding: '16px 20px', borderBottom: i < scheduledJobs.length - 1 ? '1px solid var(--border)' : 'none', display: 'flex', alignItems: 'flex-start', gap: 14 }}>
-                  <div style={{ fontSize: 22, flexShrink: 0, marginTop: 1 }}>{jt?.icon || '⚙️'}</div>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
-                      <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>{job.name}</span>
-                      <span style={{ fontSize: 11, color: 'var(--text-2)' }}>
-                        {job.cadence.charAt(0).toUpperCase() + job.cadence.slice(1)}{job.run_day ? ` · ${job.run_day.charAt(0).toUpperCase() + job.run_day.slice(1)}` : ''} at {fmtHour(job.run_hour || 8)}
-                      </span>
+                <div key={job.id} style={{ borderBottom: i < scheduledJobs.length - 1 ? '1px solid var(--border)' : 'none' }}>
+                  <div onClick={toggleExpandedJob} style={{ padding: '16px 20px', display: 'flex', alignItems: 'flex-start', gap: 14, cursor: 'pointer' }}>
+                    <div style={{ fontSize: 22, flexShrink: 0, marginTop: 1 }}>{jt?.icon || '⚙️'}</div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
+                        <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>{job.name}</span>
+                        <span style={{ fontSize: 11, color: 'var(--text-2)' }}>
+                          {job.cadence.charAt(0).toUpperCase() + job.cadence.slice(1)}{job.run_day ? ` · ${job.run_day.charAt(0).toUpperCase() + job.run_day.slice(1)}` : ''} at {fmtHour(job.run_hour || 8)}
+                        </span>
+                      </div>
+                      <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>
+                        Last run: {fmtRelTime(job.last_run_at)}{job.last_run_status ? ` · ` : ''}
+                        {job.last_run_status && <span style={{ color: statusColor(job.last_run_status), fontWeight: 600 }}>{job.last_run_status}</span>}
+                        {job.last_run_summary && <span> · {job.last_run_summary.slice(0, 60)}{job.last_run_summary.length > 60 ? '...' : ''}</span>}
+                      </div>
                     </div>
-                    <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>
-                      Last run: {fmtRelTime(job.last_run_at)}{job.last_run_status ? ` · ` : ''}
-                      {job.last_run_status && <span style={{ color: statusColor(job.last_run_status), fontWeight: 600 }}>{job.last_run_status}</span>}
-                      {job.last_run_summary && <span> · {job.last_run_summary.slice(0, 60)}{job.last_run_summary.length > 60 ? '…' : ''}</span>}
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0 }}>
+                      {/* Toggle */}
+                      <div onClick={(e) => { e.stopPropagation(); toggleJob(job.id, !job.enabled) }}
+                        style={{ width: 32, height: 18, borderRadius: 99, background: job.enabled ? 'var(--accent)' : 'var(--surface-3)', position: 'relative', cursor: 'pointer', border: '1px solid var(--border)', transition: 'background 0.2s', flexShrink: 0 }}>
+                        <div style={{ position: 'absolute', top: 2, left: job.enabled ? 15 : 2, width: 12, height: 12, borderRadius: '50%', background: '#fff', transition: 'left 0.2s' }} />
+                      </div>
+                      <button style={S.btnSm} onClick={(e) => {
+                        e.stopPropagation()
+                        setJobWizard({ open: true, editId: job.id, step: 2, type: job.job_type, cadence: job.cadence, runDay: job.run_day || 'monday', runHour: job.run_hour || 8, name: job.name })
+                      }}>Edit</button>
+                      <button style={{ ...S.btnSm, color: 'var(--accent)', borderColor: 'rgba(79,127,255,0.3)' }}
+                        onClick={(e) => { e.stopPropagation(); runJobNow(job.id) }}
+                        disabled={runningJobId === job.id}>
+                        {runningJobId === job.id ? '...' : 'Run now ▶'}
+                      </button>
+                      <button style={{ ...S.btnSm, color: 'var(--red)', borderColor: 'rgba(242,107,107,0.2)' }} onClick={(e) => { e.stopPropagation(); deleteJob(job.id) }}>✕</button>
+                      <span style={{ fontSize: 11, color: 'var(--text-dim)', minWidth: 12, textAlign: 'center' }}>{expanded ? '▲' : '▼'}</span>
                     </div>
                   </div>
-                  <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0 }}>
-                    {/* Toggle */}
-                    <div onClick={() => toggleJob(job.id, !job.enabled)}
-                      style={{ width: 32, height: 18, borderRadius: 99, background: job.enabled ? 'var(--accent)' : 'var(--surface-3)', position: 'relative', cursor: 'pointer', border: '1px solid var(--border)', transition: 'background 0.2s', flexShrink: 0 }}>
-                      <div style={{ position: 'absolute', top: 2, left: job.enabled ? 15 : 2, width: 12, height: 12, borderRadius: '50%', background: '#fff', transition: 'left 0.2s' }} />
+                  {expanded && (
+                    <div style={{ padding: '0 20px 14px 56px', background: 'var(--surface-2)', borderTop: '1px solid var(--border)' }}>
+                      <div style={{ fontSize: 11, color: 'var(--text-2)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px', padding: '12px 0 8px' }}>Run history</div>
+                      {runsForJob === undefined ? (
+                        <div style={{ fontSize: 12, color: 'var(--text-dim)', paddingBottom: 2 }}>Loading run history...</div>
+                      ) : runsForJob.length === 0 ? (
+                        <div style={{ fontSize: 12, color: 'var(--text-dim)', paddingBottom: 2 }}>No run history yet.</div>
+                      ) : runsForJob.map((run, runIndex) => {
+                        const runDate = run.completed_at || run.started_at
+                        return (
+                          <div key={run.id} style={{ display: 'flex', gap: 10, alignItems: 'flex-start', padding: '8px 0', borderTop: runIndex > 0 ? '1px solid var(--border)' : 'none' }}>
+                            <span style={{ fontSize: 13, color: statusColor(run.status), fontWeight: 600, flexShrink: 0 }}>{statusIcon(run.status)}</span>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ fontSize: 12, color: 'var(--text)', lineHeight: 1.4 }}>{run.summary || 'Run completed'}</div>
+                              <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 2 }}>
+                                {runDate ? new Date(runDate).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : 'Unknown time'}
+                              </div>
+                            </div>
+                          </div>
+                        )
+                      })}
                     </div>
-                    <button style={S.btnSm} onClick={() => {
-                      setJobWizard({ open: true, editId: job.id, step: 2, type: job.job_type, cadence: job.cadence, runDay: job.run_day || 'monday', runHour: job.run_hour || 8, name: job.name })
-                    }}>Edit</button>
-                    <button style={{ ...S.btnSm, color: 'var(--accent)', borderColor: 'rgba(79,127,255,0.3)' }}
-                      onClick={() => runJobNow(job.id)}
-                      disabled={runningJobId === job.id}>
-                      {runningJobId === job.id ? '...' : 'Run now ▶'}
-                    </button>
-                    <button style={{ ...S.btnSm, color: 'var(--red)', borderColor: 'rgba(242,107,107,0.2)' }} onClick={() => deleteJob(job.id)}>✕</button>
-                  </div>
+                  )}
                 </div>
               )
             })}

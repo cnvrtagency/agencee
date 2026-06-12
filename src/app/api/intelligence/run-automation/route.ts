@@ -10,6 +10,86 @@ const supabase = createClient(
 const BASE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000'
 export const maxDuration = 60
 
+type AutomationClient = {
+  id: string
+  name: string
+  website?: string | null
+  workspace_id?: string | null
+}
+
+type AutomationScheduleJob = {
+  id: string
+  workspace_id?: string | null
+}
+
+type LinkAuditPage = {
+  url?: string | null
+  internal_links?: unknown
+  word_count?: number | null
+}
+
+const AUTOMATION_TOKEN_ESTIMATES: Record<string, number> = {
+  weekly_knowledge_digest: 15000,
+  proactive_gsc_briefing: 2000,
+  weekly_keyword_scan: 500,
+  gsc_review: 3000,
+  internal_link_audit: 300,
+  site_audit: 2000,
+  competitor_analysis: 4000,
+  monthly_content_plan: 6000,
+  keyword_discovery: 1000,
+  content_decay_monitor: 500,
+  performance_feedback: 300,
+}
+
+const SCHEDULED_JOB_TYPE_BY_AUTOMATION: Record<string, string> = {
+  site_audit: 'site_audit',
+  gsc_review: 'gsc_intelligence',
+  weekly_keyword_scan: 'keyword_research',
+}
+
+function estimateAutomationTokens(automationType: string): number {
+  return AUTOMATION_TOKEN_ESTIMATES[automationType] || 1000
+}
+
+async function recordScheduleHistoryForAutomation(
+  automationType: string,
+  clients: AutomationClient[],
+  clientSummaries: Map<string, string>,
+  fallbackSummary: string,
+  completedAt: string
+) {
+  const jobType = SCHEDULED_JOB_TYPE_BY_AUTOMATION[automationType]
+  if (!jobType || clients.length === 0) return
+
+  for (const client of clients) {
+    const summary = (clientSummaries.get(client.id) || fallbackSummary || 'Automation run complete').slice(0, 500)
+    const { data: jobs } = await supabase
+      .from('scheduled_jobs')
+      .select('id, workspace_id')
+      .eq('client_id', client.id)
+      .eq('job_type', jobType)
+
+    for (const job of (jobs || []) as AutomationScheduleJob[]) {
+      const workspaceId = job.workspace_id || client.workspace_id || null
+      await supabase.from('scheduled_jobs').update({
+        last_run_at: completedAt,
+        last_run_status: 'success',
+        last_run_summary: summary,
+      }).eq('id', job.id)
+
+      await supabase.from('job_runs').insert({
+        job_id: job.id,
+        workspace_id: workspaceId,
+        client_id: client.id,
+        status: 'success',
+        summary,
+        completed_at: completedAt,
+      })
+    }
+  }
+}
+
 export async function POST(req: NextRequest) {
   const authResult = await requireUserOrInternal(req)
   if (!authResult.ok) return authResult.response
@@ -72,22 +152,29 @@ export async function POST(req: NextRequest) {
     .order('name')
 
   if (agent.workspace_id) {
-    clientQuery = clientQuery.eq('workspace_id', agent.workspace_id) as any
+    clientQuery = clientQuery.eq('workspace_id', agent.workspace_id)
   } else if (agent.user_id) {
-    clientQuery = clientQuery.eq('user_id', agent.user_id) as any
+    clientQuery = clientQuery.eq('user_id', agent.user_id)
   }
 
   const { data: clients } = await clientQuery
-  const clientList = clients || []
+  const clientList = (clients || []) as AutomationClient[]
 
   let summary = ''
+  const processedClientsById = new Map<string, AutomationClient>()
+  const clientRunSummaries = new Map<string, string>()
+  const markClientProcessed = (client: AutomationClient, runSummary?: string) => {
+    processedClientsById.set(client.id, client)
+    if (runSummary) clientRunSummaries.set(client.id, runSummary)
+  }
 
   try {
     switch (automation.automation_type) {
 
       case 'weekly_keyword_scan': {
         const results: string[] = []
-        for (const client of clientList.slice(0, 5)) {
+        const targetClients = clientList.slice(0, 5)
+        for (const client of targetClients) {
           const { data: keywords } = await supabase
             .from('keyword_banks')
             .select('keyword, monthly_volume, difficulty, current_position, content_targeting_this, opportunity_score')
@@ -98,7 +185,9 @@ export async function POST(req: NextRequest) {
 
           if (keywords && keywords.length > 0) {
             const top = keywords[0]
-            results.push(`${client.name}: ${keywords.length} untargeted keywords. Top opportunity: "${top.keyword}" (vol: ${top.monthly_volume || '?'}, KD: ${top.difficulty || '?'}, avg GSC pos: ${top.current_position || 'not enough data'})`)
+            const clientSummary = `${client.name}: ${keywords.length} untargeted keywords. Top opportunity: "${top.keyword}" (vol: ${top.monthly_volume || '?'}, KD: ${top.difficulty || '?'}, avg GSC pos: ${top.current_position || 'not enough data'})`
+            results.push(clientSummary)
+            markClientProcessed(client, clientSummary)
 
             await supabase.from('briefing_items').upsert({
               client_id: client.id,
@@ -109,6 +198,8 @@ export async function POST(req: NextRequest) {
               priority: top.opportunity_score || 50,
               dismissed: false,
             }, { onConflict: 'client_id,title' })
+          } else {
+            markClientProcessed(client, `${client.name}: keyword scan complete. All keywords in the bank have content targeting them.`)
           }
         }
         summary = results.length > 0
@@ -118,7 +209,7 @@ export async function POST(req: NextRequest) {
       }
 
       case 'gsc_review': {
-        const scopedClientIds = clientList.map((client: any) => client.id)
+        const scopedClientIds = clientList.map(client => client.id)
         if (scopedClientIds.length === 0) {
           summary = 'No clients found for this automation workspace.'
           break
@@ -143,8 +234,12 @@ export async function POST(req: NextRequest) {
           })
           const data = await res.json()
           const client = clientList.find(c => c.id === conn.client_id)
-          if (res.ok && client) {
-            synced.push(`${client.name} (${data.briefing_items || 0} briefing items created)`)
+          if (client) {
+            const clientSummary = res.ok
+              ? `${client.name}: GSC synced (${data.briefing_items || 0} briefing items created)`
+              : `${client.name}: GSC sync failed${data?.error ? ` - ${data.error}` : ''}`
+            markClientProcessed(client, clientSummary)
+            if (res.ok) synced.push(`${client.name} (${data.briefing_items || 0} briefing items created)`)
           }
         }
         summary = synced.length > 0
@@ -155,31 +250,39 @@ export async function POST(req: NextRequest) {
 
       case 'internal_link_audit': {
         const results: string[] = []
-        for (const client of clientList.slice(0, 5)) {
+        const targetClients = clientList.slice(0, 5)
+        for (const client of targetClients) {
           const { data: pages } = await supabase
             .from('site_pages')
             .select('url, title, internal_links, word_count')
             .eq('client_id', client.id)
 
-          if (!pages?.length) continue
+          if (!pages?.length) {
+            markClientProcessed(client, `${client.name}: no crawled pages found for internal link audit.`)
+            continue
+          }
 
-          const orphans = pages.filter((p: any) => {
+          const orphans = (pages as LinkAuditPage[]).filter((p) => {
             const links = Array.isArray(p.internal_links) ? p.internal_links : []
             return links.length < 2 && (p.word_count || 0) > 300
           })
 
           if (orphans.length > 0) {
-            results.push(`${client.name}: ${orphans.length} pages with fewer than 2 internal links — ${orphans.slice(0, 3).map((p: any) => p.url).join(', ')}${orphans.length > 3 ? '...' : ''}`)
+            const clientSummary = `${client.name}: ${orphans.length} pages with fewer than 2 internal links - ${orphans.slice(0, 3).map((p) => p.url).join(', ')}${orphans.length > 3 ? '...' : ''}`
+            results.push(clientSummary)
+            markClientProcessed(client, clientSummary)
 
             await supabase.from('briefing_items').upsert({
               client_id: client.id,
               workspace_id: client.workspace_id || null,
               type: 'opportunity',
               title: `Internal link gaps: ${orphans.length} underlinked pages`,
-              body: `${orphans.length} pages have fewer than 2 internal links pointing to them. These pages are losing link equity. Top candidates: ${orphans.slice(0, 5).map((p: any) => p.url).join(', ')}`,
+              body: `${orphans.length} pages have fewer than 2 internal links pointing to them. These pages are losing link equity. Top candidates: ${orphans.slice(0, 5).map((p) => p.url).join(', ')}`,
               priority: 40,
               dismissed: false,
             }, { onConflict: 'client_id,title' })
+          } else {
+            markClientProcessed(client, `${client.name}: internal link audit complete. All crawled pages have sufficient internal links.`)
           }
         }
         summary = results.length > 0
@@ -190,8 +293,12 @@ export async function POST(req: NextRequest) {
 
       case 'site_audit': {
         const results: string[] = []
-        for (const client of clientList.slice(0, 3)) {
-          if (!client.website) continue
+        const targetClients = clientList.slice(0, 3)
+        for (const client of targetClients) {
+          if (!client.website) {
+            markClientProcessed(client, `${client.name}: no website URL configured for site audit.`)
+            continue
+          }
 
           const crawlRes = await fetch(`${BASE_URL}/api/crawl`, {
             method: 'POST',
@@ -199,14 +306,24 @@ export async function POST(req: NextRequest) {
             body: JSON.stringify({ website: client.website, client_id: client.id }),
           })
           const crawlData = await crawlRes.json()
-          if (!crawlRes.ok) { results.push(`${client.name}: crawl failed`); continue }
+          if (!crawlRes.ok) {
+            const clientSummary = `${client.name}: crawl failed${crawlData?.error ? ` - ${crawlData.error}` : ''}`
+            results.push(clientSummary)
+            markClientProcessed(client, clientSummary)
+            continue
+          }
 
           const { data: pages } = await supabase
             .from('site_pages')
             .select('url, title, h1, meta_description, word_count')
             .eq('client_id', client.id)
 
-          if (!pages?.length) { results.push(`${client.name}: no pages found`); continue }
+          if (!pages?.length) {
+            const clientSummary = `${client.name}: no pages found`
+            results.push(clientSummary)
+            markClientProcessed(client, clientSummary)
+            continue
+          }
 
           const noMeta = pages.filter(p => !p.meta_description).length
           const noH1 = pages.filter(p => !p.h1).length
@@ -217,7 +334,9 @@ export async function POST(req: NextRequest) {
           if (thin > 0) issues.push(`${thin} thin pages (<300 words)`)
 
           const issueText = issues.length > 0 ? issues.join(', ') : 'no critical issues'
-          results.push(`${client.name}: ${pages.length} pages crawled, ${issueText}`)
+          const clientSummary = `${client.name}: ${pages.length} pages crawled, ${issueText}`
+          results.push(clientSummary)
+          markClientProcessed(client, clientSummary)
 
           if (issues.length > 0) {
             await supabase.from('briefing_items').upsert({
@@ -237,14 +356,19 @@ export async function POST(req: NextRequest) {
 
       case 'competitor_analysis': {
         const results: string[] = []
-        for (const client of clientList.slice(0, 3)) {
+        const targetClients = clientList.slice(0, 3)
+        for (const client of targetClients) {
           const { data: compSites } = await supabase
             .from('competitor_sites')
             .select('id, url, name')
             .eq('client_id', client.id)
 
-          if (!compSites?.length) continue
+          if (!compSites?.length) {
+            markClientProcessed(client, `${client.name}: no competitor sites configured.`)
+            continue
+          }
 
+          let crawledForClient = 0
           for (const comp of compSites) {
             const res = await fetch(`${BASE_URL}/api/crawl`, {
               method: 'POST',
@@ -253,9 +377,11 @@ export async function POST(req: NextRequest) {
             })
             if (res.ok) {
               const data = await res.json()
+              crawledForClient += data.pages_crawled || 0
               results.push(`${comp.name || comp.url} (${data.pages_crawled || 0} pages)`)
             }
           }
+          markClientProcessed(client, `${client.name}: competitor crawl complete (${crawledForClient} pages across ${compSites.length} competitors).`)
         }
         summary = results.length > 0
           ? `Competitor crawl complete: ${results.join(', ')}`
@@ -265,7 +391,8 @@ export async function POST(req: NextRequest) {
 
       case 'monthly_content_plan': {
         const results: string[] = []
-        for (const client of clientList.slice(0, 3)) {
+        const targetClients = clientList.slice(0, 3)
+        for (const client of targetClients) {
           const res = await fetch(`${BASE_URL}/api/calendar/generate-plan`, {
             method: 'POST',
             headers: internalHeaders,
@@ -278,7 +405,11 @@ export async function POST(req: NextRequest) {
           })
           const data = await res.json()
           if (res.ok && data.created > 0) {
-            results.push(`${client.name}: ${data.created} items planned`)
+            const clientSummary = `${client.name}: ${data.created} items planned`
+            results.push(clientSummary)
+            markClientProcessed(client, clientSummary)
+          } else {
+            markClientProcessed(client, `${client.name}: monthly content plan complete. No new items added.`)
           }
         }
         summary = results.length > 0
@@ -291,20 +422,47 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: `Unknown automation type: ${automation.automation_type}` }, { status: 400 })
     }
 
+    const completedAt = new Date().toISOString()
+    const processedClients = Array.from(processedClientsById.values())
+    const estimatedTokens = estimateAutomationTokens(automation.automation_type)
+
+    await recordScheduleHistoryForAutomation(
+      automation.automation_type,
+      processedClients,
+      clientRunSummaries,
+      summary,
+      completedAt
+    )
+
+    await supabase.from('agent_activity').insert({
+      agent_id: automation.agent_id,
+      workspace_id: agent.workspace_id || processedClients.find(client => client.workspace_id)?.workspace_id || null,
+      client_id: processedClients.length === 1 ? processedClients[0].id : null,
+      action: `automation_${automation.automation_type}`,
+      detail: {
+        automation_type: automation.automation_type,
+        automation_name: automation.name,
+        summary,
+        clients_processed: processedClients.length,
+      },
+      tokens_used: estimatedTokens,
+    })
+
     await supabase.from('agent_automations').update({
-      last_run_at: new Date().toISOString(),
+      last_run_at: completedAt,
       last_run_status: 'success',
       last_run_summary: summary.slice(0, 500),
     }).eq('id', automation.id)
 
-    return NextResponse.json({ ok: true, summary })
-  } catch (e: any) {
+    return NextResponse.json({ ok: true, summary, clients_processed: processedClients.length })
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : 'Automation failed'
     await supabase.from('agent_automations').update({
       last_run_at: new Date().toISOString(),
       last_run_status: 'error',
-      last_run_summary: (e?.message || 'Automation failed').slice(0, 500),
+      last_run_summary: message.slice(0, 500),
     }).eq('id', automation.id)
-    console.error('[intelligence/run-automation] error:', e?.message)
-    return NextResponse.json({ error: e?.message || 'Automation failed' }, { status: 500 })
+    console.error('[intelligence/run-automation] error:', message)
+    return NextResponse.json({ error: message }, { status: 500 })
   }
 }

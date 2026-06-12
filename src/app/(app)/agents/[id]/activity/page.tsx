@@ -24,6 +24,16 @@ const ACTION_COLOR: Record<string, string> = {
   content_plan: 'var(--green)',
   ada_briefing: 'var(--accent)',
   site_audit: 'var(--amber)',
+  automation_weekly_knowledge_digest: 'var(--accent)',
+  automation_proactive_gsc_briefing: 'var(--accent)',
+  automation_weekly_keyword_scan: 'var(--accent)',
+  automation_gsc_review: 'var(--accent)',
+  automation_internal_link_audit: 'var(--amber)',
+  automation_site_audit: 'var(--amber)',
+  automation_competitor_analysis: 'var(--amber)',
+  automation_monthly_content_plan: 'var(--green)',
+  automation_performance_feedback: 'var(--green)',
+  automation_content_decay_monitor: 'var(--amber)',
 }
 
 const ACTION_LABEL: Record<string, string> = {
@@ -38,6 +48,16 @@ const ACTION_LABEL: Record<string, string> = {
   site_audit: 'Site audit',
   competitor_crawl_summary: 'Competitor summaries',
   crawl_content_summary: 'Site summary',
+  automation_weekly_knowledge_digest: 'Weekly knowledge digest',
+  automation_proactive_gsc_briefing: 'Proactive GSC briefing',
+  automation_weekly_keyword_scan: 'Weekly keyword scan',
+  automation_gsc_review: 'GSC review',
+  automation_internal_link_audit: 'Internal link audit',
+  automation_site_audit: 'Site audit automation',
+  automation_competitor_analysis: 'Competitor automation',
+  automation_monthly_content_plan: 'Monthly content plan',
+  automation_performance_feedback: 'Performance feedback',
+  automation_content_decay_monitor: 'Content decay monitor',
 }
 
 function formatDetailValue(value: any): string {
@@ -104,6 +124,17 @@ function renderDetail(action: string, detail: any) {
 
   if (action === 'chat') {
     return <span style={{ fontSize: 13, color: 'var(--text-dim)', fontStyle: 'italic' }}>Chat session</span>
+  }
+
+  if (action.startsWith('automation_') && parsed?.summary) {
+    const summary = String(parsed.summary)
+    const clipped = summary.length > 120 ? `${summary.slice(0, 120)}...` : summary
+    const clients = Number(parsed.clients_processed || 0)
+    return (
+      <span style={{ fontSize: 13, color: 'var(--text-2)' }}>
+        {clipped}{clients > 0 ? ` (${clients} client${clients === 1 ? '' : 's'} processed)` : ''}
+      </span>
+    )
   }
 
   const entries = Object.entries(parsed).slice(0, 4)

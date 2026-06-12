@@ -1,7 +1,7 @@
 # Agencee — Master Architecture Document
 
 **Living document. Update at the end of every build session.**
-Last updated: 12 June 2026. Session: combined follow-up fixes for overview activity, automations auth, competitor sitemap imports, keyword labels, activity UI, image prompts, and knowledge panel behaviour.
+Last updated: 12 June 2026. Session: automation activity logging, schedule history, and scoped competitor analysis follow-up.
 
 ---
 
@@ -45,7 +45,7 @@ Ada is the primary content and SEO strategy agent. She plans, researches, writes
 | Blog post writing | Full markdown + YAML frontmatter. Title tag, meta description, keyword placement, location terms, internal links, FAQ with JSON-LD schema, credentialed practitioner for health content. 2-4 images. |
 | Image generation | Calls `generate_images` (single array call) AFTER writing the post. SCHEMA-structured prompts (Subject/Context/Lighting/Atmosphere/Camera/Style/Mandatory/Prohibitions) derived from actual post content and client profile. 1K resolution default. |
 | Site audit | `audit_site` checks crawled pages for: missing meta descriptions, missing H1s, thin content (<300w), keyword cannibalisation (pages targeting >3 keywords), untargeted keywords. |
-| Competitor analysis | `analyse_competitors` reads `competitor_sites` and `competitor_pages`. Returns per-site summaries with Haiku-generated content summaries and a basic gap analysis comparing competitor topics to client site pages. |
+| Competitor analysis | `analyse_competitors` reads `competitor_sites` and `competitor_pages`. Requires confirmed client + competitor when context is ambiguous, can scope by `competitor_name`, saves top content opportunities to `briefing_items`, and stores the scoped result in `client_knowledge.agent_notes.competitor_analysis`. |
 | Content planning | `create_content_plan` inserts to `content_calendar`. The calendar generator route (`/api/calendar/generate-plan`) is the preferred path — one Sonnet call with full context. |
 | Internal link suggestions | `suggest_internal_links` after every `write_content`. Scores existing pages by keyword relevance, returns top 5. Creates a briefing_item for the user. |
 | Keyword suggestions | `suggest_keyword` adds to `keyword_suggestions` table (pending, awaiting user approval). |
@@ -167,7 +167,7 @@ Exist as cards in `/marketplace` only. No agent_type, tools, or system prompt.
 | `get_keywords` | agents/[id]/page.tsx | Reads `keyword_banks` ordered by `opportunity_score` desc. Supports filter: all/untargeted/ranking/high_volume. | None |
 | `suggest_keyword` | agents/[id]/page.tsx | Inserts to `keyword_suggestions` (status: pending). | Logs to `agent_activity`. |
 | `create_content_plan` | agents/[id]/page.tsx | Inserts to `content_calendar`. | Logs to `agent_activity`. |
-| `analyse_competitors` | agents/[id]/page.tsx | Reads `competitor_sites` and `competitor_pages`. | Logs to `agent_activity`. Upserts result to `client_knowledge.agent_notes.competitor_analysis` (capped at 4000 chars) with timestamp. |
+| `analyse_competitors` | agents/[id]/page.tsx | Reads `competitor_sites` and `competitor_pages`; optional `competitor_name` scopes the analysis to matching site name/URL. | Logs to `agent_activity`. Saves up to 6 gap opportunities to `briefing_items`. Upserts the scoped result to `client_knowledge.agent_notes.competitor_analysis` (capped at 4000 chars) with timestamp. |
 | `suggest_internal_links` | agents/[id]/page.tsx | Scores existing `sitePages` state by keyword relevance. Returns top 5. | Creates `briefing_item`. Logs to `agent_activity`. |
 | `analyse_gsc` | agents/[id]/page.tsx | Reads `search_performance` table. Returns near-misses (pos 5-15, >50 imp), low-CTR, top queries, totals. | Runs `discoverKeywordsFromGSC` — may add to `keyword_suggestions`. |
 | `update_agent_notes` | agents/[id]/page.tsx | Upserts to `client_knowledge.agent_notes[agent.slug]`. | None |
@@ -199,7 +199,7 @@ Exist as cards in `/marketplace` only. No agent_type, tools, or system prompt.
 |---|---|
 | `/` | Dashboard. Briefing room (AI opportunity cards, expand/collapse, Act/Dismiss). Stat cards (Clients, Queued, Running, Needs review — mono font, 36px number). What needs attention panel. Token usage (by agent + 5-week activity calendar). Pending review (inline approve/delete). Queue activity. |
 | `/clients` | Client list table. Add client modal (name, website, industry, slug — minimal). Saves immediately, redirects to client detail page to complete profile. |
-| `/clients/[id]` | 10 tabs: Profile, Keywords, Pages, Codebase, Connections, Schedule, Competitors, Search, Reports, Knowledge. AI overview panel (Haiku, 24h cache). Crawl button. GSC sync button. Refresh knowledge panel button. Knowledge tab: shows Ada's notes (last_conversation, recommendations, pending, history from `client_knowledge.agent_notes`), content summary (`client_knowledge.content_summary`), and manual docs (`client_knowledge.docs`). All three sections loaded from client_knowledge on mount. Reads `?tab=` and `?gsc=` URL params on mount for OAuth redirect handling. |
+| `/clients/[id]` | 10 tabs: Profile, Keywords, Pages, Codebase, Connections, Schedule, Competitors, Search, Reports, Knowledge. AI overview panel (Haiku, 24h cache). Crawl button. GSC sync button. Refresh knowledge panel button. Schedule tab job cards expand to lazy-load per-job `job_runs` history. Knowledge tab: shows Ada's notes (last_conversation, recommendations, pending, history from `client_knowledge.agent_notes`), content summary (`client_knowledge.content_summary`), and manual docs (`client_knowledge.docs`). All three sections loaded from client_knowledge on mount. Reads `?tab=` and `?gsc=` URL params on mount for OAuth redirect handling. |
 | `/clients/[id]/gsc-setup` | Google OAuth for GSC connection |
 | `/outputs` | Global outputs — Drafts/Approved/Published tabs. Thumbnail, title, client, keyword, agent, word count, date, status pill, action buttons (Approve, Review, Publish, View live). |
 | `/outputs/[id]` | Full output detail. Pipeline bar (Draft/Approved/Published). Image gallery with Supabase URLs. SEO metadata bar (title char count, meta char count). Preview/Edit toggle. 12 feedback preset chips (Generate images, Add TOC, Strengthen intro, Fix title/meta, Featured snippet, Internal links, Improve CTA, FAQ section, Expand, Fix headings, Strengthen trust signals, Adjust tone). Feedback to Ada panel. Version history. Approve/Revert/Publish/Delete. |
@@ -271,7 +271,7 @@ Exist as cards in `/marketplace` only. No agent_type, tools, or system prompt.
 |---|---|---|
 | `/api/intelligence/decay` | POST | Compare 28d vs 56d GSC data. Flag keywords dropped >3 positions with >50 impressions → briefing_items + agent_activity. |
 | `/api/intelligence/score-keywords` | POST | Recalculate opportunity_score for all keyword_banks rows (position + volume + KD + content_targeting_this). |
-| `/api/intelligence/run-automation` | POST | Executes one agent automation by type. Returns `{ ok, summary }`. Called by the Automations page "Run now" button and by cron. **Handlers:** `weekly_keyword_scan` — reads `keyword_banks` using `monthly_volume`+`opportunity_score`, creates briefing_item for top gap. `gsc_review` — fetches `google_connections` (active), calls `/api/gsc/sync` per connection, reports briefing items created. `internal_link_audit` — reads `site_pages.internal_links` (jsonb array), flags pages with <2 links and >300 words. `site_audit` — crawls site, analyses pages for missing meta/H1/thin content, creates briefing_item. `competitor_analysis` — reads `competitor_sites` table (NOT `client_profiles.competitors`), crawls each site via `/api/crawl`. `monthly_content_plan` — calls `/api/calendar/generate-plan` with 4 weeks, 2 posts/week. |
+| `/api/intelligence/run-automation` | POST | Executes one agent automation by type. Returns `{ ok, summary, clients_processed }`. Called by the Automations page "Run now" button and by cron. Logs every successful automation to `agent_activity` with estimated token cost. Mirrors `site_audit`, `gsc_review`, and `weekly_keyword_scan` runs into matching `scheduled_jobs` and `job_runs` so client Schedule history stays current. **Handlers:** `weekly_keyword_scan` - reads `keyword_banks` using `monthly_volume`+`opportunity_score`, creates briefing_item for top gap. `gsc_review` - fetches `google_connections` (active/connected), calls `/api/gsc/sync` per connection, reports briefing items created. `internal_link_audit` - reads `site_pages.internal_links` (jsonb array), flags pages with <2 links and >300 words. `site_audit` - crawls site, analyses pages for missing meta/H1/thin content, creates briefing_item. `competitor_analysis` - reads `competitor_sites` table (NOT `client_profiles.competitors`), crawls each site via `/api/crawl`. `monthly_content_plan` - calls `/api/calendar/generate-plan` with 4 weeks, 2 posts/week. |
 | `/api/intelligence/knowledge-digest` | POST | Searches the web for current SEO developments via native web_search tool, summarises with Sonnet, stores in `agent_knowledge`. Runs Mondays via cron. Deduplicates by week — skips if row already exists for current week. Agentic loop handles web search turns (max 6 iterations). |
 
 ### Knowledge and clients
@@ -439,7 +439,7 @@ GET /api/schedule/check
 │
 ├── For each due agent_automation:
 │   └── POST /api/intelligence/run-automation
-│       └── Updates last_run_at, last_run_status, last_run_summary on completion
+│       └── Updates automation status, logs agent_activity with estimated tokens, and mirrors selected runs into scheduled_jobs/job_runs
 │
 └── POST /api/notifications/digest
     └── Per workspace: count drafts + pending keywords + next schedule → email + Slack
@@ -638,6 +638,11 @@ GET /api/schedule/check
 - Agent Activity page now renders human labels, action colours, and parsed detail cards for drafts, keyword suggestions, competitor analysis, internal links, and chat rows instead of raw JSON.
 - Ada's system prompt now requires image prompts to be specific to the active client, article, service, audience, and location, and tells Ada to keep the knowledge panel current as soon as useful client knowledge emerges.
 - `/api/generate-image` now sends current Gemini SDK config (`responseModalities: ['IMAGE']` plus `imageConfig`) instead of the stale `responseFormat.image` shape.
+- `/api/intelligence/run-automation` now logs successful automation runs to `agent_activity` with estimated token costs and `clients_processed`.
+- Automation `site_audit`, `gsc_review`, and `weekly_keyword_scan` now update matching client `scheduled_jobs` rows and insert `job_runs`, so the client Schedule tab no longer shows "Last run: Never" after agent automations have run.
+- Client Schedule tab scheduled-job cards now expand and lazy-load the last 10 `job_runs` for that job while preserving the existing global Recent runs panel.
+- `analyse_competitors` now has optional `competitor_name`, filters the page inventory by matching competitor, auto-saves top content gap opportunities to `briefing_items`, logs scoped activity detail, and stores the scoped result in `client_knowledge`.
+- Ada's SEO prompt now includes a strict competitor workflow: confirm client, confirm competitor, then call `analyse_competitors`; no speculative all-competitor analysis unless explicitly requested.
 
 ### 11 June 2026
 **Built:**
