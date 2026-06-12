@@ -1,7 +1,7 @@
 # Agencee — Master Architecture Document
 
 **Living document. Update at the end of every build session.**
-Last updated: 12 June 2026. Session: lazy knowledge loading, debrief auth, and acknowledgement cleanup.
+Last updated: 12 June 2026. Session: continuation turns and durable debrief writes.
 
 ---
 
@@ -170,7 +170,7 @@ Exist as cards in `/marketplace` only. No agent_type, tools, or system prompt.
 | `analyse_competitors` | agents/[id]/page.tsx | Reads `competitor_sites` and `competitor_pages`; optional `competitor_name` scopes the analysis to matching site name/URL. | Logs to `agent_activity`. Saves up to 6 gap opportunities to `briefing_items`. Upserts the scoped result to `client_knowledge.agent_notes.competitor_analysis` (capped at 4000 chars) with timestamp. |
 | `suggest_internal_links` | agents/[id]/page.tsx | Scores existing `sitePages` state by keyword relevance. Returns top 5. | Creates `briefing_item`. Logs to `agent_activity`. |
 | `analyse_gsc` | agents/[id]/page.tsx | Reads `search_performance` table. Returns near-misses (pos 5-15, >50 imp), low-CTR, top queries, totals. | Runs `discoverKeywordsFromGSC` — may add to `keyword_suggestions`. |
-| `update_agent_notes` | agents/[id]/page.tsx | Upserts to `client_knowledge.agent_notes[agent.slug]`. | None |
+| `update_agent_notes` | agents/[id]/page.tsx | POST `/api/knowledge/debrief` to merge `client_knowledge.agent_notes[agent.slug]` through the service-key route. | None |
 | `web_search` | Anthropic native (web_search_20250305) | Searches the web for current information — rankings, algorithm changes, competitor content, industry trends. Requires `web-search-2025-03-05` beta header. Handled server-side by Anthropic; results returned as `web_search_tool_result` blocks in the same response, not as a custom tool call. SEO agents only (not Theo). | None — results flow through the agentic loop automatically. |
 
 ---
@@ -180,16 +180,17 @@ Exist as cards in `/marketplace` only. No agent_type, tools, or system prompt.
 - Max 12 iterations
 - Each iteration: POST `/api/chat` → Anthropic API
 - The pre-loop Haiku acknowledgement is status-only and is not written into the chat thread; only final substantive replies are saved/displayed.
+- Continuation turns: if the user replies exactly `continue` after a saved assistant message containing "Output was cut short", the visible user message remains "Continue" but the API turn receives a resumption instruction. Continuations skip the acknowledgement, use no tools, force writing mode, and get the 16k output token budget.
 - On `tool_use`: all tool blocks executed in **parallel** via `Promise.all`
 - Tool inputs with large content (write_file, write_content) trimmed to 2000 chars before pushing to history
 - Tool results trimmed to 8000 chars max before pushing to history
 - Thinking text (pre-tool text blocks) captured to `thoughtsRef` and shown in task log
 - On `end_turn` with empty reply: fires a summary request (Haiku, 512 tokens) asking Ada to summarise what she just did
-- On `max_tokens`: saves partial + "Reply 'continue' to get the rest"
+- On `max_tokens`: saves partial + "Reply 'continue' to get the rest" and appends a hidden `<suggestions>` block so the UI shows a `Continue` chip.
 - Task log: persists across navigation via `encodeMessageMeta` / `decodeMessageMeta` in message content
 - `pendingDraftCardRef`: holds draft card data (title, word count, image count, review URL) set by write_content, attached to the final assistant message
 - **Conversation summarisation:** when `rawMessages.length > 8`, all but the last 6 messages are summarised into a single Haiku call (max 600 tokens) and replaced with a 2-message `[Earlier in this conversation] / Summary: ...` block. Keeps input tokens bounded on long sessions. Falls back to full history if the Haiku call fails.
-- **Auto debrief:** after meaningful SEO tool sessions, the debrief `/api/chat` call explicitly passes the current Supabase JWT and logs non-OK/API/parse failures with `[debrief]` prefixes before writing rich `agent_notes`.
+- **Auto debrief:** after meaningful SEO tool sessions, the debrief `/api/chat` call explicitly passes the current Supabase JWT and logs non-OK/API/parse failures with `[debrief]` prefixes. Client resolution uses active id, prompt id, conversation name matching, then single-client fallback before writing rich `agent_notes` through `/api/knowledge/debrief`.
 
 ---
 
@@ -284,6 +285,7 @@ Exist as cards in `/marketplace` only. No agent_type, tools, or system prompt.
 | `/api/gsc/sync` | POST | Full GSC sync: 7d/28d/90d → search_performance, keyword position updates, briefing_items, client_knowledge gsc_snapshot. |
 | `/api/gsc/properties` | GET | List GSC properties for a Google account. |
 | `/api/knowledge/[clientId]` | GET/PATCH | Read or upsert client_knowledge panel. |
+| `/api/knowledge/debrief` | POST | Authenticated service-key write for auto-debrief notes. Checks the user can access the client, reads existing `agent_notes`, merges `agent_notes[agent_slug]`, and bypasses browser RLS issues. |
 | `/api/calendar/generate-plan` | POST | Load full client context (knowledge panel + keyword bank + content history + existing plan + competitor pages with summaries) → one Sonnet call → JSON plan → insert to content_calendar. Upgraded prompt — near-miss analysis, featured snippet gaps, competitor gaps, cannibalisation detection, topical authority gaps. Returns intelligence_notes for proactive findings. |
 | `/api/clients/[id]/overview` | POST | Haiku AI overview for client (24h cache). Uses GSC totals + content stats. |
 | `/api/keywords/approve` | POST | Approve keyword_suggestion → insert to keyword_banks. Rounds float positions. |
@@ -373,8 +375,8 @@ The persistent brain per client. Injected into every agent session — eliminate
 |---|---|
 | `/api/crawl` completes | site_pages, site_pages_updated_at, site_summary, content_summary (Haiku call using content_history + keyword_banks) |
 | `/api/gsc/sync` completes | gsc_snapshot (near_miss pos 3-20 >15imp, low_ctr pos<=10 ctr<3% >30imp, top_queries by clicks, totals), gsc_snapshot_updated_at |
-| `update_agent_notes` tool | agent_notes[agent.slug] |
-| Auto-debrief after meaningful SEO sessions | Merges rich `agent_notes[agent.slug]` working document: `last_conversation`, `history`, `client_context`, `all_pending`, `content_opportunities`, `updated_at` |
+| `update_agent_notes` tool | Calls `/api/knowledge/debrief` to write agent_notes[agent.slug] |
+| Auto-debrief after meaningful SEO sessions | Calls `/api/knowledge/debrief`, which merges rich `agent_notes[agent.slug]` working document: `last_conversation`, `history`, `client_context`, `all_pending`, `content_opportunities`, `updated_at` |
 | `/api/keywords/backfill-targeting` | Updates keyword_banks.content_targeting_this (not a knowledge panel field, but called from refresh) |
 | Agent session start / first active client reference (background, fire and forget) | Single-client workspaces load the client knowledge panel immediately. Multi-client workspaces load lazily when a client is referenced or otherwise becomes active in conversation. Stale panels trigger crawl if site_pages >7 days old and GSC sync if snapshot >48 hours old. Successful backfills update matching `scheduled_jobs.last_run_*` rows and insert `job_runs` for `site_audit` / `gsc_intelligence`. |
 | Refresh button (client page) | Crawl + GSC sync + backfill-targeting in parallel |
@@ -645,6 +647,16 @@ GET /api/schedule/check
 ---
 
 ## Session Change Log
+
+### 12 June 2026 (session 16 - continuation and debrief write fixes)
+**Fixed:**
+- Ada now treats `continue` after a max-token cut-off as a resumption turn, not a new request: the API receives a precise continuation instruction, skips tools, skips the acknowledgement, and uses the 16k writing token budget.
+- Cut-off replies now automatically include a hidden suggestions block so the UI shows a `Continue` chip.
+- Suggestion chips now pass their text directly into `send()`, avoiding stale draft state when auto-sending chip clicks.
+- Auto-debrief client resolution now falls back from active ids to client-name matching in the recent conversation, then single-client fallback, with a clear `[debrief] could not resolve client` log if none match.
+- Added `/api/knowledge/debrief`, an authenticated service-key route that checks client access and writes merged `agent_notes[agent_slug]` without browser RLS blocking the debrief.
+- `update_agent_notes` now uses the same service-key route so immediate corrections and durable facts persist through the same path as auto-debrief.
+- Strengthened Ada's `update_agent_notes` prompt and tool description so corrections, durable client facts, decisions, and content opportunities are written immediately.
 
 ### 12 June 2026 (session 15 - chat knowledge lazy-load fixes)
 **Fixed:**

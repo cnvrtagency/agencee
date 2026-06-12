@@ -132,12 +132,23 @@ Never print internal tool calls, JSON tool plans, or arrays like [{"tool_name": 
 
 Always reconcile all available data sources before drawing conclusions. If the keyword bank says a keyword is untargeted but the knowledge panel shows a live page covering that topic, say so — and read that page before recommending new content on the same angle.
 
-KNOWLEDGE PANEL UPDATES - you must keep your knowledge panel current:
-- Call update_agent_notes after EVERY session where you learn something useful: any data point about what is working, what the client told you, competitor findings, content performance signals, strategic decisions made, topics to avoid, or upcoming priorities.
-- Do not wait until the end if something important emerges early - call it as soon as you have something worth recording.
-- Structure your notes as: { "learned": [...], "recommendations": [...], "pending": [...], "client_context": {...} }
-- "client_context" should accumulate facts about the client that are not in their profile: things they have told you, preferences you have observed, their audience's specific concerns, and what angles perform well.
-- Be specific. "The client prefers a reassuring tone" is useful. "We wrote about ear wax removal" is not.`)
+UPDATE AGENT NOTES - you must call update_agent_notes in these situations:
+1. The user corrects a mistake you made, for example "we do sell hearing aids" - record the correction immediately
+2. You learn something new about the client's business, audience, or goals
+3. You identify a content opportunity worth remembering
+4. The user makes a decision, for example "write the care guide first"
+5. At the end of any session with 3+ tool calls
+
+When calling update_agent_notes, use this structure:
+{
+  "what_i_learned": ["specific facts learned this session"],
+  "client_context": {"fact": "value"},
+  "content_opportunities": ["specific content ideas to act on"],
+  "pending": ["things to follow up on"],
+  "corrections": ["things I got wrong and the correction"]
+}
+
+Do not wait for the end of the session. Call it as soon as something worth recording happens. A correction is the most important thing to record immediately.`)
 
   // Client context
   if (clients.length > 0) {
@@ -753,7 +764,7 @@ Supports: wordpress, shopify, github (MDX), webflow`,
   },
   {
     name: 'update_agent_notes',
-    description: `Save persistent notes about a client to your knowledge panel. These notes survive across conversations and sessions -- use them to record things worth remembering: tone preferences, topics to avoid, recurring issues, successful content patterns, things the user has asked you to keep in mind. Call this at the end of any conversation where you learned something useful about the client or their preferences.`,
+    description: `Save persistent notes about a client to your knowledge panel. These notes survive across conversations and sessions -- use them immediately when the user corrects you, you learn a durable client fact, a content opportunity emerges, the user makes a decision, or a substantive tool-heavy session ends. Use structured JSON text with what_i_learned, client_context, content_opportunities, pending, and corrections where relevant.`,
     input_schema: {
       type: 'object',
       properties: {
@@ -822,6 +833,11 @@ function parseSuggestions(content: string): { clean: string; suggestions: string
   } catch {
     return { clean: content, suggestions: [] }
   }
+}
+
+function addContinueSuggestion(reply: string): string {
+  if (!reply.includes('Output was cut short') || /<suggestions>[\s\S]*?<\/suggestions>/.test(reply)) return reply
+  return `${reply}\n\n<suggestions>\n["Continue"]\n</suggestions>`
 }
 
 function stripToolCallJson(content: string): string {
@@ -999,6 +1015,12 @@ export default function AgentPage() {
   }
 
   function detectClientIdFromText(text: string): string | null {
+    const uuidMatch = text.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i)
+    if (uuidMatch) {
+      const matchedById = clients.find(client => client.id === uuidMatch[0])
+      if (matchedById) return matchedById.id
+    }
+
     const haystack = text.toLowerCase()
     if (!haystack.trim()) return null
     const matches = clients.filter(client => {
@@ -2050,26 +2072,33 @@ How to use this brief:
         || clients.find(c => c.name.toLowerCase().includes((toolInput.client_name || '').toLowerCase()))
       if (!client) return `Client "${toolInput.client_name}" not found.`
 
-      const { data: existing } = await supabase
-        .from('client_knowledge')
-        .select('agent_notes')
-        .eq('client_id', client.id)
-        .maybeSingle()
-
-      const currentNotes = ((existing?.agent_notes as Record<string, any>) || {})
       const noteSlug = agent?.slug || agent?.name?.toLowerCase() || 'ada'
-      currentNotes[noteSlug] = toolInput.notes
-
-      const { error } = await supabase
-        .from('client_knowledge')
-        .upsert({
+      const headers = await apiJsonHeaders()
+      const saveNotesRes = await fetch('/api/knowledge/debrief', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
           client_id: client.id,
-          workspace_id: workspaceId,
-          agent_notes: currentNotes,
-          updated_at: new Date().toISOString(),
-        }, { onConflict: 'client_id' })
+          agent_slug: noteSlug,
+          workspace_id: workspaceId || null,
+          notes: toolInput.notes,
+        }),
+      })
 
-      if (error) return `Failed to save notes: ${error.message}`
+      if (!saveNotesRes.ok) {
+        const errorText = await saveNotesRes.text().catch(() => '')
+        return `Failed to save notes: ${errorText || saveNotesRes.status}`
+      }
+      setKnowledgePanels(prev => ({
+        ...prev,
+        [client.id]: {
+          ...(prev[client.id] || {}),
+          agent_notes: {
+            ...((prev[client.id]?.agent_notes as Record<string, any>) || {}),
+            [noteSlug]: toolInput.notes,
+          },
+        },
+      }))
       return `Notes saved for ${client.name}.`
     }
 
@@ -2116,8 +2145,9 @@ How to use this brief:
     }
   }
 
-  async function send() {
-    if (!draft.trim() || !agent || sending) return
+  async function send(submittedDraft?: string) {
+    const draftText = (submittedDraft ?? draft).trim()
+    if (!draftText || !agent || sending) return
     // Resolve userId inline so RLS inserts never fail due to async state lag
     let uid = userId
     if (!uid) {
@@ -2127,20 +2157,31 @@ How to use this brief:
     }
     let convId = activeConv
     if (!convId) {
-      const { data, error } = await supabase.from('conversations').insert({ agent_id: id, title: draft.slice(0, 60), user_id: uid }).select().single()
+      const { data, error } = await supabase.from('conversations').insert({ agent_id: id, title: draftText.slice(0, 60), user_id: uid }).select().single()
       if (!data) { console.error('Failed to create conversation:', error?.message); return }
       convId = data.id; setActiveConv(convId); setConversations(prev => [data, ...prev])
     }
-    const userMsg: Message = { id: crypto.randomUUID(), role: 'user', content: draft, created_at: new Date().toISOString() }
+    const displayUserMsg: Message = { id: crypto.randomUUID(), role: 'user', content: draftText, created_at: new Date().toISOString() }
+    const isContinuation = (
+      draftText.toLowerCase() === 'continue' &&
+      messages.length > 0 &&
+      messages[messages.length - 1]?.content?.includes('Output was cut short')
+    )
+    const userMsg: Message = isContinuation
+      ? {
+        ...displayUserMsg,
+        content: 'Continue writing from exactly where you left off. Do NOT repeat any content already written. Do NOT call any tools - just continue the article from the last sentence. Resume mid-sentence if needed.',
+      }
+      : displayUserMsg
     const placeholder: Message = { id: crypto.randomUUID(), role: 'assistant', content: '', created_at: new Date().toISOString() }
-    setMessages(prev => [...prev, userMsg, placeholder])
+    setMessages(prev => [...prev, displayUserMsg, placeholder])
     setDraft(''); setSending(true)
     draftSavedRef.current = false
-    setAgentStatus('Thinking…')
+    setAgentStatus(isContinuation ? 'Continuing…' : 'Thinking…')
     setTaskLog([]); taskLogRef.current = []
     setThoughts([]); thoughtsRef.current = []
     pendingDraftCardRef.current = null
-    await supabase.from('messages').insert({ conversation_id: convId, role: 'user', content: userMsg.content, user_id: uid })
+    await supabase.from('messages').insert({ conversation_id: convId, role: 'user', content: displayUserMsg.content, user_id: uid })
     const promptActiveClientId = detectClientIdFromText(userMsg.content)
       || activeClientIdRef.current
       || activeClientId
@@ -2174,14 +2215,14 @@ How to use this brief:
       : rawMessages
     // Helper to save + display the assistant message
     const saveReply = async (reply: string) => {
-      const cleanReply = stripToolCallJson(reply) || 'Done.'
+      const cleanReply = addContinueSuggestion(stripToolCallJson(reply) || 'Done.')
       const stored = encodeMessageMeta(cleanReply, taskLogRef.current, thoughtsRef.current.map(stripToolCallJson).filter(Boolean))
       await supabase.from('messages').insert({ conversation_id: convId, role: 'assistant', content: stored, user_id: uid })
-      await supabase.from('conversations').update({ updated_at: new Date().toISOString(), title: userMsg.content.slice(0, 60) }).eq('id', convId)
+      await supabase.from('conversations').update({ updated_at: new Date().toISOString(), title: displayUserMsg.content.slice(0, 60) }).eq('id', convId)
       setMessages(prev => prev.map(m => m.id === placeholder.id ? { ...m, content: cleanReply, _taskLog: [...taskLogRef.current], _thoughts: thoughtsRef.current.map(stripToolCallJson).filter(Boolean), _draftCard: pendingDraftCardRef.current || undefined } : m))
     }
     // Quick acknowledgement — Haiku, no tools, shows user the agent has started
-    try {
+    if (!isContinuation) try {
       const ackRes = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -2207,7 +2248,7 @@ How to use this brief:
     } catch { /* non-critical */ }
 
     const userText = typeof userMsg.content === 'string' ? userMsg.content.toLowerCase() : ''
-    const isWritingTurn = ['write', 'draft', 'blog post', 'article', 'content plan', 'create a plan'].some(kw => userText.includes(kw))
+    const isWritingTurn = isContinuation || ['write', 'draft', 'blog post', 'article', 'content plan', 'create a plan'].some(kw => userText.includes(kw))
 
     try {
       let loopCount = 0
@@ -2218,7 +2259,7 @@ How to use this brief:
       tokenAccumRef.current = 0
       while (loopCount < 12) {
         loopCount++
-        setAgentStatus(loopCount === 1 ? 'Thinking…' : 'Working…')
+        setAgentStatus(isContinuation ? 'Continuing…' : loopCount === 1 ? 'Thinking…' : 'Working…')
 
         const isFetchOnlyTurn: boolean = (
           ['what keywords', 'show me', 'list', 'how is', 'what does', 'summarise', 'summarize', 'pull', 'fetch', 'check'].some(kw => userText.includes(kw)) ||
@@ -2236,7 +2277,7 @@ How to use this brief:
             model,
             max_tokens: maxTokens,
             system: systemPrompt,
-            tools: getToolsForAgent(agent.agent_type),
+            tools: isContinuation ? [] : getToolsForAgent(agent.agent_type),
             messages: apiMessages,
           }),
         })
@@ -2278,9 +2319,17 @@ How to use this brief:
             }
             return b
           })
+          const toolBlocks = data.content.filter((b: any) => b.type === 'tool_use' && b.name !== 'web_search')
+          if (isContinuation && loopCount === 1 && toolBlocks.length > 0) {
+            apiMessages.push({
+              role: 'user',
+              content: 'Do not use any tools. Just continue writing the article from where it was cut off.',
+            })
+            continue
+          }
+
           apiMessages.push({ role: 'assistant', content: trimmedContent })
           const toolResults: any[] = []
-          const toolBlocks = data.content.filter((b: any) => b.type === 'tool_use' && b.name !== 'web_search')
           // Add all tasks to the log upfront and capture their indices so parallel completions
           // can mark the correct entry done (completeLastTask only marks index length-1).
           const taskIndices: number[] = []
@@ -2409,11 +2458,33 @@ How to use this brief:
           // Fire-and-forget - non-critical, never blocks the UI
           void (async () => {
             try {
-              const debriefClientId = responseClientId || promptActiveClientId || activeClientIdRef.current || (clients.length === 1 ? clients[0].id : null)
-              const activeClient = clients.find(c => c.id === debriefClientId) || null
-              if (!activeClient) return
-              const { data: existing } = await supabase.from('client_knowledge').select('agent_notes').eq('client_id', activeClient.id).maybeSingle()
-              const currentNotes = ((existing?.agent_notes as Record<string, any>) || {})
+              const debriefClientId = responseClientId || promptActiveClientId || activeClientIdRef.current || null
+              let activeClient = clients.find(c => c.id === debriefClientId) || null
+
+              if (!activeClient) {
+                const fullConversationText = [
+                  ...apiMessages.map((m: any) => typeof m.content === 'string' ? m.content : ''),
+                  finalAssistantReply || '',
+                ].join(' ').toLowerCase()
+
+                activeClient = clients.find(c =>
+                  c.name && fullConversationText.includes(c.name.toLowerCase())
+                ) || null
+              }
+
+              if (!activeClient && clients.length === 1) activeClient = clients[0]
+              if (!activeClient) {
+                console.error('[debrief] could not resolve client - skipping')
+                return
+              }
+
+              const debriefHeaders = await apiJsonHeaders()
+              const knowledgeRes = await fetch(`/api/knowledge/${activeClient.id}`, { headers: debriefHeaders })
+              if (!knowledgeRes.ok) {
+                console.error('[debrief] knowledge load returned', knowledgeRes.status)
+              }
+              const knowledgeData = knowledgeRes.ok ? await knowledgeRes.json().catch(() => null) : null
+              const currentNotes = ((knowledgeData?.knowledge?.agent_notes as Record<string, any>) || {})
               const slug = agent.slug || agent.name?.toLowerCase() || 'ada'
               const existingAgentNotes = currentNotes[slug] && typeof currentNotes[slug] === 'object' ? currentNotes[slug] : {}
               const existingHistory: any[] = Array.isArray(existingAgentNotes.history) ? existingAgentNotes.history : []
@@ -2442,7 +2513,6 @@ Reply with JSON only using exactly these keys:
   "data_points": ["specific metrics, URLs, keyword positions, crawl facts, or source caveats used"]
 }`
 
-              const debriefHeaders = await apiJsonHeaders()
               const debriefRes = await fetch('/api/chat', {
                 method: 'POST',
                 headers: debriefHeaders,
@@ -2497,12 +2567,14 @@ Reply with JSON only using exactly these keys:
                 newEntry.content_opportunities,
               ], 30)
 
-              await supabase.from('client_knowledge').upsert({
-                client_id: activeClient.id,
-                workspace_id: workspaceId,
-                agent_notes: {
-                  ...currentNotes,
-                  [slug]: {
+              const saveDebriefRes = await fetch('/api/knowledge/debrief', {
+                method: 'POST',
+                headers: debriefHeaders,
+                body: JSON.stringify({
+                  client_id: activeClient.id,
+                  agent_slug: slug,
+                  workspace_id: workspaceId || null,
+                  notes: {
                     last_conversation: newEntry,
                     history: updatedHistory,
                     client_context: nextContext,
@@ -2510,9 +2582,30 @@ Reply with JSON only using exactly these keys:
                     content_opportunities: contentOpportunities,
                     updated_at: now,
                   },
+                }),
+              })
+              if (!saveDebriefRes.ok) {
+                const errorText = await saveDebriefRes.text().catch(() => '')
+                console.error('[debrief] save route returned', saveDebriefRes.status, errorText.slice(0, 500))
+                return
+              }
+              setKnowledgePanels(prev => ({
+                ...prev,
+                [activeClient.id]: {
+                  ...(prev[activeClient.id] || {}),
+                  agent_notes: {
+                    ...currentNotes,
+                    [slug]: {
+                      last_conversation: newEntry,
+                      history: updatedHistory,
+                      client_context: nextContext,
+                      all_pending: allPending,
+                      content_opportunities: contentOpportunities,
+                      updated_at: now,
+                    },
+                  },
                 },
-                updated_at: now,
-              }, { onConflict: 'client_id' })
+              }))
             } catch (e) {
               console.error('[debrief] failed:', e)
             }
@@ -2692,7 +2785,7 @@ Reply with JSON only using exactly these keys:
                       {m.role === 'assistant' && suggestions.length > 0 && isLastMessage && !sending && (
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8, maxWidth: '100%' }}>
                           {suggestions.map((s, si) => (
-                            <button key={si} onClick={() => { setDraft(s); setTimeout(() => send(), 50) }}
+                            <button key={si} onClick={() => { setDraft(s); void send(s) }}
                               style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: '6px 12px', fontSize: 12.5, color: 'var(--text-2)', cursor: 'pointer', transition: 'border-color 0.12s, color 0.12s', whiteSpace: 'nowrap' }}
                               onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--brand)'; e.currentTarget.style.color = 'var(--text)' }}
                               onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = 'var(--text-2)' }}>
@@ -2742,7 +2835,7 @@ Reply with JSON only using exactly these keys:
                       </div>
                     )}
                     <textarea value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() } }} placeholder={`Message ${agent.name}...`} rows={2} style={{ flex: 1, resize: 'none', fontFamily: 'inherit', background: 'transparent', border: 'none', outline: 'none', boxShadow: 'none', padding: 0 }} />
-                    <button onClick={send} disabled={!draft.trim() || sending} style={{ ...S.btn, flexShrink: 0, background: 'var(--brand)', borderRadius: 'var(--radius-md)', padding: '8px 14px', opacity: (!draft.trim() || sending) ? 0.4 : 1 }}>{sending ? '...' : 'Send'}</button>
+                    <button onClick={() => send()} disabled={!draft.trim() || sending} style={{ ...S.btn, flexShrink: 0, background: 'var(--brand)', borderRadius: 'var(--radius-md)', padding: '8px 14px', opacity: (!draft.trim() || sending) ? 0.4 : 1 }}>{sending ? '...' : 'Send'}</button>
                   </div>
                 </div>
               </>
