@@ -70,6 +70,30 @@ type JobRunRow = {
   started_at: string | null
 }
 
+function textList(value: unknown): string[] {
+  if (!value) return []
+  if (Array.isArray(value)) return value.flatMap(item => textList(item)).filter(Boolean)
+  if (typeof value === 'string') return value.trim() ? [value.trim()] : []
+  if (typeof value === 'number' || typeof value === 'boolean') return [String(value)]
+  return []
+}
+
+function formatKnowledgeValue(value: unknown): string {
+  if (Array.isArray(value)) return value.map(item => formatKnowledgeValue(item)).filter(Boolean).join(', ')
+  if (value && typeof value === 'object') {
+    return Object.entries(value as Record<string, unknown>)
+      .map(([key, val]) => `${key}: ${formatKnowledgeValue(val)}`)
+      .filter(Boolean)
+      .join('; ')
+  }
+  return String(value ?? '').trim()
+}
+
+function formatKnowledgeTime(value: string | null | undefined): string {
+  if (!value) return 'Not recorded'
+  return new Date(value).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
+}
+
 export default function ClientDetail() {
   const { id } = useParams<{ id: string }>()
   const searchParams = useSearchParams()
@@ -154,6 +178,7 @@ export default function ClientDetail() {
   const [savingDoc, setSavingDoc] = useState(false)
   const [agentNotes, setAgentNotes] = useState<Record<string, any> | null>(null)
   const [knowledgeSummary, setKnowledgeSummary] = useState<string | null>(null)
+  const [knowledgeMeta, setKnowledgeMeta] = useState<{ site_pages_updated_at: string | null; gsc_snapshot_updated_at: string | null } | null>(null)
 
   // Competitors state
   const [compOpen, setCompOpen] = useState(false)
@@ -180,12 +205,7 @@ export default function ClientDetail() {
     // Load AI overview (cached if fresh)
     loadOverview()
 
-    // Load knowledge docs, agent notes, and content summary
-    supabase.from('client_knowledge').select('docs, agent_notes, content_summary').eq('client_id', id).maybeSingle().then(({ data: kn }) => {
-      if (kn?.docs) setKnowledgeDocs(kn.docs as any[])
-      if (kn?.agent_notes) setAgentNotes(kn.agent_notes as Record<string, any>)
-      if (kn?.content_summary) setKnowledgeSummary(kn.content_summary)
-    })
+    loadKnowledge()
 
     // Read tab from URL param — handles OAuth redirects
     const tabParam = searchParams?.get('tab') as TabKey | null
@@ -341,6 +361,21 @@ export default function ClientDetail() {
     const { data } = await supabase.from('site_pages').select('id,url,title,h1,meta_description,word_count,content_summary,crawled_at').eq('client_id', id).order('url')
     setSitePages(data || [])
   }
+  async function loadKnowledge() {
+    const { data: kn } = await supabase
+      .from('client_knowledge')
+      .select('docs, agent_notes, content_summary, site_pages_updated_at, gsc_snapshot_updated_at')
+      .eq('client_id', id)
+      .maybeSingle()
+
+    setKnowledgeDocs((kn?.docs as any[]) || [])
+    setAgentNotes((kn?.agent_notes as Record<string, any>) || null)
+    setKnowledgeSummary(kn?.content_summary || null)
+    setKnowledgeMeta({
+      site_pages_updated_at: kn?.site_pages_updated_at || null,
+      gsc_snapshot_updated_at: kn?.gsc_snapshot_updated_at || null,
+    })
+  }
   async function loadConnections() {
     const { data } = await supabase.from('site_connections').select('*').eq('client_id', id).order('created_at')
     setConnections(data || [])
@@ -440,6 +475,7 @@ export default function ClientDetail() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ client_id: id }),
       })
+      await Promise.all([loadKnowledge(), loadPages(), loadScheduledJobs(), loadJobRuns(), loadGscConnection(), loadSearchPerformance()])
       setRefreshed(new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }))
     } catch (e) {
       console.error('Knowledge refresh failed:', e)
@@ -454,7 +490,7 @@ export default function ClientDetail() {
       const res = await fetch('/api/crawl', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client_id: id, website: client.website }) })
       const data = await res.json()
       if (data.error) setCrawlError([data.error, data.details].filter(Boolean).join(' '))
-      else { loadClient(); loadPages(); setActiveTab('pages') }
+      else { loadClient(); loadPages(); loadKnowledge(); setActiveTab('pages') }
     } catch { setCrawlError('Crawl failed.') }
     setCrawling(false)
   }
@@ -1808,6 +1844,28 @@ export default function ClientDetail() {
       {/* ── Knowledge docs ── */}
       {activeTab === 'knowledge' && (
         <div>
+          {/* Knowledge panel freshness */}
+          <div style={{ ...S.panel, marginBottom: 16 }}>
+            <div style={S.panelHead}>
+              <span>Knowledge panel freshness</span>
+              <span style={{ fontSize: 11, color: 'var(--text-dim)', fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>Visible to Ada in chat</span>
+            </div>
+            <div style={{ padding: '14px 20px', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
+              <div>
+                <div style={{ fontSize: 11, color: 'var(--text-2)', textTransform: 'uppercase', letterSpacing: '0.8px', marginBottom: 4 }}>Last crawled</div>
+                <div style={{ fontSize: 13, color: knowledgeMeta?.site_pages_updated_at ? 'var(--text)' : 'var(--amber)', fontFamily: 'var(--font-mono)' }}>
+                  {formatKnowledgeTime(knowledgeMeta?.site_pages_updated_at)}
+                </div>
+              </div>
+              <div>
+                <div style={{ fontSize: 11, color: 'var(--text-2)', textTransform: 'uppercase', letterSpacing: '0.8px', marginBottom: 4 }}>Last GSC sync</div>
+                <div style={{ fontSize: 13, color: knowledgeMeta?.gsc_snapshot_updated_at ? 'var(--text)' : 'var(--amber)', fontFamily: 'var(--font-mono)' }}>
+                  {formatKnowledgeTime(knowledgeMeta?.gsc_snapshot_updated_at)}
+                </div>
+              </div>
+            </div>
+          </div>
+
           {/* Content summary */}
           {knowledgeSummary && (
             <div style={{ ...S.panel, marginBottom: 16 }}>
@@ -1820,52 +1878,113 @@ export default function ClientDetail() {
 
           {/* Agent notes — written automatically from conversations */}
           {agentNotes && Object.keys(agentNotes).filter(k => k !== 'competitor_analysis').length > 0 && (
-            <div style={{ ...S.panel, marginBottom: 16 }}>
-              <div style={S.panelHead}>
-                <span>Ada's notes</span>
-                <span style={{ fontSize: 11, color: 'var(--text-dim)', fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>Written automatically from conversations</span>
-              </div>
+            <>
               {Object.entries(agentNotes).map(([slug, notes]: [string, any]) => {
                 if (slug === 'competitor_analysis') return null
-                if (!notes || typeof notes !== 'object') return null
+                if (!notes) return null
+                if (typeof notes === 'string') {
+                  return (
+                    <div key={slug} style={{ ...S.panel, marginBottom: 16 }}>
+                      <div style={S.panelHead}>
+                        <span>{`${slug}'s working notes`}</span>
+                        <span style={{ fontSize: 11, color: 'var(--text-dim)', fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>Written automatically from conversations</span>
+                      </div>
+                      <div style={{ padding: '14px 20px', fontSize: 13, color: 'var(--text-2)', lineHeight: 1.7 }}>{notes}</div>
+                    </div>
+                  )
+                }
+                if (typeof notes !== 'object') return null
+
+                const last = notes.last_conversation || {}
+                const contextEntries = notes.client_context && typeof notes.client_context === 'object'
+                  ? Object.entries(notes.client_context as Record<string, unknown>)
+                    .map(([key, value]) => [key, formatKnowledgeValue(value)] as const)
+                    .filter(([, value]) => value)
+                  : []
+                const pending = textList(notes.all_pending?.length ? notes.all_pending : last.pending).slice(-8)
+                const opportunities = textList(notes.content_opportunities?.length ? notes.content_opportunities : last.content_opportunities).slice(-8)
+                const learned = textList(last.what_i_learned).slice(0, 6)
+                const recs = textList(last.recommendations_made || last.recommendations).slice(0, 6)
+                const updatedAt = notes.updated_at || last.date
+                const historyCount = Array.isArray(notes.history) ? notes.history.length : 0
+
                 return (
-                  <div key={slug} style={{ padding: '14px 20px', borderBottom: '1px solid var(--border)' }}>
-                    <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-2)', textTransform: 'uppercase', letterSpacing: '0.8px', marginBottom: 8 }}>{slug}</div>
-                    {notes.last_conversation && (
-                      <div style={{ marginBottom: 8 }}>
-                        {notes.last_conversation.date && (
+                  <div key={slug} style={{ ...S.panel, marginBottom: 16 }}>
+                    <div style={S.panelHead}>
+                      <span>{`${slug}'s working notes`}</span>
+                      <span style={{ fontSize: 11, color: 'var(--text-dim)', fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>
+                        {updatedAt ? `Updated ${formatKnowledgeTime(updatedAt)}` : 'Written automatically from conversations'}
+                      </span>
+                    </div>
+                    <div style={{ padding: '14px 20px' }}>
+                      {contextEntries.length > 0 && (
+                        <div style={{ marginBottom: 14 }}>
+                          <div style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 600, marginBottom: 6 }}>Client context</div>
+                          <div style={{ display: 'grid', gap: 6 }}>
+                            {contextEntries.map(([key, value]) => (
+                              <div key={key} style={{ fontSize: 12, color: 'var(--text-2)', lineHeight: 1.5 }}>
+                                <strong style={{ color: 'var(--text)' }}>{key}:</strong> {value}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {pending.length > 0 && (
+                        <div style={{ marginBottom: 14 }}>
+                          <div style={{ fontSize: 11, color: 'var(--amber)', fontWeight: 600, marginBottom: 6 }}>Outstanding items</div>
+                          {pending.map((item, i) => (
+                            <div key={i} style={{ fontSize: 12, color: 'var(--text-2)', lineHeight: 1.5, marginBottom: 3 }}>· {item}</div>
+                          ))}
+                        </div>
+                      )}
+
+                      {opportunities.length > 0 && (
+                        <div style={{ marginBottom: 14 }}>
+                          <div style={{ fontSize: 11, color: 'var(--green)', fontWeight: 600, marginBottom: 6 }}>Content opportunities</div>
+                          {opportunities.map((item, i) => (
+                            <div key={i} style={{ fontSize: 12, color: 'var(--text-2)', lineHeight: 1.5, marginBottom: 3 }}>· {item}</div>
+                          ))}
+                        </div>
+                      )}
+
+                      {last.summary && (
+                        <div style={{ marginBottom: 12 }}>
                           <div style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 4 }}>
-                            Last session — {new Date(notes.last_conversation.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}
+                            Last session{last.date ? ` - ${new Date(last.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}` : ''}
                           </div>
-                        )}
-                        <div style={{ fontSize: 13, color: 'var(--text)', lineHeight: 1.6 }}>{notes.last_conversation.summary}</div>
-                        {notes.last_conversation.recommendations?.length > 0 && (
-                          <div style={{ marginTop: 8 }}>
-                            <div style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 600, marginBottom: 3 }}>Recommendations</div>
-                            {notes.last_conversation.recommendations.map((r: string, i: number) => (
-                              <div key={i} style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 2 }}>· {r}</div>
-                            ))}
-                          </div>
-                        )}
-                        {notes.last_conversation.pending?.length > 0 && (
-                          <div style={{ marginTop: 8 }}>
-                            <div style={{ fontSize: 11, color: 'var(--amber)', fontWeight: 600, marginBottom: 3 }}>Pending</div>
-                            {notes.last_conversation.pending.map((p: string, i: number) => (
-                              <div key={i} style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 2 }}>· {p}</div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    )}
-                    {(notes.history?.length || 0) > 1 && (
-                      <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 4 }}>
-                        {notes.history.length - 1} previous session{notes.history.length > 2 ? 's' : ''} on record
-                      </div>
-                    )}
+                          <div style={{ fontSize: 13, color: 'var(--text)', lineHeight: 1.6 }}>{last.summary}</div>
+                        </div>
+                      )}
+
+                      {learned.length > 0 && (
+                        <div style={{ marginBottom: 12 }}>
+                          <div style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 600, marginBottom: 6 }}>Learned</div>
+                          {learned.map((item, i) => (
+                            <div key={i} style={{ fontSize: 12, color: 'var(--text-2)', lineHeight: 1.5, marginBottom: 3 }}>· {item}</div>
+                          ))}
+                        </div>
+                      )}
+
+                      {recs.length > 0 && (
+                        <div style={{ marginBottom: 12 }}>
+                          <div style={{ fontSize: 11, color: 'var(--green)', fontWeight: 600, marginBottom: 6 }}>Recommendations made</div>
+                          {recs.map((item, i) => (
+                            <div key={i} style={{ fontSize: 12, color: 'var(--text-2)', lineHeight: 1.5, marginBottom: 3 }}>· {item}</div>
+                          ))}
+                        </div>
+                      )}
+
+                      {historyCount > 0 && (
+                        <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 4 }}>
+                          {historyCount} session{historyCount === 1 ? '' : 's'} on record
+                        </div>
+                      )}
+                    </div>
                   </div>
                 )
               })}
-            </div>
+            </>
           )}
 
           <div style={S.panel}>

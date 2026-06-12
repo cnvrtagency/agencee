@@ -1,7 +1,7 @@
 # Agencee — Master Architecture Document
 
 **Living document. Update at the end of every build session.**
-Last updated: 12 June 2026. Session: automation activity logging, schedule history, and scoped competitor analysis follow-up.
+Last updated: 12 June 2026. Session: knowledge panel empty/stale handling, chat last-run tracking, and rich working notes.
 
 ---
 
@@ -51,7 +51,7 @@ Ada is the primary content and SEO strategy agent. She plans, researches, writes
 | Keyword suggestions | `suggest_keyword` adds to `keyword_suggestions` table (pending, awaiting user approval). |
 | Read/write files | `read_file` and `write_file` for direct GitHub repo operations. |
 | Save planned tasks | `save_planned_task` / `update_planned_task` to `planned_tasks` table. Shown in the agent sidebar. |
-| Agent notes | `update_agent_notes` writes to `client_knowledge.agent_notes[agent.slug]`. Persists across sessions. |
+| Agent notes | `update_agent_notes` writes to `client_knowledge.agent_notes[agent.slug]`; auto-debrief also accumulates rich working notes after meaningful SEO tool sessions. Persists across sessions. |
 | Suggested replies | When Ada ends with a question or options, she appends `<suggestions>["a","b","c"]</suggestions>` — parsed by the UI into clickable chips. |
 
 #### Ada's workflow — blog post
@@ -77,7 +77,7 @@ Ada is the primary content and SEO strategy agent. She plans, researches, writes
 1. Identity (name, role, backstory, expertise, personality, communication style, working style, boundaries, custom instructions from DB)
 2. Universal working principles (research-first, data reconciliation rule, acknowledgement behaviour, suggested replies format)
 3. Client context (all profile fields, dynamically from DB — no hardcoding)
-4. Knowledge panel (site_pages, gsc_snapshot, content_summary, agent_notes)
+4. Knowledge panel (site_pages, gsc_snapshot, content_summary, rich agent_notes, empty/stale crawl warnings, GSC average-position caveat)
 5. SEO-specific instructions: working approach, blog post rules, content format, workflow, content planning rules
 6. Image generation: SCHEMA methodology, content-derived prompts, 1K default
 7. Response style: conversational, UK English, zero em-dashes, length rules, suggested replies, acknowledgement format
@@ -199,7 +199,7 @@ Exist as cards in `/marketplace` only. No agent_type, tools, or system prompt.
 |---|---|
 | `/` | Dashboard. Briefing room (AI opportunity cards, expand/collapse, Act/Dismiss). Stat cards (Clients, Queued, Running, Needs review — mono font, 36px number). What needs attention panel. Token usage (by agent + 5-week activity calendar). Pending review (inline approve/delete). Queue activity. |
 | `/clients` | Client list table. Add client modal (name, website, industry, slug — minimal). Saves immediately, redirects to client detail page to complete profile. |
-| `/clients/[id]` | 10 tabs: Profile, Keywords, Pages, Codebase, Connections, Schedule, Competitors, Search, Reports, Knowledge. AI overview panel (Haiku, 24h cache). Crawl button. GSC sync button. Refresh knowledge panel button. Schedule tab job cards expand to lazy-load per-job `job_runs` history. Knowledge tab: shows Ada's notes (last_conversation, recommendations, pending, history from `client_knowledge.agent_notes`), content summary (`client_knowledge.content_summary`), and manual docs (`client_knowledge.docs`). All three sections loaded from client_knowledge on mount. Reads `?tab=` and `?gsc=` URL params on mount for OAuth redirect handling. |
+| `/clients/[id]` | 10 tabs: Profile, Keywords, Pages, Codebase, Connections, Schedule, Competitors, Search, Reports, Knowledge. AI overview panel (Haiku, 24h cache). Crawl button. GSC sync button. Refresh knowledge panel button. Schedule tab job cards expand to lazy-load per-job `job_runs` history. Knowledge tab: shows knowledge freshness (`site_pages_updated_at`, `gsc_snapshot_updated_at`), content summary, rich per-agent working notes (`client_context`, `all_pending`, `content_opportunities`, last session, history count), and manual docs (`client_knowledge.docs`). All sections load from client_knowledge on mount and refresh after knowledge refresh/crawl actions. Reads `?tab=` and `?gsc=` URL params on mount for OAuth redirect handling. |
 | `/clients/[id]/gsc-setup` | Google OAuth for GSC connection |
 | `/outputs` | Global outputs — Drafts/Approved/Published tabs. Thumbnail, title, client, keyword, agent, word count, date, status pill, action buttons (Approve, Review, Publish, View live). |
 | `/outputs/[id]` | Full output detail. Pipeline bar (Draft/Approved/Published). Image gallery with Supabase URLs. SEO metadata bar (title char count, meta char count). Preview/Edit toggle. 12 feedback preset chips (Generate images, Add TOC, Strengthen intro, Fix title/meta, Featured snippet, Internal links, Improve CTA, FAQ section, Expand, Fix headings, Strengthen trust signals, Adjust tone). Feedback to Ada panel. Version history. Approve/Revert/Publish/Delete. |
@@ -330,7 +330,7 @@ Exist as cards in `/marketplace` only. No agent_type, tools, or system prompt.
 | `workspaces` | id, owner_id, name | One per account |
 | `workspace_settings` | user_id, anthropic_api_key, gemini_api_key, monthly_token_budget, tokens_used_this_month | API keys + usage |
 | `client_profiles` | id, name, slug, website, description, icp, usp, brand_voice, content_goals, content_tone, location_info, competitors[], github_repo, content_autonomy, pricing_info, team_info, trust_signals, service_differentiators, target_keywords, avoid_topics, cta_approach, schema_type, ai_overview, ai_overview_updated_at | All client context |
-| `client_knowledge` | client_id, site_pages jsonb, site_pages_updated_at, site_summary, gsc_snapshot jsonb, gsc_snapshot_updated_at, content_summary, content_updated_at, docs jsonb, agent_notes jsonb | Persistent client brain. `agent_notes[slug]` is a structured object: `{ last_conversation: { summary, recommendations, pending }, history: [{ date, summary, recommendations, pending }] }` (max 10 history entries). Also has `competitor_analysis: { updated_at, result }` key. |
+| `client_knowledge` | client_id, site_pages jsonb, site_pages_updated_at, site_summary, gsc_snapshot jsonb, gsc_snapshot_updated_at, content_summary, content_updated_at, docs jsonb, agent_notes jsonb | Persistent client brain. `agent_notes[slug]` is a structured object: `{ last_conversation, history, client_context, all_pending, content_opportunities, updated_at }`; `history` keeps the last 20 sessions, `all_pending` the last 20 items, and `content_opportunities` the last 30. `last_conversation` stores `{ date, summary, what_i_learned, recommendations_made, pending, content_opportunities, data_points }`. Also has `competitor_analysis: { updated_at, result }` key. |
 | `client_schedules` | client_id, agent_id, cadence, content_types[], target_word_count, next_run_at, last_run_at | Recurring content schedules |
 | `agents` | id, name, role, slug, agent_type, avatar_initials, instructions, backstory, expertise, personality, communication_style, working_style, boundaries, nav_items, active | Agent config |
 | `conversations` | id, agent_id, title, updated_at, user_id | Chat sessions |
@@ -372,18 +372,28 @@ The persistent brain per client. Injected into every agent session — eliminate
 | `/api/crawl` completes | site_pages, site_pages_updated_at, site_summary, content_summary (Haiku call using content_history + keyword_banks) |
 | `/api/gsc/sync` completes | gsc_snapshot (near_miss pos 3-20 >15imp, low_ctr pos<=10 ctr<3% >30imp, top_queries by clicks, totals), gsc_snapshot_updated_at |
 | `update_agent_notes` tool | agent_notes[agent.slug] |
+| Auto-debrief after meaningful SEO sessions | Merges rich `agent_notes[agent.slug]` working document: `last_conversation`, `history`, `client_context`, `all_pending`, `content_opportunities`, `updated_at` |
 | `/api/keywords/backfill-targeting` | Updates keyword_banks.content_targeting_this (not a knowledge panel field, but called from refresh) |
-| Agent session start (background, fire and forget) | Triggers crawl if site_pages >7 days old. Triggers GSC sync if snapshot >48 hours old. |
+| Agent session start (background, fire and forget) | Triggers crawl if site_pages >7 days old. Triggers GSC sync if snapshot >48 hours old. Successful backfills update matching `scheduled_jobs.last_run_*` rows and insert `job_runs` for `site_audit` / `gsc_intelligence`. |
 | Refresh button (client page) | Crawl + GSC sync + backfill-targeting in parallel |
 
 **Injected into buildSystemPrompt as:**
 - Full page inventory: url, title, word_count, H1 — with crawl date
+- Empty page inventory warning: if no `site_pages` are stored, Ada must say there is no current crawl data, must not assume pages are absent, and should offer a crawl or call `get_site_pages` before structural claims
+- Stale page inventory warning: if `site_pages_updated_at` is over 14 days old, Ada treats listed URLs as known pages but offers a refresh before structural recommendations
 - GSC snapshot: totals (clicks, impressions, avg_position, ctr), near-miss keywords, low-CTR pages, top 30 queries
 - Content summary prose
-- Agent notes for the current agent's slug
+- Rich working notes for the current agent's slug: `client_context`, latest session summary, learned facts, recommendations made, outstanding items, content opportunities, and recent history
 - Competitor analysis: if `agent_notes.competitor_analysis` exists and is under 7 days old, injected as a `COMPETITOR ANALYSIS (from Xh ago):` block — Ada has the gap analysis without calling the tool again
 - Knowledge docs: `docs` jsonb array, each `{ id, title, content, updated_at }`. Injected as `KNOWLEDGE DOCUMENTS — read and apply these on every response:` block. Editable via client Knowledge tab.
 - Current SEO intelligence: latest `agent_knowledge` row injected as `CURRENT SEO INTELLIGENCE (week of ...)` block if present
+
+**Ground-truth rules in prompt:**
+- Listed URLs exist; Ada must not call them missing unless fresher data proves otherwise.
+- Missing URLs may still exist when crawl data is empty, stale, or incomplete.
+- Empty/stale page lists must be disclosed before structural recommendations.
+- GSC positions are 28-day averages, not live rankings or exact current positions.
+- Use page summaries first, then `read_page` when full content is needed.
 
 ---
 
@@ -627,6 +637,14 @@ GET /api/schedule/check
 ---
 
 ## Session Change Log
+
+### 12 June 2026 (session 14 - knowledge panel stabilization)
+**Fixed:**
+- `buildSystemPrompt` now treats `client_knowledge.site_pages` as known inventory, not complete universal truth: listed URLs exist, missing URLs may still exist, empty page inventories trigger a no-crawl warning, and page inventories older than 14 days trigger a stale-data warning.
+- Knowledge panel ground-truth rules now explicitly tell Ada that GSC positions are 28-day averages, not live exact rankings, and to offer a crawl before structural recommendations when page data is missing or stale.
+- Agent session-start auto-crawl and auto-GSC sync now update matching `scheduled_jobs.last_run_at/status/summary` rows and insert `job_runs` after successful backfills.
+- Auto-debrief now fires for SEO sessions with 2+ tool calls or significant SEO actions, summarises the actual conversation, and stores a richer `agent_notes[slug]` working document with `client_context`, `all_pending`, `content_opportunities`, history, and data points.
+- Client Knowledge tab now shows last crawl/GSC sync timestamps and renders rich working notes with client context, outstanding items, content opportunities, latest session summary, learned facts, recommendations made, and history count.
 
 ### 12 June 2026 (session 13 - combined follow-up fixes)
 **Fixed:**

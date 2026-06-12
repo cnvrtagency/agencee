@@ -61,6 +61,42 @@ type CompetitorPageRow = {
   competitor_id: string
 }
 
+function toTextList(value: unknown): string[] {
+  if (!value) return []
+  if (Array.isArray(value)) {
+    return value
+      .flatMap(item => toTextList(item))
+      .map(item => item.trim())
+      .filter(Boolean)
+  }
+  if (typeof value === 'string') return value.trim() ? [value.trim()] : []
+  if (typeof value === 'number' || typeof value === 'boolean') return [String(value)]
+  return []
+}
+
+function uniqueTextList(values: unknown[], limit: number): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const item of values.flatMap(value => toTextList(value))) {
+    const key = item.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(item)
+  }
+  return out.slice(-limit)
+}
+
+function formatContextValue(value: unknown): string {
+  if (Array.isArray(value)) return value.map(item => formatContextValue(item)).filter(Boolean).join(', ')
+  if (value && typeof value === 'object') {
+    return Object.entries(value as Record<string, unknown>)
+      .map(([k, v]) => `${k}: ${formatContextValue(v)}`)
+      .filter(Boolean)
+      .join('; ')
+  }
+  return String(value ?? '').trim()
+}
+
 function buildSystemPrompt(agent: Agent, clients: Client[], knowledgePanels: Record<string, any> = {}, digest?: { summary: string; week_of: string } | null): string {
   const parts: string[] = []
 
@@ -136,8 +172,7 @@ General questions (how does X work, what is Y) can be answered without specifyin
 
   // Knowledge panel injection — cached intelligence, no tool call cost
   const knowledgeBlocks = clients.map(c => {
-    const k = knowledgePanels[c.id]
-    if (!k) return null
+    const k = knowledgePanels[c.id] || {}
     const kParts = [`KNOWLEDGE PANEL — ${c.name}:`]
 
     if (k.site_summary) kParts.push(`Site overview: ${k.site_summary}`)
@@ -148,6 +183,14 @@ General questions (how does X work, what is Y) can be answered without specifyin
         `${p.url}${p.title ? ` — "${p.title}"` : ''}${p.word_count ? ` (${p.word_count}w)` : ''}`
       ).join('\n')
       kParts.push(`Live pages — ${k.site_pages.length} total, last crawled ${synced}:\n${pageList}`)
+      if (k.site_pages_updated_at) {
+        const ageDays = (Date.now() - new Date(k.site_pages_updated_at).getTime()) / 86400000
+        if (ageDays > 14) {
+          kParts.push(`Page inventory warning: last crawl was ${Math.round(ageDays)} days ago. Treat the listed URLs as known existing pages, but offer to refresh the crawl before making structural recommendations.`)
+        }
+      }
+    } else {
+      kParts.push(`Live pages - no current crawl data is stored for this client. Do not assume pages are absent. Before making claims about site structure, missing pages, or whether a URL exists, offer to crawl the site or call get_site_pages if the user needs an immediate answer.`)
     }
 
     if (k.gsc_snapshot?.totals) {
@@ -177,12 +220,31 @@ General questions (how does X work, what is Y) can be answered without specifyin
       if (typeof agentNotes === 'string') {
         noteParts.push(agentNotes)
       } else {
-        if (agentNotes.last_conversation?.summary) noteParts.push(`Last session: ${agentNotes.last_conversation.summary}`)
-        if (agentNotes.last_conversation?.recommendations?.length) noteParts.push(`Recommendations pending: ${agentNotes.last_conversation.recommendations.join('; ')}`)
-        if (agentNotes.last_conversation?.pending?.length) noteParts.push(`Outstanding items: ${agentNotes.last_conversation.pending.join('; ')}`)
-        if (agentNotes.history?.length > 1) noteParts.push(`Previous sessions: ${(agentNotes.history as any[]).slice(-3).map((h: any) => h.summary).filter(Boolean).join(' | ')}`)
+        const last = agentNotes.last_conversation || {}
+        const clientContext = agentNotes.client_context && typeof agentNotes.client_context === 'object'
+          ? Object.entries(agentNotes.client_context as Record<string, unknown>)
+            .map(([key, value]) => `${key}: ${formatContextValue(value)}`)
+            .filter(Boolean)
+          : []
+        const recommendations = toTextList(last.recommendations_made || last.recommendations)
+        const pending = toTextList(agentNotes.all_pending?.length ? agentNotes.all_pending : last.pending)
+        const opportunities = toTextList(agentNotes.content_opportunities?.length ? agentNotes.content_opportunities : last.content_opportunities)
+        const learned = toTextList(last.what_i_learned)
+        const historySummaries = Array.isArray(agentNotes.history)
+          ? (agentNotes.history as any[]).slice(-4).map((h: any) => h.summary).filter(Boolean)
+          : []
+
+        if (clientContext.length) noteParts.push(`Client context:\n${clientContext.map(line => `- ${line}`).join('\n')}`)
+        if (last.summary) noteParts.push(`Last session${last.date ? ` (${new Date(last.date).toLocaleDateString('en-GB')})` : ''}: ${last.summary}`)
+        if (learned.length) noteParts.push(`What you learned: ${learned.join('; ')}`)
+        if (recommendations.length) noteParts.push(`Recommendations made: ${recommendations.join('; ')}`)
+        if (pending.length) noteParts.push(`Outstanding items: ${pending.slice(-10).join('; ')}`)
+        if (opportunities.length) noteParts.push(`Content opportunities: ${opportunities.slice(-10).join('; ')}`)
+        if (historySummaries.length) noteParts.push(`Recent history: ${historySummaries.join(' | ')}`)
       }
-      if (noteParts.length > 0) kParts.push(`Your notes on this client:\n${noteParts.join('\n')}`)
+      if (noteParts.length > 0) {
+        kParts.push(`YOUR WORKING NOTES ON THIS CLIENT - use these to maintain continuity without repeating old mistakes:\n${noteParts.join('\n')}`)
+      }
     }
 
     if (k.agent_notes?.competitor_analysis) {
@@ -198,7 +260,12 @@ General questions (how does X work, what is Y) can be answered without specifyin
 
   if (knowledgeBlocks.length > 0) {
     parts.push(knowledgeBlocks.join('\n\n---\n\n'))
-    parts.push(`IMPORTANT: The knowledge panel above is your ground truth for site structure and recent performance. Use it before calling get_site_pages or analyse_gsc — only call those tools if you need fresher data than the panel provides, or for a specific query the panel cannot answer.`)
+    parts.push(`KNOWLEDGE PANEL GROUND TRUTH RULES:
+1. Listed URLs exist and should not be described as missing unless a fresher crawl proves otherwise.
+2. URLs missing from the panel may still exist if crawl data is empty, stale, or incomplete.
+3. If the page list is missing or stale, say that clearly and offer a crawl before making structural recommendations.
+4. GSC positions shown here are 28-day averages, not live Google rankings or exact current positions.
+5. Use page summaries first, then call read_page for a listed URL when full page content is needed.`)
   }
 
   const isSeo       = agent.agent_type === 'seo'
@@ -906,6 +973,32 @@ export default function AgentPage() {
     loadKnowledgePanels(clientList)
   }
 
+  async function recordAutoKnowledgeRun(clientId: string, jobType: string, summary: string) {
+    const completedAt = new Date().toISOString()
+    const { data: jobs } = await supabase
+      .from('scheduled_jobs')
+      .select('id, workspace_id')
+      .eq('client_id', clientId)
+      .eq('job_type', jobType)
+
+    for (const job of (jobs || []) as { id: string; workspace_id: string | null }[]) {
+      await supabase.from('scheduled_jobs').update({
+        last_run_at: completedAt,
+        last_run_status: 'success',
+        last_run_summary: summary,
+      }).eq('id', job.id)
+
+      await supabase.from('job_runs').insert({
+        job_id: job.id,
+        workspace_id: job.workspace_id || workspaceId,
+        client_id: clientId,
+        status: 'success',
+        summary,
+        completed_at: completedAt,
+      })
+    }
+  }
+
   async function loadKnowledgePanels(clientList: Client[]) {
     const panels: Record<string, any> = {}
     await Promise.all(clientList.map(async c => {
@@ -923,26 +1016,42 @@ export default function AgentPage() {
           (now - new Date(knowledge.site_pages_updated_at).getTime()) > sevenDays
 
         if (needsCrawlBackfill && c.website) {
-          fetch('/api/crawl', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ website: c.website, client_id: c.id }),
-          }).catch(() => {})
+          void (async () => {
+            try {
+              const crawlRes = await fetch('/api/crawl', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ website: c.website, client_id: c.id }),
+              })
+              if (!crawlRes.ok) return
+              await recordAutoKnowledgeRun(c.id, 'site_audit', 'Auto-crawl triggered on session start')
+              const refreshed = await fetch(`/api/knowledge/${c.id}`).then(r => r.json()).catch(() => null)
+              if (refreshed?.knowledge) setKnowledgePanels(prev => ({ ...prev, [c.id]: refreshed.knowledge }))
+            } catch { /* non-critical */ }
+          })()
         }
 
         const needsGscBackfill = !knowledge?.gsc_snapshot_updated_at ||
           (now - new Date(knowledge.gsc_snapshot_updated_at).getTime()) > twoDays
 
         if (needsGscBackfill) {
-          fetch('/api/gsc/sync', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ client_id: c.id }),
-          }).catch(() => {})
+          void (async () => {
+            try {
+              const syncRes = await fetch('/api/gsc/sync', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ client_id: c.id }),
+              })
+              if (!syncRes.ok) return
+              await recordAutoKnowledgeRun(c.id, 'gsc_intelligence', 'Auto-GSC sync triggered on session start')
+              const refreshed = await fetch(`/api/knowledge/${c.id}`).then(r => r.json()).catch(() => null)
+              if (refreshed?.knowledge) setKnowledgePanels(prev => ({ ...prev, [c.id]: refreshed.knowledge }))
+            } catch { /* non-critical */ }
+          })()
         }
       } catch { /* non-critical */ }
     }))
-    setKnowledgePanels(panels)
+    setKnowledgePanels(prev => ({ ...prev, ...panels }))
   }
 
   async function loadGscData(clientList: Client[]) {
@@ -2004,6 +2113,7 @@ How to use this brief:
     try {
       let loopCount = 0
       let savedReply = false
+      let finalAssistantReply = ''
       let prevStopReason: string | null = null
       let totalTokensUsed = 0
       tokenAccumRef.current = 0
@@ -2047,6 +2157,7 @@ How to use this brief:
         if (data.error || !data.content) {
           const errMsg = typeof data.error === 'string' ? data.error : (data.error?.message || 'Something went wrong — try again.')
           const errReply = `⚠️ ${errMsg}`
+          finalAssistantReply = errReply
           await saveReply(errReply)
           savedReply = true
           break
@@ -2119,13 +2230,15 @@ How to use this brief:
             })
             const wrapData = await wrapRes.json()
             const wrapReply = (wrapData.content || []).filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n').trim()
-            await saveReply(wrapReply || 'Draft saved and ready for review.')
+            finalAssistantReply = wrapReply || 'Draft saved and ready for review.'
+            await saveReply(finalAssistantReply)
             savedReply = true
             break
           }
         } else if (data.stop_reason === 'max_tokens') {
           const partial = (data.content || []).filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n')
           const reply = (partial || 'Response cut off — the file was too large to write in one go.') + '\n\n_Output was cut short. Reply "continue" to get the rest._'
+          finalAssistantReply = reply
           await saveReply(reply)
           savedReply = true
           break
@@ -2154,6 +2267,7 @@ How to use this brief:
           } else if (!reply) {
             reply = 'Done.'
           }
+          finalAssistantReply = reply
           await saveReply(reply)
           savedReply = true
           break
@@ -2161,53 +2275,128 @@ How to use this brief:
       }
       // Loop hit max iterations without saving — save what we have
       if (!savedReply) {
-        await saveReply('Working... loop limit reached. Reply to continue.')
+        finalAssistantReply = 'Working... loop limit reached. Reply to continue.'
+        await saveReply(finalAssistantReply)
       }
-      // Auto debrief — only for SEO agents after significant tool use (draft saved or GSC analysed)
-      const hadSignificantAction = taskLogRef.current.some(t =>
-        ['Saving draft', 'Loading keyword bank', 'Analysing GSC', 'Checking content history'].some(label =>
-          t.label?.includes(label)
+      // Auto debrief - only for SEO agents after meaningful tool use.
+      const hadSignificantAction = taskLogRef.current.length >= 2 || (
+        taskLogRef.current.some(t =>
+          ['Saving draft', 'Loading keyword bank', 'Analysing GSC', 'Checking content history',
+            'Analysing competitor', 'Finding internal link', 'Saving keyword'].some(label =>
+            t.label?.includes(label)
+          )
         )
       )
-      if (agent.agent_type === 'seo' && taskLogRef.current.length > 0 && hadSignificantAction) {
-        // Fire-and-forget — non-critical, never blocks the UI
-        void (async () => {
-          try {
-            const activeClient = clients.length === 1 ? clients[0] : null
-            if (!activeClient) return
-            const { data: existing } = await supabase.from('client_knowledge').select('agent_notes').eq('client_id', activeClient.id).maybeSingle()
-            const currentNotes = ((existing?.agent_notes as Record<string, any>) || {})
-            const slug = agent.slug || agent.name?.toLowerCase() || 'ada'
-            const existingHistory: any[] = currentNotes[slug]?.history || []
-            const debriefRes = await fetch('/api/chat', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                agent_id: id,
+      if (agent.agent_type === 'seo' && hadSignificantAction) {
+        const debriefMessages = finalAssistantReply
+          ? [...apiMessages, { role: 'assistant', content: finalAssistantReply }]
+          : apiMessages
+        const conversationSummary = debriefMessages
+          .filter((m: any) => typeof m.content === 'string' && m.content.length > 20)
+          .slice(-12)
+          .map((m: any) => `${m.role === 'user' ? 'User' : 'Ada'}: ${String(m.content).slice(0, 300)}`)
+          .join('\n')
+        const taskSummary = taskLogRef.current
+          .map(t => t.label?.replace('…', '').trim())
+          .filter(Boolean)
+          .join(', ')
+
+        if (conversationSummary) {
+          // Fire-and-forget - non-critical, never blocks the UI
+          void (async () => {
+            try {
+              const activeClient = clients.length === 1 ? clients[0] : null
+              if (!activeClient) return
+              const { data: existing } = await supabase.from('client_knowledge').select('agent_notes').eq('client_id', activeClient.id).maybeSingle()
+              const currentNotes = ((existing?.agent_notes as Record<string, any>) || {})
+              const slug = agent.slug || agent.name?.toLowerCase() || 'ada'
+              const existingAgentNotes = currentNotes[slug] && typeof currentNotes[slug] === 'object' ? currentNotes[slug] : {}
+              const existingHistory: any[] = Array.isArray(existingAgentNotes.history) ? existingAgentNotes.history : []
+              const existingContext = existingAgentNotes.client_context && typeof existingAgentNotes.client_context === 'object'
+                ? existingAgentNotes.client_context
+                : {}
+
+              const debriefPrompt = `You are ${agent.name}, an SEO specialist maintaining a private working memory for ${activeClient.name}.
+
+Summarise this completed SEO session into durable notes that will help future sessions avoid repeating work and preserve useful context.
+
+Conversation:
+${conversationSummary}
+
+Tool/activity log:
+${taskSummary || 'No labelled tools recorded.'}
+
+Reply with JSON only using exactly these keys:
+{
+  "summary": "one concise sentence",
+  "what_i_learned": ["durable facts or performance signals learned"],
+  "recommendations_made": ["recommendations Ada actually made"],
+  "pending": ["follow-up items, open decisions, unresolved problems"],
+  "client_context": { "key": "stable client preference, fact, audience concern, or strategic context" },
+  "content_opportunities": ["future content or keyword opportunities mentioned"],
+  "data_points": ["specific metrics, URLs, keyword positions, crawl facts, or source caveats used"]
+}`
+
+              const debriefRes = await fetch('/api/chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  agent_id: id,
+                  client_id: activeClient.id,
+                  session_tokens: sessionTokensRef.current,
+                  model: 'claude-haiku-4-5-20251001',
+                  max_tokens: 900,
+                  messages: [{ role: 'user', content: debriefPrompt }],
+                }),
+              })
+              const debriefData = await debriefRes.json()
+              const raw = (debriefData.content || []).filter((b: any) => b.type === 'text').map((b: any) => b.text).join('').trim()
+              let parsed: any = {}
+              try { parsed = JSON.parse(raw.replace(/^```json\n?/, '').replace(/\n?```$/, '')) } catch { return }
+
+              const now = new Date().toISOString()
+              const newEntry = {
+                date: now,
+                summary: String(parsed.summary || '').trim(),
+                what_i_learned: toTextList(parsed.what_i_learned),
+                recommendations_made: toTextList(parsed.recommendations_made),
+                pending: toTextList(parsed.pending),
+                content_opportunities: toTextList(parsed.content_opportunities),
+                data_points: toTextList(parsed.data_points),
+              }
+              const nextContext = {
+                ...existingContext,
+                ...(parsed.client_context && typeof parsed.client_context === 'object' && !Array.isArray(parsed.client_context) ? parsed.client_context : {}),
+              }
+              const updatedHistory = [...existingHistory.slice(-19), newEntry]
+              const allPending = uniqueTextList([
+                ...(Array.isArray(existingAgentNotes.all_pending) ? existingAgentNotes.all_pending : []),
+                newEntry.pending,
+              ], 20)
+              const contentOpportunities = uniqueTextList([
+                ...(Array.isArray(existingAgentNotes.content_opportunities) ? existingAgentNotes.content_opportunities : []),
+                newEntry.content_opportunities,
+              ], 30)
+
+              await supabase.from('client_knowledge').upsert({
                 client_id: activeClient.id,
-                session_tokens: sessionTokensRef.current,
-                model: 'claude-haiku-4-5-20251001',
-                max_tokens: 400,
-                messages: [{
-                  role: 'user',
-                  content: `You are ${agent.name}. Summarise this conversation in JSON with keys: summary (1 sentence), recommendations (string[]), pending (string[]). Tasks done: ${taskLogRef.current.map(t => t.label?.replace('…', '')).filter(Boolean).join(', ')}. Reply with JSON only.`,
-                }],
-              }),
-            })
-            const debriefData = await debriefRes.json()
-            const raw = (debriefData.content || []).filter((b: any) => b.type === 'text').map((b: any) => b.text).join('').trim()
-            let parsed: any = {}
-            try { parsed = JSON.parse(raw.replace(/^```json\n?/, '').replace(/\n?```$/, '')) } catch { return }
-            const newEntry = { date: new Date().toISOString(), ...parsed }
-            const updatedHistory = [...existingHistory.slice(-9), newEntry]
-            await supabase.from('client_knowledge').upsert({
-              client_id: activeClient.id,
-              workspace_id: workspaceId,
-              agent_notes: { ...currentNotes, [slug]: { last_conversation: parsed, history: updatedHistory } },
-              updated_at: new Date().toISOString(),
-            }, { onConflict: 'client_id' })
-          } catch { /* non-critical */ }
-        })()
+                workspace_id: workspaceId,
+                agent_notes: {
+                  ...currentNotes,
+                  [slug]: {
+                    last_conversation: newEntry,
+                    history: updatedHistory,
+                    client_context: nextContext,
+                    all_pending: allPending,
+                    content_opportunities: contentOpportunities,
+                    updated_at: now,
+                  },
+                },
+                updated_at: now,
+              }, { onConflict: 'client_id' })
+            } catch { /* non-critical */ }
+          })()
+        }
       }
 
     } catch (e: any) {
