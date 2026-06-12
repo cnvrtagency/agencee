@@ -1,7 +1,7 @@
 # Agencee — Master Architecture Document
 
 **Living document. Update at the end of every build session.**
-Last updated: 12 June 2026. Session: knowledge panel empty/stale handling, chat last-run tracking, and rich working notes.
+Last updated: 12 June 2026. Session: lazy knowledge loading, debrief auth, and acknowledgement cleanup.
 
 ---
 
@@ -179,6 +179,7 @@ Exist as cards in `/marketplace` only. No agent_type, tools, or system prompt.
 
 - Max 12 iterations
 - Each iteration: POST `/api/chat` → Anthropic API
+- The pre-loop Haiku acknowledgement is status-only and is not written into the chat thread; only final substantive replies are saved/displayed.
 - On `tool_use`: all tool blocks executed in **parallel** via `Promise.all`
 - Tool inputs with large content (write_file, write_content) trimmed to 2000 chars before pushing to history
 - Tool results trimmed to 8000 chars max before pushing to history
@@ -188,6 +189,7 @@ Exist as cards in `/marketplace` only. No agent_type, tools, or system prompt.
 - Task log: persists across navigation via `encodeMessageMeta` / `decodeMessageMeta` in message content
 - `pendingDraftCardRef`: holds draft card data (title, word count, image count, review URL) set by write_content, attached to the final assistant message
 - **Conversation summarisation:** when `rawMessages.length > 8`, all but the last 6 messages are summarised into a single Haiku call (max 600 tokens) and replaced with a 2-message `[Earlier in this conversation] / Summary: ...` block. Keeps input tokens bounded on long sessions. Falls back to full history if the Haiku call fails.
+- **Auto debrief:** after meaningful SEO tool sessions, the debrief `/api/chat` call explicitly passes the current Supabase JWT and logs non-OK/API/parse failures with `[debrief]` prefixes before writing rich `agent_notes`.
 
 ---
 
@@ -212,7 +214,7 @@ Exist as cards in `/marketplace` only. No agent_type, tools, or system prompt.
 | `/marketplace` | Agent cards. Ada + Theo installed. 5 others not installed. |
 | `/settings` | Workspace name, Anthropic key, Gemini key, token budget + usage bar, notification prefs (email toggle, Slack webhook + test button, per-type toggles). |
 | `/agents` | Agent list. Cards link to `/agents/[id]/overview`; quick-nav pills link to specific agent sections. |
-| `/agents/[id]` | Main agent interface. Chat + Settings tabs. Left panel: New chat, task log (Active/Last session), planned tasks, conversation list with delete. Right panel: agent header with avatar/name/role + live session cost (tokens + est. $, resets per conversation), message thread, quick action chips (empty state), suggested reply chips (after ambiguous responses), textarea + Send. |
+| `/agents/[id]` | Main agent interface. Chat + Settings tabs. Left panel: New chat, task log (Active/Last session), planned tasks, conversation list with delete. Right panel: agent header with avatar/name/role + live session cost, message thread, quick action chips (empty state), suggested reply chips (after ambiguous responses), textarea + Send. Internal page counts are not shown in the chat header. |
 | `/agents/[id]/overview` | Agent profile dashboard. Avatar, name, role, description, "Chat with" CTA. Stats row (conversations, drafts, keywords, tokens this week/month, total cost est.). Client knowledge panel (page count, GSC data, docs, agent notes per client, link to edit). Current SEO intelligence digest (latest week). Automations status (dot + last run time per automation). Recent activity feed (last 8 actions). All figures marked (est.) for cost. |
 | `/agents/[id]/automations` | Standalone automations page. Moved from tab on agent page. Toggle on/off, cadence display, last/next run time, run now button. Seeds 6 defaults on first load. |
 | `/agents/[id]/calendar` | Per-agent calendar. Generator panel (client, 2w/4w/8w, 1-4 posts/week, optional focus, "Generate plan" button). Month grid view (chips on dates, drawer on click). List view toggle. Status flow bar. Unscheduled strip. Bulk approve/schedule bar. |
@@ -374,7 +376,7 @@ The persistent brain per client. Injected into every agent session — eliminate
 | `update_agent_notes` tool | agent_notes[agent.slug] |
 | Auto-debrief after meaningful SEO sessions | Merges rich `agent_notes[agent.slug]` working document: `last_conversation`, `history`, `client_context`, `all_pending`, `content_opportunities`, `updated_at` |
 | `/api/keywords/backfill-targeting` | Updates keyword_banks.content_targeting_this (not a knowledge panel field, but called from refresh) |
-| Agent session start (background, fire and forget) | Triggers crawl if site_pages >7 days old. Triggers GSC sync if snapshot >48 hours old. Successful backfills update matching `scheduled_jobs.last_run_*` rows and insert `job_runs` for `site_audit` / `gsc_intelligence`. |
+| Agent session start / first active client reference (background, fire and forget) | Single-client workspaces load the client knowledge panel immediately. Multi-client workspaces load lazily when a client is referenced or otherwise becomes active in conversation. Stale panels trigger crawl if site_pages >7 days old and GSC sync if snapshot >48 hours old. Successful backfills update matching `scheduled_jobs.last_run_*` rows and insert `job_runs` for `site_audit` / `gsc_intelligence`. |
 | Refresh button (client page) | Crawl + GSC sync + backfill-targeting in parallel |
 
 **Injected into buildSystemPrompt as:**
@@ -394,6 +396,12 @@ The persistent brain per client. Injected into every agent session — eliminate
 - Empty/stale page lists must be disclosed before structural recommendations.
 - GSC positions are 28-day averages, not live rankings or exact current positions.
 - Use page summaries first, then `read_page` when full content is needed.
+
+**Multi-client prompt cost control:**
+- `buildSystemPrompt(agent, clients, knowledgePanels, digest, activeClientId)` accepts an active client id.
+- If `activeClientId` is set, only that client's knowledge panel is injected.
+- If there is one client, behaviour remains immediate/preloaded.
+- If there are multiple clients and none is active yet, Ada keeps broad client context and asks for clarification before loading heavy panel data.
 
 ---
 
@@ -637,6 +645,15 @@ GET /api/schedule/check
 ---
 
 ## Session Change Log
+
+### 12 June 2026 (session 15 - chat knowledge lazy-load fixes)
+**Fixed:**
+- Removed the chat-header page-count badge so Ada no longer shows "22 pages loaded" before a client is active.
+- Knowledge panels now load immediately for single-client workspaces and lazily for multi-client workspaces when a client is referenced or otherwise becomes active.
+- `buildSystemPrompt` now accepts `activeClientId` and injects only that client's knowledge panel when active, reducing future multi-client prompt cost.
+- The pre-loop acknowledgement now updates status only and no longer appears as transient assistant message text before tool calls.
+- Auto-debrief now sends the current Supabase JWT to `/api/chat` and logs non-OK/API/JSON parse failures with `[debrief]` prefixes.
+- Competitor prompt flow is stricter: ask for client if ambiguous, ask only for competitor once client is known, then call `analyse_competitors` immediately after competitor confirmation.
 
 ### 12 June 2026 (session 14 - knowledge panel stabilization)
 **Fixed:**

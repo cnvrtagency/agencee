@@ -97,7 +97,13 @@ function formatContextValue(value: unknown): string {
   return String(value ?? '').trim()
 }
 
-function buildSystemPrompt(agent: Agent, clients: Client[], knowledgePanels: Record<string, any> = {}, digest?: { summary: string; week_of: string } | null): string {
+function buildSystemPrompt(
+  agent: Agent,
+  clients: Client[],
+  knowledgePanels: Record<string, any> = {},
+  digest?: { summary: string; week_of: string } | null,
+  activeClientId?: string | null
+): string {
   const parts: string[] = []
 
   // Identity
@@ -171,7 +177,13 @@ General questions (how does X work, what is Y) can be answered without specifyin
   }
 
   // Knowledge panel injection — cached intelligence, no tool call cost
-  const knowledgeBlocks = clients.map(c => {
+  const relevantClients = activeClientId
+    ? clients.filter(c => c.id === activeClientId)
+    : clients.length === 1
+      ? clients
+      : clients
+
+  const knowledgeBlocks = relevantClients.map(c => {
     const k = knowledgePanels[c.id] || {}
     const kParts = [`KNOWLEDGE PANEL — ${c.name}:`]
 
@@ -306,15 +318,14 @@ Search Console "position" is average position, not a fixed live Google rank. Alw
 STARTUP / NO-GSC RULE:
 Google Search Console is useful but optional. If a client is new, has no GSC rows, has not connected GSC, or has too little historical search data, do not stop or tell the user to wait for GSC. Switch to startup SEO mode: use startup_seo_brief, the client profile, services, locations, site pages, keyword bank, competitor URLs/pages, and web_search/SERP research to build a seed keyword strategy. Be clear when volume/difficulty is estimated, then use suggest_keyword for valuable seed opportunities that are missing from the bank.
 
-COMPETITOR ANALYSIS WORKFLOW - follow this exact sequence:
-1. If the user asks about competitors without naming a client, ask which client they mean. Use these available client names: ${clients.map(c => c.name).join(', ') || 'the available clients'}.
-2. Wait for the client confirmation.
-3. Once the client is confirmed, use any registered competitors already visible in the client context or knowledge panel. If the competitor is still ambiguous, ask which specific competitor they want analysed.
-4. Wait for the competitor confirmation.
-5. Call analyse_competitors with both client_name and competitor_name.
-6. Structure the answer as: overview of the competitor, what they cover, where the client is stronger, and 2-3 recommendations.
+COMPETITOR ANALYSIS - STRICT SEQUENCE:
+1. If client is ambiguous: ask which client. STOP. Do not say anything else.
+2. Once client confirmed: respond with ONLY "Which competitor - [list names from the client context or registered competitors]?" STOP.
+3. Once competitor confirmed: call analyse_competitors immediately with both client_name and competitor_name.
+4. Do NOT emit any other text before steps 1-3 are complete.
+5. Do NOT describe what you are about to do. Just ask the question and stop.
+6. After analyse_competitors returns, structure the answer as: overview of the competitor, what they cover, where the client is stronger, and 2-3 recommendations.
 7. The tool saves useful opportunities to the briefing room automatically, so mention the strongest saved opportunities when relevant.
-8. End with a focused next step, such as whether to turn one gap into a content brief or plan.
 Never call analyse_competitors speculatively. Do not analyse every registered competitor unless the user explicitly asks for all of them.
 
 BLOG POST WORKFLOW:
@@ -876,11 +887,15 @@ export default function AgentPage() {
   const [workspaceId, setWorkspaceId] = useState<string | null>(null)
   const [gscRows, setGscRows] = useState<Record<string, GscRow[]>>({})
   const [knowledgePanels, setKnowledgePanels] = useState<Record<string, any>>({})
+  const [activeClientId, setActiveClientId] = useState<string | null>(null)
   const [latestDigest, setLatestDigest] = useState<{ summary: string; week_of: string } | null>(null)
   const [sessionTokens, setSessionTokens] = useState(0)
   const [sessionCost, setSessionCost] = useState(0)
   const sessionTokensRef = useRef(0)
   const draftSavedRef = useRef(false)
+  const activeClientIdRef = useRef<string | null>(null)
+  const loadedKnowledgeClients = useRef<Set<string>>(new Set())
+  const loadingKnowledgeClients = useRef<Partial<Record<string, Promise<any | null>>>>({})
   const scroller = useRef<HTMLDivElement>(null)
 
   // Map tool names → human-readable status labels
@@ -970,7 +985,41 @@ export default function AgentPage() {
     setClients(clientList)
     loadSitePages(clientList)
     loadGscData(clientList)
-    loadKnowledgePanels(clientList)
+    if (clientList.length === 1) {
+      setActiveClientContext(clientList[0].id)
+      loadKnowledgePanels([clientList[0]], clientList)
+    } else {
+      setActiveClientContext(null)
+    }
+  }
+
+  function setActiveClientContext(clientId: string | null) {
+    activeClientIdRef.current = clientId
+    setActiveClientId(clientId)
+  }
+
+  function detectClientIdFromText(text: string): string | null {
+    const haystack = text.toLowerCase()
+    if (!haystack.trim()) return null
+    const matches = clients.filter(client => {
+      const candidates = [
+        client.name,
+        client.slug || '',
+        client.website ? (() => {
+          try { return new URL(client.website || '').hostname.replace(/^www\./, '') } catch { return client.website || '' }
+        })() : '',
+      ].filter(Boolean).map(value => value.toLowerCase())
+      return candidates.some(candidate => candidate.length > 2 && haystack.includes(candidate))
+    })
+    return matches.length === 1 ? matches[0].id : null
+  }
+
+  async function apiJsonHeaders(): Promise<Record<string, string>> {
+    const { data: { session } } = await supabase.auth.getSession()
+    return {
+      'Content-Type': 'application/json',
+      ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+    }
   }
 
   async function recordAutoKnowledgeRun(clientId: string, jobType: string, summary: string) {
@@ -999,13 +1048,21 @@ export default function AgentPage() {
     }
   }
 
-  async function loadKnowledgePanels(clientList: Client[]) {
-    const panels: Record<string, any> = {}
-    await Promise.all(clientList.map(async c => {
+  async function ensureKnowledgeLoaded(clientId: string, clientList: Client[] = clients): Promise<any | null> {
+    if (loadedKnowledgeClients.current.has(clientId)) return knowledgePanels[clientId] || null
+    if (loadingKnowledgeClients.current[clientId]) return loadingKnowledgeClients.current[clientId]
+
+    const promise = (async () => {
+      const c = clientList.find(client => client.id === clientId)
+      if (!c) return null
       try {
-        const res = await fetch(`/api/knowledge/${c.id}`)
-        const { knowledge } = await res.json()
-        if (knowledge) panels[c.id] = knowledge
+        const { data: knowledge, error } = await supabase
+          .from('client_knowledge')
+          .select('*')
+          .eq('client_id', c.id)
+          .maybeSingle()
+        if (error) throw error
+        if (knowledge) setKnowledgePanels(prev => ({ ...prev, [c.id]: knowledge }))
 
         const now = Date.now()
         const sevenDays = 7 * 24 * 60 * 60 * 1000
@@ -1018,15 +1075,20 @@ export default function AgentPage() {
         if (needsCrawlBackfill && c.website) {
           void (async () => {
             try {
+              const headers = await apiJsonHeaders()
               const crawlRes = await fetch('/api/crawl', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers,
                 body: JSON.stringify({ website: c.website, client_id: c.id }),
               })
               if (!crawlRes.ok) return
               await recordAutoKnowledgeRun(c.id, 'site_audit', 'Auto-crawl triggered on session start')
-              const refreshed = await fetch(`/api/knowledge/${c.id}`).then(r => r.json()).catch(() => null)
-              if (refreshed?.knowledge) setKnowledgePanels(prev => ({ ...prev, [c.id]: refreshed.knowledge }))
+              const { data: refreshed } = await supabase
+                .from('client_knowledge')
+                .select('*')
+                .eq('client_id', c.id)
+                .maybeSingle()
+              if (refreshed) setKnowledgePanels(prev => ({ ...prev, [c.id]: refreshed }))
             } catch { /* non-critical */ }
           })()
         }
@@ -1037,21 +1099,39 @@ export default function AgentPage() {
         if (needsGscBackfill) {
           void (async () => {
             try {
+              const headers = await apiJsonHeaders()
               const syncRes = await fetch('/api/gsc/sync', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers,
                 body: JSON.stringify({ client_id: c.id }),
               })
               if (!syncRes.ok) return
               await recordAutoKnowledgeRun(c.id, 'gsc_intelligence', 'Auto-GSC sync triggered on session start')
-              const refreshed = await fetch(`/api/knowledge/${c.id}`).then(r => r.json()).catch(() => null)
-              if (refreshed?.knowledge) setKnowledgePanels(prev => ({ ...prev, [c.id]: refreshed.knowledge }))
+              const { data: refreshed } = await supabase
+                .from('client_knowledge')
+                .select('*')
+                .eq('client_id', c.id)
+                .maybeSingle()
+              if (refreshed) setKnowledgePanels(prev => ({ ...prev, [c.id]: refreshed }))
             } catch { /* non-critical */ }
           })()
         }
-      } catch { /* non-critical */ }
-    }))
-    setKnowledgePanels(prev => ({ ...prev, ...panels }))
+        loadedKnowledgeClients.current.add(clientId)
+        return knowledge || null
+      } catch (e) {
+        console.error('[knowledge] failed to load panel:', e)
+        return null
+      } finally {
+        delete loadingKnowledgeClients.current[clientId]
+      }
+    })()
+
+    loadingKnowledgeClients.current[clientId] = promise
+    return promise
+  }
+
+  async function loadKnowledgePanels(clientList: Client[], allClients: Client[] = clients) {
+    await Promise.all(clientList.map(c => ensureKnowledgeLoaded(c.id, allClients.length ? allClients : clientList)))
   }
 
   async function loadGscData(clientList: Client[]) {
@@ -1096,6 +1176,7 @@ export default function AgentPage() {
     }
     setSessionTokens(0); setSessionCost(0); sessionTokensRef.current = 0
     localStorage.removeItem(`agencee_last_conv_${id}`)
+    setActiveClientContext(clients.length === 1 ? clients[0].id : null)
     const { data } = await supabase.from('conversations').insert({ agent_id: id, title: 'New conversation', user_id: uid }).select().single()
     if (data) { setConversations(prev => [data, ...prev]); setActiveConv(data.id); setMessages([]) }
   }
@@ -1122,6 +1203,13 @@ export default function AgentPage() {
       return { ...m, content: stripToolCallJson(content), _taskLog: taskLog, _thoughts: thoughts.map(stripToolCallJson).filter(Boolean) }
     })
     setMessages(parsed)
+    const detectedClientId = detectClientIdFromText(parsed.map((m: any) => m.content || '').join(' '))
+    if (detectedClientId) {
+      setActiveClientContext(detectedClientId)
+      void ensureKnowledgeLoaded(detectedClientId)
+    } else if (clients.length > 1) {
+      setActiveClientContext(null)
+    }
     // Restore task log from the last assistant message that used tools
     const lastWithTasks = [...parsed].reverse().find(m => m.role === 'assistant' && m._taskLog?.length > 0)
     setTaskLog(lastWithTasks?._taskLog || [])
@@ -2005,7 +2093,7 @@ How to use this brief:
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           agent_id: id,
-          client_id: clients.length === 1 ? clients[0].id : null,
+          client_id: activeClientIdRef.current || (clients.length === 1 ? clients[0].id : null),
           session_tokens: sessionTokensRef.current,
           model: 'claude-haiku-4-5-20251001',
           max_tokens: 600,
@@ -2053,7 +2141,18 @@ How to use this brief:
     setThoughts([]); thoughtsRef.current = []
     pendingDraftCardRef.current = null
     await supabase.from('messages').insert({ conversation_id: convId, role: 'user', content: userMsg.content, user_id: uid })
-    const systemPrompt = buildSystemPrompt(agent, clients, knowledgePanels, latestDigest)
+    const promptActiveClientId = detectClientIdFromText(userMsg.content)
+      || activeClientIdRef.current
+      || activeClientId
+      || (clients.length === 1 ? clients[0].id : null)
+    let promptKnowledgePanels = knowledgePanels
+    if (promptActiveClientId) {
+      setActiveClientContext(promptActiveClientId)
+      const loadedKnowledge = await ensureKnowledgeLoaded(promptActiveClientId)
+      if (loadedKnowledge) promptKnowledgePanels = { ...promptKnowledgePanels, [promptActiveClientId]: loadedKnowledge }
+    }
+    const activeChatClientId = promptActiveClientId || (clients.length === 1 ? clients[0].id : null)
+    const systemPrompt = buildSystemPrompt(agent, clients, promptKnowledgePanels, latestDigest, promptActiveClientId)
     const addTask = (label: string, done = false) => {
       const entry: TaskEntry = { label, done, ts: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }
       taskLogRef.current = [...taskLogRef.current, entry]
@@ -2088,7 +2187,7 @@ How to use this brief:
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           agent_id: id,
-          client_id: clients.length === 1 ? clients[0].id : null,
+          client_id: activeChatClientId,
           session_tokens: sessionTokensRef.current,
           model: 'claude-haiku-4-5-20251001',
           max_tokens: 150,
@@ -2103,7 +2202,7 @@ How to use this brief:
       const ackData = await ackRes.json()
       const ackText = stripToolCallJson((ackData.content || []).filter((b: any) => b.type === 'text').map((b: any) => b.text).join('').trim())
       if (ackText) {
-        setMessages(prev => prev.map(m => m.id === placeholder.id ? { ...m, content: ackText } : m))
+        setAgentStatus(ackText)
       }
     } catch { /* non-critical */ }
 
@@ -2132,7 +2231,7 @@ How to use this brief:
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             agent_id: id,
-            client_id: clients.length === 1 ? clients[0].id : null,
+            client_id: activeChatClientId,
             session_tokens: sessionTokensRef.current,
             model,
             max_tokens: maxTokens,
@@ -2220,7 +2319,7 @@ How to use this brief:
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
                 agent_id: id,
-                client_id: clients.length === 1 ? clients[0].id : null,
+                client_id: activeChatClientId,
                 session_tokens: sessionTokensRef.current,
                 model: 'claude-haiku-4-5-20251001',
                 max_tokens: 500,
@@ -2254,7 +2353,7 @@ How to use this brief:
               method: 'POST', headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
                 agent_id: id,
-                client_id: clients.length === 1 ? clients[0].id : null,
+                client_id: activeChatClientId,
                 session_tokens: sessionTokensRef.current,
                 model: 'claude-sonnet-4-6',
                 max_tokens: 512,
@@ -2277,6 +2376,11 @@ How to use this brief:
       if (!savedReply) {
         finalAssistantReply = 'Working... loop limit reached. Reply to continue.'
         await saveReply(finalAssistantReply)
+      }
+      const responseClientId = detectClientIdFromText(finalAssistantReply)
+      if (responseClientId) {
+        setActiveClientContext(responseClientId)
+        void ensureKnowledgeLoaded(responseClientId)
       }
       // Auto debrief - only for SEO agents after meaningful tool use.
       const hadSignificantAction = taskLogRef.current.length >= 2 || (
@@ -2305,7 +2409,8 @@ How to use this brief:
           // Fire-and-forget - non-critical, never blocks the UI
           void (async () => {
             try {
-              const activeClient = clients.length === 1 ? clients[0] : null
+              const debriefClientId = responseClientId || promptActiveClientId || activeClientIdRef.current || (clients.length === 1 ? clients[0].id : null)
+              const activeClient = clients.find(c => c.id === debriefClientId) || null
               if (!activeClient) return
               const { data: existing } = await supabase.from('client_knowledge').select('agent_notes').eq('client_id', activeClient.id).maybeSingle()
               const currentNotes = ((existing?.agent_notes as Record<string, any>) || {})
@@ -2337,9 +2442,10 @@ Reply with JSON only using exactly these keys:
   "data_points": ["specific metrics, URLs, keyword positions, crawl facts, or source caveats used"]
 }`
 
+              const debriefHeaders = await apiJsonHeaders()
               const debriefRes = await fetch('/api/chat', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: debriefHeaders,
                 body: JSON.stringify({
                   agent_id: id,
                   client_id: activeClient.id,
@@ -2349,10 +2455,23 @@ Reply with JSON only using exactly these keys:
                   messages: [{ role: 'user', content: debriefPrompt }],
                 }),
               })
+              if (!debriefRes.ok) {
+                console.error('[debrief] /api/chat returned', debriefRes.status)
+                return
+              }
               const debriefData = await debriefRes.json()
+              if (debriefData.error) {
+                console.error('[debrief] API error:', debriefData.error)
+                return
+              }
               const raw = (debriefData.content || []).filter((b: any) => b.type === 'text').map((b: any) => b.text).join('').trim()
               let parsed: any = {}
-              try { parsed = JSON.parse(raw.replace(/^```json\n?/, '').replace(/\n?```$/, '')) } catch { return }
+              try {
+                parsed = JSON.parse(raw.replace(/^```json\n?/, '').replace(/\n?```$/, ''))
+              } catch {
+                console.error('[debrief] failed to parse JSON:', raw.slice(0, 500))
+                return
+              }
 
               const now = new Date().toISOString()
               const newEntry = {
@@ -2394,7 +2513,9 @@ Reply with JSON only using exactly these keys:
                 },
                 updated_at: now,
               }, { onConflict: 'client_id' })
-            } catch { /* non-critical */ }
+            } catch (e) {
+              console.error('[debrief] failed:', e)
+            }
           })()
         }
       }
@@ -2431,11 +2552,6 @@ Reply with JSON only using exactly these keys:
           <div style={{ fontSize: 10, color: 'var(--brand-dim)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em' }}>{agent.role}</div>
         </div>
         <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-          {Object.keys(sitePages).length > 0 && (
-            <span style={{ fontSize: 11, color: 'var(--green)', fontFamily: 'var(--font-mono)' }}>
-              {Object.values(sitePages).reduce((a, b) => a + b.length, 0)} pages loaded
-            </span>
-          )}
           {sessionTokens > 0 && (
             <div style={{ fontSize: 11, color: 'var(--text-dim)', fontFamily: 'var(--font-mono)', display: 'flex', gap: 8, alignItems: 'center' }}>
               <span style={{ color: sending ? 'var(--accent)' : 'var(--text-dim)' }}>
