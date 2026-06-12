@@ -92,24 +92,32 @@ export default function AutomationsPage() {
   async function runAutomationNow(automation: Automation) {
     setRunningAutomation(automation.id)
     try {
+      const { data: { session } } = await supabase.auth.getSession()
       const res = await fetch('/api/intelligence/run-automation', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
         body: JSON.stringify({ automation_id: automation.id, agent_id: id }),
       })
       const data = await res.json()
       const status = res.ok ? 'success' : 'error'
       const summary = data.summary || data.error || ''
+      const ranAt = new Date().toISOString()
+      const nextRunAt = getNextRunAt(automation.cadence, automation.run_day, automation.run_hour ?? 8).toISOString()
       await supabase.from('agent_automations').update({
-        last_run_at: new Date().toISOString(),
+        last_run_at: ranAt,
         last_run_status: status,
         last_run_summary: summary,
-        next_run_at: getNextRunAt(automation.cadence, automation.run_day, automation.run_hour ?? 8).toISOString(),
+        next_run_at: nextRunAt,
       }).eq('id', automation.id)
-      setAutomations(prev => prev.map(a => a.id === automation.id ? { ...a, last_run_at: new Date().toISOString(), last_run_status: status, last_run_summary: summary } : a))
+      setAutomations(prev => prev.map(a => a.id === automation.id ? { ...a, last_run_at: ranAt, last_run_status: status, last_run_summary: summary, next_run_at: nextRunAt } : a))
     } catch (e: any) {
       const summary = e?.message || 'Failed'
-      await supabase.from('agent_automations').update({ last_run_at: new Date().toISOString(), last_run_status: 'error', last_run_summary: summary }).eq('id', automation.id)
+      const ranAt = new Date().toISOString()
+      await supabase.from('agent_automations').update({ last_run_at: ranAt, last_run_status: 'error', last_run_summary: summary }).eq('id', automation.id)
+      setAutomations(prev => prev.map(a => a.id === automation.id ? { ...a, last_run_at: ranAt, last_run_status: 'error', last_run_summary: summary } : a))
     } finally {
       setRunningAutomation(null)
     }

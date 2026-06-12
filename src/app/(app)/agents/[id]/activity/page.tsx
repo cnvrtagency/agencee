@@ -14,6 +14,111 @@ const S: Record<string, React.CSSProperties> = {
   meta: { fontSize: 11, color: 'var(--text-2)', marginTop: 3 },
 }
 
+const ACTION_COLOR: Record<string, string> = {
+  content_created: 'var(--green)',
+  keyword_suggestion: 'var(--accent)',
+  suggest_keyword: 'var(--accent)',
+  competitor_analysis: 'var(--amber)',
+  internal_links_suggested: 'var(--purple, #8b5cf6)',
+  chat: 'var(--border-bright)',
+  content_plan: 'var(--green)',
+  ada_briefing: 'var(--accent)',
+  site_audit: 'var(--amber)',
+}
+
+const ACTION_LABEL: Record<string, string> = {
+  content_created: 'Draft saved',
+  keyword_suggestion: 'Keyword suggested',
+  suggest_keyword: 'Keyword suggested',
+  competitor_analysis: 'Competitor analysis',
+  internal_links_suggested: 'Internal links',
+  chat: 'Chat session',
+  content_plan: 'Content planned',
+  ada_briefing: 'Briefing generated',
+  site_audit: 'Site audit',
+  competitor_crawl_summary: 'Competitor summaries',
+  crawl_content_summary: 'Site summary',
+}
+
+function formatDetailValue(value: any): string {
+  if (value == null) return '—'
+  if (Array.isArray(value)) return value.join(', ')
+  if (typeof value === 'object') return JSON.stringify(value)
+  return String(value)
+}
+
+function renderDetail(action: string, detail: any) {
+  let parsed: any = null
+  if (typeof detail === 'string') {
+    try { parsed = JSON.parse(detail) } catch { /* plain text detail */ }
+  } else if (detail && typeof detail === 'object') {
+    parsed = detail
+  }
+
+  if (!parsed) {
+    return <span style={{ color: 'var(--text-2)', fontSize: 13 }}>{String(detail || '—')}</span>
+  }
+
+  if (action === 'content_created' && parsed.title) {
+    return (
+      <div>
+        <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', marginBottom: 3 }}>{parsed.title}</div>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' as const }}>
+          {parsed.primary_keyword && (
+            <span style={{ fontSize: 11, color: 'var(--text-dim)', background: 'var(--surface-2)', padding: '1px 6px', borderRadius: 4, border: '1px solid var(--border)' }}>
+              {parsed.primary_keyword}
+            </span>
+          )}
+          {parsed.word_count && <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>{Number(parsed.word_count).toLocaleString()} words</span>}
+        </div>
+      </div>
+    )
+  }
+
+  if ((action === 'keyword_suggestion' || action === 'suggest_keyword') && parsed.keyword) {
+    return (
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' as const }}>
+        <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>{parsed.keyword}</span>
+        {parsed.intent && (
+          <span style={{ fontSize: 11, color: 'var(--text-dim)', background: 'var(--surface-2)', padding: '1px 6px', borderRadius: 4, border: '1px solid var(--border)' }}>
+            {parsed.intent}
+          </span>
+        )}
+      </div>
+    )
+  }
+
+  if (action === 'competitor_analysis') {
+    const label = parsed.competitor || parsed.competitors || parsed.client || 'competitors'
+    return <span style={{ fontSize: 13, color: 'var(--text-2)' }}>Analysed {formatDetailValue(label)}</span>
+  }
+
+  if (action === 'internal_links_suggested') {
+    const count = parsed.count ?? (Array.isArray(parsed.links) ? parsed.links.length : null)
+    return (
+      <span style={{ fontSize: 13, color: 'var(--text-2)' }}>
+        {count != null ? `${count} links suggested` : 'Internal link suggestions created'}{parsed.page ? ` for "${parsed.page}"` : ''}
+      </span>
+    )
+  }
+
+  if (action === 'chat') {
+    return <span style={{ fontSize: 13, color: 'var(--text-dim)', fontStyle: 'italic' }}>Chat session</span>
+  }
+
+  const entries = Object.entries(parsed).slice(0, 4)
+  return (
+    <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' as const }}>
+      {entries.map(([key, value]) => (
+        <span key={key} style={{ fontSize: 11, color: 'var(--text-dim)' }}>
+          <span style={{ fontWeight: 600 }}>{key.replace(/_/g, ' ')}: </span>
+          {formatDetailValue(value).slice(0, 60)}
+        </span>
+      ))}
+    </div>
+  )
+}
+
 export default function AgentActivityPage() {
   const { id: agentId } = useParams<{ id: string }>()
   const [agent, setAgent] = useState<{ name: string } | null>(null)
@@ -70,21 +175,25 @@ export default function AgentActivityPage() {
       {Object.entries(byDay).map(([day, rows]) => (
         <div key={day} style={S.panel}>
           <div style={S.dayHead}>{day}</div>
-          {rows.map((a, i) => (
-            <div key={a.id} style={{ ...S.row, borderBottom: i < rows.length - 1 ? '1px solid var(--border)' : 'none' }}>
-              <div style={S.dot} />
-              <div style={{ flex: 1 }}>
-                <div style={S.action}>{a.action.replace(/_/g, ' ')}</div>
-                <div style={S.detail}>{a.detail || '—'}</div>
-                <div style={S.meta}>
-                  {a.client_profiles?.name && <span>{a.client_profiles.name} · </span>}
-                  {a.tokens_used > 0 && <span style={{ fontFamily: 'var(--font-mono)' }}>{a.tokens_used.toLocaleString()} tokens</span>}
-                  {' · '}
-                  {new Date(a.created_at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
+          {rows.map((a, i) => {
+            const label = ACTION_LABEL[a.action] || String(a.action || '').replace(/_/g, ' ')
+            const dotColor = ACTION_COLOR[a.action] || 'var(--accent)'
+            return (
+              <div key={a.id} style={{ ...S.row, borderBottom: i < rows.length - 1 ? '1px solid var(--border)' : 'none' }}>
+                <div style={{ ...S.dot, background: dotColor }} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={S.action}>{label}</div>
+                  <div style={S.detail}>{renderDetail(a.action, a.detail)}</div>
+                  <div style={S.meta}>
+                    {a.client_profiles?.name && <span>{a.client_profiles.name} · </span>}
+                    {a.tokens_used > 0 && <span style={{ fontFamily: 'var(--font-mono)' }}>{a.tokens_used.toLocaleString()} tokens</span>}
+                    {' · '}
+                    {new Date(a.created_at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
+                  </div>
                 </div>
               </div>
-            </div>
-          ))}
+            )
+          })}
         </div>
       ))}
 

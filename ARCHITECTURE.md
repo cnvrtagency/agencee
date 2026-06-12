@@ -1,7 +1,7 @@
 # Agencee — Master Architecture Document
 
 **Living document. Update at the end of every build session.**
-Last updated: 11 June 2026. Session: full system stabilisation audit, API auth/cost hardening, Usage page, cron/queue safeguards.
+Last updated: 12 June 2026. Session: combined follow-up fixes for overview activity, automations auth, competitor sitemap imports, keyword labels, activity UI, image prompts, and knowledge panel behaviour.
 
 ---
 
@@ -19,7 +19,7 @@ Internal AI agent SaaS for CNVRT (Dan's Manchester digital agency). AI agents ha
 | Styling | Tailwind v4 in globals.css only. All components use inline styles. Do not add Tailwind classes to JSX. |
 | Database | Supabase (Postgres + Storage) |
 | Primary AI | Anthropic — Sonnet 4.6 (agents, calendar planning, reports), Haiku 4.5 (utility calls) |
-| Image AI | Gemini 3 Pro Image / Nano Banana Pro (`gemini-3-pro-image`) |
+| Image AI | Gemini native image generation / Nano Banana (`gemini-3.1-flash-image` first, with Pro and 2.5 fallbacks) |
 | Publishing | GitHub MDX + Vercel, WordPress, Shopify, Webflow |
 | Notifications | Resend (email) + Slack webhooks |
 | Cron | Vercel cron daily 07:00 UTC → `/api/schedule/check` |
@@ -211,7 +211,7 @@ Exist as cards in `/marketplace` only. No agent_type, tools, or system prompt.
 | `/calendar` | Global content calendar (separate from per-agent) |
 | `/marketplace` | Agent cards. Ada + Theo installed. 5 others not installed. |
 | `/settings` | Workspace name, Anthropic key, Gemini key, token budget + usage bar, notification prefs (email toggle, Slack webhook + test button, per-type toggles). |
-| `/agents` | Agent list |
+| `/agents` | Agent list. Cards link to `/agents/[id]/overview`; quick-nav pills link to specific agent sections. |
 | `/agents/[id]` | Main agent interface. Chat + Settings tabs. Left panel: New chat, task log (Active/Last session), planned tasks, conversation list with delete. Right panel: agent header with avatar/name/role + live session cost (tokens + est. $, resets per conversation), message thread, quick action chips (empty state), suggested reply chips (after ambiguous responses), textarea + Send. |
 | `/agents/[id]/overview` | Agent profile dashboard. Avatar, name, role, description, "Chat with" CTA. Stats row (conversations, drafts, keywords, tokens this week/month, total cost est.). Client knowledge panel (page count, GSC data, docs, agent notes per client, link to edit). Current SEO intelligence digest (latest week). Automations status (dot + last run time per automation). Recent activity feed (last 8 actions). All figures marked (est.) for cost. |
 | `/agents/[id]/automations` | Standalone automations page. Moved from tab on agent page. Toggle on/off, cadence display, last/next run time, run now button. Seeds 6 defaults on first load. |
@@ -236,6 +236,7 @@ Exist as cards in `/marketplace` only. No agent_type, tools, or system prompt.
 ### API auth and cost contract
 
 - Browser `/api/*` calls are authenticated by `AuthenticatedFetch`, which attaches the current Supabase access token as `Authorization: Bearer <token>`.
+- Manual browser fetches to hardened routes must also include the Supabase JWT bearer token when bypassing the shared fetch wrapper. The Automations page "Run now" path explicitly passes the current session token to `/api/intelligence/run-automation`.
 - Server routes use shared guards from `src/lib/server/auth.ts`:
   - `requireUser` for normal user actions.
   - `requireUserOrInternal` for routes callable by either a logged-in user or cron/worker.
@@ -249,9 +250,9 @@ Exist as cards in `/marketplace` only. No agent_type, tools, or system prompt.
 
 | Route | Method | Purpose | Notes |
 |---|---|---|---|
-| `/api/chat` | POST | Anthropic API proxy. Accepts model, messages, tools, system. | All agent tool calls go through here. |
+| `/api/chat` | POST | Anthropic API proxy. Accepts model, messages, tools, system, `agent_id`/`agentId`, `client_id`, and session token count. | All agent tool calls go through here. Token usage is logged via `recordTokenUsage`; `agent_activity.agent_id` is always written when the chat page sends the agent route param. |
 | `/api/run-task` | POST | Autonomous content gen for queued items. Single Sonnet call, no tools. Loads knowledge panel, content history, site pages, keyword bank in parallel before calling Sonnet. | Full system prompt with client context, GSC snapshot, live pages, keyword bank, and content history. max_tokens: 12000. |
-| `/api/generate-image` | POST | Image gen → Supabase Storage blog-images bucket. Default 1K. Model fallback: `gemini-3-pro-image` → `gemini-2.0-flash-preview-image-generation` → `imagen-3.0-generate-002`. Missing GEMINI_API_KEY returns 200 `skipped:true` instead of 500. | Returns url, filename, storage_path, mime_type. |
+| `/api/generate-image` | POST | Image gen → Supabase Storage blog-images bucket. Default 1K. Model fallback: `gemini-3.1-flash-image` → `gemini-3-pro-image` → `gemini-2.5-flash-image` → preview fallbacks. Missing GEMINI_API_KEY returns 200 `skipped:true` instead of 500. | Returns url, filename, storage_path, mime_type. |
 | `/api/intelligence/ada-briefing` | POST | Ada creates proactive briefing items after analysis. Body: `{ client_id, agent_id?, items: [{ type, title, body, priority }] }`. Loads workspace_id from client_profiles, upserts briefing_items with workspace_id, logs agent_activity. |
 
 ### Scheduling and jobs
@@ -277,7 +278,7 @@ Exist as cards in `/marketplace` only. No agent_type, tools, or system prompt.
 
 | Route | Method | Purpose |
 |---|---|---|
-| `/api/crawl` | POST | Crawl client website → site_pages → client_knowledge (site_pages, site_summary, content_summary via Haiku). Competitor mode now generates Haiku content summaries for each crawled page (capped at 20). **Sitemap-first:** tries /sitemap.xml then /sitemap_index.xml (+ sub-sitemaps, max 5) before link crawling. Falls back to link crawling from homepage if no sitemap found. Uses Chrome browser UA. When sitemap mode active, link extraction inside the crawl loop is skipped. |
+| `/api/crawl` | POST | Crawl client website → site_pages → client_knowledge (site_pages, site_summary, content_summary via Haiku). Competitor mode accepts `max_pages` up to 500. Default competitor crawl remains 40 pages with content and up to 20 Haiku summaries. When `max_pages > 100` and sitemap URLs exist, it returns `mode: 'sitemap_only'` and imports up to 500 competitor URLs without fetching page content. **Sitemap-first:** tries /robots.txt sitemaps, /sitemap.xml, sitemap indexes, and common sitemap paths before link crawling. Uses Chrome browser UA. |
 | `/api/gsc/sync` | POST | Full GSC sync: 7d/28d/90d → search_performance, keyword position updates, briefing_items, client_knowledge gsc_snapshot. |
 | `/api/gsc/properties` | GET | List GSC properties for a Google account. |
 | `/api/knowledge/[clientId]` | GET/PATCH | Read or upsert client_knowledge panel. |
@@ -517,7 +518,7 @@ GET /api/schedule/check
 | Em-dashes still appearing in agent responses | Medium | buildSystemPrompt | Open — rule exists but not enforced hard enough |
 | `run-task` route uses simplified prompt with no knowledge panel or tools | High | api/run-task/route.ts | **Fixed 11 Jun 2026** — full system prompt + parallel context loading |
 | `getToolsForAgent` still uses old filter logic (not all-tools-for-all-agents) | Medium | agents/[id]/page.tsx | Open — overhaul prompt may not have applied this |
-| `buildSystemPrompt` still has old hardcoded image rules | Medium | agents/[id]/page.tsx | Open — overhaul prompt may not have applied new version |
+| `buildSystemPrompt` still has old hardcoded image rules | Medium | agents/[id]/page.tsx | **Fixed 12 Jun 2026** — image instructions now require article/client/location-specific 4-6 sentence creative briefs and no generic stock-photo prompts |
 | microsuction-near-me-north-east.mdx missing image frontmatter | Low | GitHub repo | Open — repair route needs running |
 | Suggested replies `<suggestions>` tags not always stripped cleanly | Low | agents/[id]/page.tsx | Open |
 | Token usage not recording (tokens_used always 0 in agent_activity) | High | agents/[id]/page.tsx | **Fixed 11 Jun 2026** — totalTokensUsed accumulator + increment_token_usage RPC after loop |
@@ -626,6 +627,17 @@ GET /api/schedule/check
 ---
 
 ## Session Change Log
+
+### 12 June 2026 (session 13 - combined follow-up fixes)
+**Fixed:**
+- `/api/chat` now accepts both `agent_id` and `agentId` and continues logging chat token usage with `agent_activity.agent_id`, so overview stats can attribute new chat rows to the correct agent.
+- Automations "Run now" explicitly passes the current Supabase bearer token to `/api/intelligence/run-automation` and writes visible success/error summaries back to the automation row.
+- Competitor crawl now accepts `max_pages`; normal re-crawl remains a 40-page content crawl, while high-volume requests import up to 500 sitemap URLs as `mode: 'sitemap_only'` without fetching content. The client Competitors tab now has Re-crawl and Import all controls.
+- Keyword bank and Search CSV labels now say "Avg pos"; keyword bank values render one decimal with an explanatory tooltip.
+- `/agents` cards now open `/agents/[id]/overview`.
+- Agent Activity page now renders human labels, action colours, and parsed detail cards for drafts, keyword suggestions, competitor analysis, internal links, and chat rows instead of raw JSON.
+- Ada's system prompt now requires image prompts to be specific to the active client, article, service, audience, and location, and tells Ada to keep the knowledge panel current as soon as useful client knowledge emerges.
+- `/api/generate-image` now sends current Gemini SDK config (`responseModalities: ['IMAGE']` plus `imageConfig`) instead of the stale `responseFormat.image` shape.
 
 ### 11 June 2026
 **Built:**
@@ -772,7 +784,7 @@ CREATE TABLE IF NOT EXISTS agent_knowledge (
 - Ada generating images on revision requests — `write_content` tool schema now includes `is_revision: boolean`. Handler short-circuits with a "do NOT call generate_images" response before Ada can proceed to image generation. `buildSystemPrompt` IMAGE GENERATION section reinforced with 3 explicit rules: revisions set `is_revision: true`, if `is_revision` is true skip `generate_images`, proceed directly to `suggest_internal_links` instead.
 - GSC sync 400 "Connection not found" — `google_connections.status` is saved as `'connected'` by the OAuth callback, but both `gsc/sync/route.ts` and `run-automation/route.ts` were filtering for `'active'` only. Changed `.eq('status', 'active')` to `.in('status', ['active', 'connected'])` in both files. **Note:** `google_connections.status` can be either `'active'` or `'connected'` — both are valid.
 - Crawl silent 400 — Added explicit early validation at the top of `api/crawl/route.ts` before the competitor branch: returns 400 if `client_id` is missing (non-competitor path), 400 if `website` is missing for a client crawl. Previous validation at line ~275 came too late (after competitor branch).
-- Image generation 500 (Gemini API) — GEMINI_API_KEY missing now returns 200 with `skipped: true` instead of 500. All internal error paths return 200 with `skipped: true` so Ada doesn't retry in a burning loop. Added model fallback array: `['gemini-3-pro-image', 'gemini-2.0-flash-preview-image-generation', 'imagen-3.0-generate-002']` — tries each in order, logs failures as warnings, only errors out (gracefully) if all three fail.
+- Image generation 500 (Gemini API) — GEMINI_API_KEY missing now returns 200 with `skipped: true` instead of 500. All internal error paths return 200 with `skipped: true` so Ada doesn't retry in a burning loop. Current model fallback starts with `gemini-3.1-flash-image`, then `gemini-3-pro-image`, `gemini-2.5-flash-image`, and preview fallbacks.
 
 **Reminder — Vercel env vars to check:**
 - `GEMINI_API_KEY` — required for image generation

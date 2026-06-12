@@ -150,6 +150,7 @@ export default function ClientDetail() {
   const [compForm, setCompForm] = useState({ url: '', name: '' })
   const [savingComp, setSavingComp] = useState(false)
   const [crawlingComp, setCrawlingComp] = useState<string | null>(null)
+  const [compCrawlMode, setCompCrawlMode] = useState<Record<string, 'crawl' | 'import'>>({})
   const [compPages, setCompPages] = useState<Record<string, any[]>>({})
   const [compCrawlErrors, setCompCrawlErrors] = useState<Record<string, string>>({})
   const [compCrawlMessages, setCompCrawlMessages] = useState<Record<string, { kind: 'success' | 'warning'; text: string }>>({})
@@ -230,7 +231,7 @@ export default function ClientDetail() {
   }
 
   function exportCsv(rows: SearchRow[], periodLabel: string) {
-    const headers = ['Query', 'Page', 'Position', 'Impressions', 'Clicks', 'CTR']
+    const headers = ['Query', 'Page', 'Avg position', 'Impressions', 'Clicks', 'CTR']
     const lines = [headers.join(',')]
     for (const r of rows) {
       lines.push([
@@ -606,8 +607,9 @@ export default function ClientDetail() {
     setSavingComp(false); setCompOpen(false); setCompForm({ url: '', name: '' })
   }
 
-  async function crawlCompetitor(compId: string, url: string) {
+  async function crawlCompetitor(compId: string, maxPages = 40) {
     setCrawlingComp(compId)
+    setCompCrawlMode(prev => ({ ...prev, [compId]: maxPages > 100 ? 'import' : 'crawl' }))
     setCompCrawlErrors(prev => {
       const next = { ...prev }
       delete next[compId]
@@ -619,15 +621,16 @@ export default function ClientDetail() {
       return next
     })
     try {
-      const res = await fetch('/api/crawl', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client_id: id, website: url, competitor_id: compId }) })
+      const res = await fetch('/api/crawl', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client_id: id, competitor_id: compId, max_pages: maxPages }) })
       const data = await res.json()
       if (data.error) {
         setCompCrawlErrors(prev => ({ ...prev, [compId]: [data.error, data.details].filter(Boolean).join(' ') }))
         loadCompetitors(); loadCompPages(compId)
       } else {
-        const text = data.storage_warning
-          ? `${data.storage_warning} Crawled ${data.pages_crawled ?? 0} page(s).`
+        const baseText = data.mode === 'sitemap_only'
+          ? `Imported ${data.pages_crawled ?? 0} sitemap URL(s) without fetching page content. Re-crawl to refresh content summaries for the top pages.`
           : `Crawled ${data.pages_crawled ?? 0} page(s). Found ${data.sitemap_pages_found ?? 0} sitemap URL(s) across ${data.sitemaps_checked ?? 0} sitemap(s).`
+        const text = data.storage_warning ? `${data.storage_warning} ${baseText}` : baseText
         setCompCrawlMessages(prev => ({ ...prev, [compId]: { kind: data.storage_warning ? 'warning' : 'success', text } }))
         loadCompetitors(); loadCompPages(compId)
       }
@@ -635,6 +638,11 @@ export default function ClientDetail() {
       setCompCrawlErrors(prev => ({ ...prev, [compId]: 'Crawl failed before Ada could read the site. Check the URL and try again.' }))
     }
     setCrawlingComp(null)
+    setCompCrawlMode(prev => {
+      const next = { ...prev }
+      delete next[compId]
+      return next
+    })
   }
 
   async function loadCompPages(compId: string) {
@@ -963,7 +971,7 @@ export default function ClientDetail() {
                 <th style={S.th}>Keyword</th><th style={S.th}>Cluster</th><th style={S.th}>Intent</th><th style={S.th}>Stage</th>
                 <th style={{ ...S.th, textAlign: 'right' as const }}>Vol</th>
                 <th style={{ ...S.th, textAlign: 'right' as const }}>KD</th>
-                <th style={{ ...S.th, textAlign: 'right' as const }}>Pos</th>
+                <th style={{ ...S.th, textAlign: 'right' as const }} title="Average GSC position across all queries for this keyword">Avg pos</th>
                 <th style={{ ...S.th, textAlign: 'right' as const }}>Pri</th>
                 <th style={{ ...S.th, textAlign: 'right' as const }}>Opp</th>
               </tr>
@@ -972,6 +980,7 @@ export default function ClientDetail() {
               {[...keywords].sort((a, b) => ((b as any).opportunity_score || 0) - ((a as any).opportunity_score || 0)).map(k => {
                 const oppScore: number = (k as any).opportunity_score ?? null
                 const oppColor = oppScore === null ? 'var(--surface-3)' : oppScore >= 70 ? 'var(--green)' : oppScore >= 40 ? 'var(--amber)' : 'var(--surface-3)'
+                const positionValue = k.current_position != null ? Number(k.current_position) : null
                 return (
                 <tr key={k.id}>
                   <td style={{ ...S.td, color: 'var(--text)', fontWeight: 500 }}>{k.keyword}</td>
@@ -980,7 +989,7 @@ export default function ClientDetail() {
                   <td style={{ ...S.td, color: 'var(--text-2)', textTransform: 'uppercase', fontSize: 11, fontWeight: 600 }}>{k.funnel_stage || '—'}</td>
                   <td style={{ ...S.td, color: 'var(--text-2)', textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 12 }}>{k.monthly_volume?.toLocaleString() || '—'}</td>
                   <td style={{ ...S.td, color: 'var(--text-2)', textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 12 }}>{k.difficulty ?? '—'}</td>
-                  <td style={{ ...S.td, color: k.current_position ? 'var(--green)' : 'var(--text-2)', textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 12 }}>{k.current_position != null ? Math.round(k.current_position * 10) / 10 : '—'}</td>
+                  <td title="Average position from Google Search Console data" style={{ ...S.td, color: positionValue != null ? 'var(--green)' : 'var(--text-2)', textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 12 }}>{positionValue != null && !Number.isNaN(positionValue) ? positionValue.toFixed(1) : '—'}</td>
                   <td style={{ ...S.td, color: 'var(--text-2)', textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 12 }}>{k.priority}</td>
                   <td style={{ ...S.td, textAlign: 'right' }}>
                     {oppScore !== null ? (
@@ -1221,13 +1230,23 @@ export default function ClientDetail() {
                         </div>
                         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                           {justAddedCompId === c.id && (
-                            <button style={{ ...S.btnGreen, fontSize: 12 }} onClick={e => { e.stopPropagation(); setJustAddedCompId(null); crawlCompetitor(c.id, c.url) }} disabled={crawlingComp === c.id}>
+                            <button style={{ ...S.btnGreen, fontSize: 12 }} onClick={e => { e.stopPropagation(); setJustAddedCompId(null); crawlCompetitor(c.id) }} disabled={crawlingComp === c.id}>
                               Crawl now →
                             </button>
                           )}
-                          <button style={S.btnSm} onClick={e => { e.stopPropagation(); crawlCompetitor(c.id, c.url) }} disabled={crawlingComp === c.id}>
-                            {crawlingComp === c.id ? 'Crawling...' : c.last_crawled_at ? 'Re-crawl' : 'Crawl'}
-                          </button>
+                          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' as const }}>
+                            <button style={S.btnSm} onClick={e => { e.stopPropagation(); crawlCompetitor(c.id) }} disabled={crawlingComp === c.id}>
+                              {crawlingComp === c.id && compCrawlMode[c.id] === 'crawl' ? 'Crawling...' : c.last_crawled_at ? 'Re-crawl' : 'Crawl'}
+                            </button>
+                            <button
+                              style={{ ...S.btnSm, color: 'var(--accent)', borderColor: 'rgba(79,127,255,0.3)' }}
+                              onClick={e => { e.stopPropagation(); crawlCompetitor(c.id, 500) }}
+                              disabled={crawlingComp === c.id}
+                              title="Import up to 500 sitemap URLs without fetching page content"
+                            >
+                              {crawlingComp === c.id && compCrawlMode[c.id] === 'import' ? 'Importing...' : 'Import all'}
+                            </button>
+                          </div>
                           <button style={{ ...S.btnSm, color: 'var(--red)', borderColor: 'rgba(239,68,68,0.3)' }} onClick={e => { e.stopPropagation(); supabase.from('competitor_sites').delete().eq('id', c.id).then(() => loadCompetitors()) }}>Remove</button>
                         </div>
                       </div>

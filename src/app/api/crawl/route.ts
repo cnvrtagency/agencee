@@ -449,7 +449,7 @@ export async function POST(req: NextRequest) {
   const bodyResult = await readJsonWithLimit<any>(req, 20_000)
   if (!bodyResult.ok) return bodyResult.response
   const body = bodyResult.data
-  const { client_id, website, competitor_id } = body
+  const { client_id, website, competitor_id, max_pages } = body
 
   if (!competitor_id && !client_id) {
     return NextResponse.json({ error: 'client_id is required' }, { status: 400 })
@@ -487,13 +487,65 @@ export async function POST(req: NextRequest) {
 
     const baseUrl = normaliseBaseUrl(comp.url)
     if (!baseUrl) return NextResponse.json({ error: 'Competitor site URL is invalid.' }, { status: 400 })
+    const requestedMaxPages = Number(max_pages)
+    const competitorMaxPages = Number.isFinite(requestedMaxPages) && requestedMaxPages > 0
+      ? Math.min(Math.max(Math.floor(requestedMaxPages), 1), 500)
+      : COMPETITOR_MAX_PAGES
     const sitemapDiscovery = await fetchSitemapUrls(baseUrl)
-    const sitemapUrls = prioritiseUrls(sitemapDiscovery.urls, baseUrl, COMPETITOR_MAX_PAGES - 1)
+    const sitemapUrls = prioritiseUrls(sitemapDiscovery.urls, baseUrl, competitorMaxPages > 100 ? competitorMaxPages : Math.max(competitorMaxPages - 1, 1))
+
+    if (sitemapUrls.length > 0 && competitorMaxPages > 100) {
+      const now = new Date().toISOString()
+      const sitemapPages = sitemapUrls.slice(0, competitorMaxPages).map(url => ({
+        workspace_id: compWorkspaceId,
+        competitor_id,
+        client_id: competitorClientId,
+        url,
+        title: null,
+        h1: null,
+        meta_description: null,
+        word_count: null,
+        content: null,
+        content_summary: null,
+        headings: [],
+        internal_links: [],
+        source: 'sitemap_only',
+        crawled_at: now,
+      }))
+
+      let storageWarning: string | null = null
+      try {
+        storageWarning = await insertCompetitorPages(sitemapPages, competitor_id)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Failed to store competitor sitemap URLs.'
+        return NextResponse.json({ error: message }, { status: 500 })
+      }
+
+      await supabase.from('competitor_sites').update({ last_crawled_at: now }).eq('id', competitor_id)
+
+      return NextResponse.json({
+        success: true,
+        pages_crawled: sitemapPages.length,
+        sitemap_pages_found: sitemapDiscovery.urls.length,
+        sitemaps_checked: sitemapDiscovery.checked.length,
+        mode: 'sitemap_only',
+        storage_warning: storageWarning,
+        competitor: comp.name,
+      })
+    }
+
+    if (competitorMaxPages > 100 && sitemapUrls.length === 0) {
+      return NextResponse.json({
+        error: 'No sitemap URLs found for full import.',
+        details: noPagesDetails({ attempted: 0, sitemapUrlCount: sitemapDiscovery.urls.length, usingSitemap: false, failures: sitemapDiscovery.failures }),
+      }, { status: 400 })
+    }
+
     const usingSitemap = sitemapUrls.length > 0
     const queue = usingSitemap ? uniqueUrls([baseUrl, ...sitemapUrls]) : [baseUrl]
     const crawlResult = await crawlPageQueue({
       initialQueue: queue,
-      maxPages: COMPETITOR_MAX_PAGES,
+      maxPages: competitorMaxPages,
       usingSitemap,
       buildPage: ({ finalUrl, title, h1, metaDesc, wordCount, links, headings, content, summary }) => ({
         workspace_id: compWorkspaceId,

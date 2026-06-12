@@ -78,7 +78,12 @@ Never print internal tool calls, JSON tool plans, or arrays like [{"tool_name": 
 
 Always reconcile all available data sources before drawing conclusions. If the keyword bank says a keyword is untargeted but the knowledge panel shows a live page covering that topic, say so — and read that page before recommending new content on the same angle.
 
-- Use update_agent_notes at the end of any conversation where you learned something useful about a client — preferences, patterns, things to avoid, tone adjustments. This persists across sessions and makes you more useful over time.`)
+KNOWLEDGE PANEL UPDATES - you must keep your knowledge panel current:
+- Call update_agent_notes after EVERY session where you learn something useful: any data point about what is working, what the client told you, competitor findings, content performance signals, strategic decisions made, topics to avoid, or upcoming priorities.
+- Do not wait until the end if something important emerges early - call it as soon as you have something worth recording.
+- Structure your notes as: { "learned": [...], "recommendations": [...], "pending": [...], "client_context": {...} }
+- "client_context" should accumulate facts about the client that are not in their profile: things they have told you, preferences you have observed, their audience's specific concerns, and what angles perform well.
+- Be specific. "The client prefers a reassuring tone" is useful. "We wrote about ear wax removal" is not.`)
 
   // Client context
   if (clients.length > 0) {
@@ -279,28 +284,30 @@ PROACTIVE RESPONSIBILITIES:
 Use publish_content with the output_id to publish approved drafts. Always confirm the draft is approved first. Report the live URL when done.`)
   }
 
-  parts.push(`IMAGE GENERATION:
+  const imageTone = clients.length === 1
+    ? (clients[0].content_tone || clients[0].brand_voice || 'professional and approachable')
+    : 'the relevant client brand voice and tone from the CLIENTS section'
+  const imageLocation = clients.length === 1
+    ? (clients[0].location_info || 'North East England')
+    : 'the relevant client location from the CLIENTS section'
+
+  parts.push(`IMAGE GENERATION - SCHEMA prompts must be specific to this client and this article:
 Always use generate_images in a single call with an array — never separate calls per image.
 Generate images AFTER writing the content, not before. Prompts must be derived from the actual post content.
 - Only call generate_images for NEW content, never for revisions
 - If the user asks you to revise, edit, expand or rewrite existing content, always set is_revision: true in write_content and skip generate_images entirely
 - If is_revision is true in your write_content call, do NOT call generate_images — proceed directly to suggest_internal_links
 
-Use the SCHEMA methodology for every prompt (Structured Components for Harmonized Engineered Modular Architecture):
-- SUBJECT: Who or what is the main focus. Specific — not "a person" but "a woman in her 60s seated in a living room armchair"
-- CONTEXT: The environment, setting, and spatial relationships. Real locations, not abstract or studio backgrounds.
-- LIGHTING: Specific light quality. Use Kelvin temperature or descriptive terms (4500K overcast window light, warm afternoon sun through net curtains).
-- ATMOSPHERE: The emotional register and mood. What does it feel like to be in this image?
-- CAMERA: Focal length and shooting style (35mm documentary, 85mm portrait, wide editorial).
-- STYLE: Photographic reference (Guardian Weekend editorial, BBC lifestyle documentary, Magnum street).
-- MANDATORY: Non-negotiable elements that must appear.
-- PROHIBITIONS: What must not appear. Be explicit.
+Rules:
+- Never generate generic stock-photo-style images. Every image must be specific to the article content and the client's context.
+- Subject: name the exact service, location, person type, or object from the article. Not "audiologist" - "HCPC-registered audiologist conducting a home hearing test in a living room in Sunderland".
+- Style: match the client's brand - ${imageTone}.
+- Location signals: include the client's location (${imageLocation}) where relevant. Local imagery builds trust.
+- Variety: if generating multiple images for one post, each must depict a different scene, angle, or aspect of the content. Never create two similar images.
+- People: if the article mentions specific patient, customer, or audience types, depict them specifically.
+- Avoid: generic white backgrounds, stock photo aesthetics, clip art, illustrations unless the brand explicitly suits them, and anyone who looks like a model.
 
-Derive every element from the post content:
-- The client's location, audience, and brand voice inform the setting and people
-- The topic of the post determines what the image should show
-- The client's ICP determines who appears in the image
-- Never use generic prompts — every prompt must be specific to this post for this client
+For each image prompt, write a full descriptive paragraph (4-6 sentences), not a keyword list. Include who or what is in the scene, the environment, lighting, mood, camera angle, relevant props or text, and the specific article topic. Use the SCHEMA components internally, but the prompt itself should read like a precise creative brief grounded in the client's service, location, audience, and article angle.
 
 Image quality requirements:
 - Photorealistic, natural and candid, never posed or stock-feeling

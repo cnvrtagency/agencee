@@ -23,7 +23,8 @@ export async function POST(req: NextRequest) {
   const body = bodyResult.data as any
 
   const supabase = getSupabaseAdmin()
-  const { client_id, agent_id, session_tokens: sessionTokens, ...anthropicBody } = body
+  const { client_id, agent_id: requestAgentId, agentId, session_tokens: sessionTokens, ...anthropicBody } = body
+  const agent_id = requestAgentId || agentId || null
   const userId = authResult.auth.user.id
 
   if (Number(sessionTokens || 0) >= SESSION_TOKEN_LIMIT) {

@@ -42,10 +42,8 @@ function buildGenerationConfig(model: string, aspectRatio: string, imageSize: st
   }
 
   return {
-    responseModalities: ['TEXT', 'IMAGE'],
-    responseFormat: {
-      image: imageConfig,
-    },
+    responseModalities: ['IMAGE'],
+    imageConfig,
   }
 }
 
