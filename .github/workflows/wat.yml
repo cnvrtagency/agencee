@@ -10,6 +10,16 @@ jobs:
   works-as-tested:
     name: Typecheck and build
     runs-on: ubuntu-latest
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+      NEXT_PUBLIC_SUPABASE_URL: "https://qzyksnszutnorppfqchz.supabase.co"
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: "ci-placeholder"
+      SUPABASE_SERVICE_KEY: "ci-placeholder"
+      ANTHROPIC_API_KEY: "ci-placeholder"
+      GEMINI_API_KEY: "ci-placeholder"
+      ENCRYPTION_KEY: "0123456789abcdef0123456789abcdef"
+      CRON_SECRET: "ci-placeholder"
+      NEXT_PUBLIC_SITE_URL: "http://localhost:3000"
 
     steps:
       - name: Checkout
