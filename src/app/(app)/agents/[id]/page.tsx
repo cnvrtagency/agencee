@@ -939,6 +939,7 @@ export default function AgentPage() {
   const [conversations, setConversations] = useState<Conversation[]>([])
   const [activeConv, setActiveConv] = useState<string | null>(null)
   const [messages, setMessages] = useState<Message[]>([])
+  const [deletingConversationId, setDeletingConversationId] = useState<string | null>(null)
   const [plannedTasks, setPlannedTasks] = useState<PlannedTask[]>([])
   const [sitePages, setSitePages] = useState<Record<string, SitePage[]>>({})
   const [draft, setDraft] = useState('')
@@ -1280,10 +1281,32 @@ export default function AgentPage() {
   async function deleteConversation(convId: string, e: React.MouseEvent) {
     e.stopPropagation()
     if (!confirm('Delete this conversation? This cannot be undone.')) return
-    await supabase.from('messages').delete().eq('conversation_id', convId)
-    await supabase.from('conversations').delete().eq('id', convId)
+    setDeletingConversationId(convId)
+    const { data: sessionData } = await supabase.auth.getSession()
+    const token = sessionData.session?.access_token
+    const res = await fetch(`/api/conversations/${convId}`, {
+      method: 'DELETE',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    })
+    const data = await res.json().catch(() => ({ success: false, error: 'Unexpected response while deleting the conversation' }))
+    setDeletingConversationId(null)
+    if (!res.ok || !data.success) {
+      alert(data.error || 'Could not delete this conversation')
+      void loadConversations()
+      return
+    }
     setConversations(prev => prev.filter(c => c.id !== convId))
-    if (activeConv === convId) { setActiveConv(null); setMessages([]) }
+    const rememberedConv = localStorage.getItem(`agencee_last_conv_${id}`)
+    const url = new URL(window.location.href)
+    if (rememberedConv === convId) localStorage.removeItem(`agencee_last_conv_${id}`)
+    if (url.searchParams.get('conversation') === convId) {
+      url.searchParams.delete('conversation')
+      window.history.replaceState(null, '', url.toString())
+    }
+    if (activeConv === convId) {
+      setActiveConv(null)
+      setMessages([])
+    }
   }
 
   async function loadMessages(convId: string) {
@@ -3056,8 +3079,9 @@ Reply with JSON only using exactly these keys:
                     <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 2, fontFamily: 'var(--font-mono)' }}>{fmt(c.created_at)}</div>
                   </button>
                   <button className="del-btn" onClick={(e) => deleteConversation(c.id, e)}
+                    disabled={deletingConversationId === c.id}
                     style={{ position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-2)', fontSize: 14, padding: '2px 4px', borderRadius: 4, opacity: 0, transition: 'opacity 0.15s' }}
-                    title="Delete conversation">✕</button>
+                    title="Delete conversation">{deletingConversationId === c.id ? '…' : '✕'}</button>
                 </div>
               ))}
             </div>
