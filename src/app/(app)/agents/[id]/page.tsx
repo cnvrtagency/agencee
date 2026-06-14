@@ -407,7 +407,7 @@ Use publish_content with the output_id to publish approved drafts. Always confir
 Always use generate_images in a single call with an array — never separate calls per image.
 Generate images AFTER writing the content, not before. Prompts must be derived from the actual post content.
 - Only call generate_images for NEW content, never for revisions
-- If the user asks you to revise, edit, expand or rewrite an existing draft, first call read_output_draft with the output ID if provided.
+- If the user asks you to revise, edit, expand or rewrite an existing draft, first call read_output_draft. Use the output ID if provided; otherwise search by client_name plus the article title or keyword.
 - Save revisions to existing drafts with update_output_draft, not write_content. Only use write_content for brand-new drafts.
 - For revisions, skip generate_images unless the user explicitly asks for new images or image embedding. If they do ask for images, generate them, embed their Supabase URLs in the revised markdown, and pass them to update_output_draft.
 
@@ -505,13 +505,14 @@ Required frontmatter fields:
   },
   {
     name: 'read_output_draft',
-    description: 'Read an existing draft from content_outputs by output_id before revising it. Use this whenever the user asks to revise, edit, expand, add images to, or review an existing draft.',
+    description: 'Read an existing draft from content_outputs before revising it. Use output_id when provided. If the user only gives a title or keyword, search using client_name and query. Use this whenever the user asks to revise, edit, expand, add images to, or review an existing draft.',
     input_schema: {
       type: 'object',
       properties: {
-        output_id: { type: 'string', description: 'The content_outputs ID of the draft to read' },
+        output_id: { type: 'string', description: 'The content_outputs ID of the draft to read, if known' },
+        client_name: { type: 'string', description: 'Client name to narrow the search when output_id is not known' },
+        query: { type: 'string', description: 'Draft title, primary keyword, or topic to search for when output_id is not known' },
       },
-      required: ['output_id'],
     },
   },
   {
@@ -1392,12 +1393,45 @@ export default function AgentPage() {
     // ── read_output_draft: load an existing draft for revision ────────────────
     if (toolName === 'read_output_draft') {
       try {
-        const { data: output, error } = await supabase
+        let query = supabase
           .from('content_outputs')
-          .select('id, client_id, title, content, primary_keyword, meta_description, word_count, images, approved, published_url, current_version, client_profiles(name)')
-          .eq('id', toolInput.output_id)
-          .single()
+          .select('id, client_id, title, content, primary_keyword, meta_description, word_count, images, approved, published_url, current_version, created_at, client_profiles(name)')
+          .order('created_at', { ascending: false })
+
+        if (toolInput.output_id) {
+          query = query.eq('id', toolInput.output_id).limit(1)
+        } else {
+          const clientMatch = toolInput.client_name
+            ? clients.find(c => c.name.toLowerCase().includes(String(toolInput.client_name).toLowerCase()) || String(toolInput.client_name).toLowerCase().includes(c.name.toLowerCase()))
+            : null
+          if (clientMatch) query = query.eq('client_id', clientMatch.id)
+          const search = String(toolInput.query || '').trim()
+          if (search) {
+            const escaped = search.replace(/[%_]/g, '\\$&')
+            query = query.or(`title.ilike.%${escaped}%,primary_keyword.ilike.%${escaped}%`)
+          }
+          query = query.is('published_url', null).limit(5)
+        }
+
+        const { data: rows, error } = await query
+        const matches = rows || []
+        const output = matches[0]
         if (error || !output) return JSON.stringify({ success: false, error: 'Draft not found.' })
+        if (!toolInput.output_id && matches.length > 1) {
+          return JSON.stringify({
+            success: false,
+            needs_selection: true,
+            message: 'Multiple matching drafts found. Ask the user which output_id to revise.',
+            matches: matches.map((m: any) => ({
+              output_id: m.id,
+              title: m.title,
+              primary_keyword: m.primary_keyword,
+              client_name: m.client_profiles?.name || '',
+              created_at: m.created_at,
+              review_url: `/outputs/${m.id}`,
+            })),
+          })
+        }
         return JSON.stringify({
           success: true,
           output_id: output.id,
