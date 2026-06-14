@@ -7,7 +7,7 @@ Last updated: 2026-06-11 | Session: UX Fixes Pass
 
 ## What This Is
 
-Agencee is a single-tenant SaaS for an agency owner (Dan) to run AI-powered SEO content operations for clients. Two AI agents — Ada (SEO/content) and Theo (technical publishing) — live inside a Next.js 14 app backed by Supabase. Dan briefs Ada in a chat UI, Ada plans + writes content using tool calls, Dan reviews + approves drafts, then publishes them to the client's GitHub repo in one atomic commit.
+Agencee is an internal agent platform for agency work. SEO/content operations is the first production vertical, led by Ada, but the product direction is broader: multiple specialist agents should share the same clients, knowledge, conversations, jobs, outputs, automations, publishing paths, usage tracking, and marketplace shell. Theo is the current technical publishing agent. The app runs on Next.js 16 / React 19 with Supabase.
 
 **Production URL:** Runs on Vercel. Dev: `http://localhost:3000`  
 **Supabase project:** `https://qzyksnszutnorppfqchz.supabase.co`  
@@ -19,7 +19,7 @@ Agencee is a single-tenant SaaS for an agency owner (Dan) to run AI-powered SEO 
 
 | Layer | Choice | Notes |
 |---|---|---|
-| Framework | Next.js 14 App Router | TypeScript throughout |
+| Framework | Next.js 16 App Router | React 19, TypeScript throughout |
 | Styling | CSS custom properties only | No Tailwind — all inline CSS objects with `var(--token)` |
 | Database | Supabase (PostgreSQL) | RLS on all tables |
 | AI models | Anthropic API | `claude-sonnet-4-6` in chat, `claude-opus-4-8` in scheduler |

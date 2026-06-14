@@ -1,4 +1,8 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Agencee
+
+Agencee is CNVRT's internal AI agent platform for agency operations. SEO/content is the first production vertical through Ada, with Theo handling technical publishing; future agents should reuse the same client knowledge, conversations, jobs, outputs, automations, usage, and marketplace primitives.
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the living system map and [WAT.md](WAT.md) for the pre-deploy verification checklist.
 
 ## Getting Started
 

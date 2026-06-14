@@ -7,7 +7,9 @@ Last updated: 12 June 2026. Session: continuation turns and durable debrief writ
 
 ## What Agencee is
 
-Internal AI agent SaaS for CNVRT (Dan's Manchester digital agency). AI agents handle SEO strategy, content production, keyword planning, site analysis, and publishing for clients. Eventually reseller-ready. Not currently client-facing.
+Internal AI agent platform for CNVRT (Dan's Manchester digital agency). Agencee is not "an SEO tool"; it is the operating layer for specialist agents that do useful agency work against shared clients, knowledge, schedules, outputs, automations, and integrations.
+
+The first production vertical is SEO/content operations: Ada handles strategy, keyword planning, GSC analysis, content production, site analysis, and briefing intelligence; Theo handles technical publishing. Future agents should plug into the same platform primitives rather than creating isolated apps: agent profiles, tools, conversations, client knowledge, outputs, jobs, activity, usage, and marketplace installation. Eventually reseller-ready. Not currently client-facing.
 
 ---
 
@@ -137,7 +139,7 @@ Theo reads approved drafts and publishes them to client platforms.
 
 ### Marketplace agents (not yet built)
 
-Exist as cards in `/marketplace` only. No agent_type, tools, or system prompt.
+Exist as cards in `/marketplace` only. No agent_type, tools, or system prompt. Treat these as examples of the broader platform direction: Agencee should become a home for multiple specialist agents, with SEO simply the first complete capability set.
 
 | Name | Intended role |
 |---|---|
@@ -146,6 +148,14 @@ Exist as cards in `/marketplace` only. No agent_type, tools, or system prompt.
 | Scout | Competitor intelligence and monitoring |
 | Ellie | E-commerce copywriting (Shopify/WooCommerce) |
 | Theo (marketplace) | Technical SEO auditor — separate from publisher Theo |
+
+### Agent expansion principles
+
+- New agents should reuse shared platform surfaces where possible: `/agents`, conversations/messages, `agent_activity`, `planned_tasks`, usage accounting, scheduled jobs, client knowledge, and output review.
+- Add new `agent_type` values only when the agent needs materially different tools, prompt context, automations, or output lifecycle rules.
+- Domain-specific knowledge belongs in client knowledge docs, agent notes, or a domain digest table, not hardcoded into generic chat or publishing flows.
+- Every expensive agent capability must use the same auth, workspace ownership, rate limit, budget, and token usage patterns as Ada/Theo.
+- Marketplace cards should not become "real" until the agent has a prompt, tool contract, navigation, permissions, and at least one verified end-to-end workflow.
 
 ---
 

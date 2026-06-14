@@ -1,24 +1,24 @@
 # Agencee — Technical Documentation
 
-Internal agency operations dashboard. Multi-tenant SaaS for agency owners to manage AI agents, brief content tasks, review drafts, track keyword performance, and monitor client SEO health.
+Internal agency agent platform. Multi-tenant SaaS for agency owners to manage specialist AI agents, shared client knowledge, agent work queues, outputs, automations, publishing, usage, and reporting. SEO/content operations is the first production vertical, not the limit of the product.
 
 ---
 
 ## Overview
 
-1. Dan briefs Ada (SEO agent) in chat
-2. Ada plans content, suggests keywords, builds calendars, queues tasks via tool use
-3. Content is queued and run against the Claude API; drafts saved automatically
-4. Dan reviews, approves, and publishes outputs from the dashboard
-5. Autonomous schedules run per-client; Ada proactively surfaces opportunities from GSC data
-6. Monthly reports auto-generated on the 1st of each month
+1. Dan works with specialist agents from a shared platform shell
+2. Ada, the first production agent, handles SEO strategy, content planning, GSC intelligence, and draft creation
+3. Theo handles technical publishing and repo/platform operations
+4. Future agents should reuse the same client knowledge, conversations, jobs, outputs, activity, usage, and marketplace primitives
+5. Dan reviews, approves, and publishes outputs from the dashboard
+6. Autonomous schedules run per-client, with reports and briefing intelligence generated automatically
 
 ---
 
 ## Tech Stack
 
 **Frontend / UI**
-- Next.js 14 (App Router), TypeScript
+- Next.js 16 (App Router), React 19, TypeScript
 - CSS custom properties only — all inline CSS objects, no Tailwind utilities
 - Google Fonts: Instrument Serif (display/wordmark), Inter (body), JetBrains Mono (data)
 - CSS vars: `--bg`, `--surface`, `--surface-2`, `--surface-3`, `--border`, `--border-bright`, `--text`, `--text-2`, `--text-dim`, `--accent`, `--accent-hover`, `--accent-glow`, `--accent-bg`, `--green`, `--green-bg`, `--amber`, `--amber-bg`, `--red`, `--red-bg`, `--purple`, `--purple-bg`, `--font-sans`, `--font-mono`, `--font-display`, `--radius`, `--radius-md`, `--radius-lg`

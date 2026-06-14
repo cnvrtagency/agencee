@@ -407,8 +407,9 @@ Use publish_content with the output_id to publish approved drafts. Always confir
 Always use generate_images in a single call with an array — never separate calls per image.
 Generate images AFTER writing the content, not before. Prompts must be derived from the actual post content.
 - Only call generate_images for NEW content, never for revisions
-- If the user asks you to revise, edit, expand or rewrite existing content, always set is_revision: true in write_content and skip generate_images entirely
-- If is_revision is true in your write_content call, do NOT call generate_images — proceed directly to suggest_internal_links
+- If the user asks you to revise, edit, expand or rewrite an existing draft, first call read_output_draft with the output ID if provided.
+- Save revisions to existing drafts with update_output_draft, not write_content. Only use write_content for brand-new drafts.
+- For revisions, skip generate_images unless the user explicitly asks for new images or image embedding. If they do ask for images, generate them, embed their Supabase URLs in the revised markdown, and pass them to update_output_draft.
 
 Rules:
 - Never generate generic stock-photo-style images. Every image must be specific to the article content and the client's context.
@@ -500,6 +501,40 @@ Required frontmatter fields:
         },
       },
       required: ['client_name', 'content', 'title', 'slug', 'primary_keyword']
+    },
+  },
+  {
+    name: 'read_output_draft',
+    description: 'Read an existing draft from content_outputs by output_id before revising it. Use this whenever the user asks to revise, edit, expand, add images to, or review an existing draft.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        output_id: { type: 'string', description: 'The content_outputs ID of the draft to read' },
+      },
+      required: ['output_id'],
+    },
+  },
+  {
+    name: 'update_output_draft',
+    description: 'Update an existing content_outputs draft after revising it. This preserves version history and should be used instead of write_content for draft feedback/revisions.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        output_id: { type: 'string', description: 'The content_outputs ID of the draft to update' },
+        content: { type: 'string', description: 'Full revised markdown content including YAML frontmatter' },
+        title: { type: 'string' },
+        meta_description: { type: 'string' },
+        primary_keyword: { type: 'string' },
+        images: {
+          type: 'array',
+          description: 'Images to save on the output after revision',
+          items: { type: 'object', properties: {
+            url: { type: 'string' }, alt_text: { type: 'string' },
+            filename: { type: 'string' }, storage_path: { type: 'string' }
+          } }
+        },
+      },
+      required: ['output_id', 'content'],
     },
   },
   {
@@ -927,6 +962,8 @@ export default function AgentPage() {
     generate_images: 'Generating images with Nano Banana…',
     get_keywords: 'Loading keyword bank…',
     write_content: 'Saving draft…',
+    read_output_draft: 'Reading draft…',
+    update_output_draft: 'Updating draft…',
     publish_content: 'Publishing…',
     suggest_keyword: 'Saving keyword suggestion…',
     create_content_plan: 'Building content calendar…',
@@ -1189,6 +1226,14 @@ export default function AgentPage() {
     setPlannedTasks(data || [])
   }
 
+  function rememberActiveConversation(convId: string) {
+    setActiveConv(convId)
+    localStorage.setItem(`agencee_last_conv_${id}`, convId)
+    const url = new URL(window.location.href)
+    url.searchParams.set('conversation', convId)
+    window.history.replaceState(null, '', url.toString())
+  }
+
   async function newConversation() {
     let uid = userId
     if (!uid) {
@@ -1200,7 +1245,7 @@ export default function AgentPage() {
     localStorage.removeItem(`agencee_last_conv_${id}`)
     setActiveClientContext(clients.length === 1 ? clients[0].id : null)
     const { data } = await supabase.from('conversations').insert({ agent_id: id, title: 'New conversation', user_id: uid }).select().single()
-    if (data) { setConversations(prev => [data, ...prev]); setActiveConv(data.id); setMessages([]) }
+    if (data) { setConversations(prev => [data, ...prev]); rememberActiveConversation(data.id); setMessages([]) }
   }
 
   async function deleteConversation(convId: string, e: React.MouseEvent) {
@@ -1213,11 +1258,7 @@ export default function AgentPage() {
   }
 
   async function loadMessages(convId: string) {
-    setActiveConv(convId)
-    localStorage.setItem(`agencee_last_conv_${id}`, convId)
-    const url = new URL(window.location.href)
-    url.searchParams.set('conversation', convId)
-    window.history.replaceState(null, '', url.toString())
+    rememberActiveConversation(convId)
     const { data } = await supabase.from('messages').select('*').eq('conversation_id', convId).order('created_at')
     const parsed = (data || []).map((m: any) => {
       if (m.role !== 'assistant') return m
@@ -1346,6 +1387,94 @@ export default function AgentPage() {
 
         return JSON.stringify({ success: true, output_id: output.id, message: 'Draft saved successfully. Title: "' + toolInput.title + '". It is now in your Outputs queue for review at /outputs/' + output.id + '.', review_url: '/outputs/' + output.id })
       } catch (e: any) { return JSON.stringify({ success: false, error: e?.message || 'Failed to save draft.' }) }
+    }
+
+    // ── read_output_draft: load an existing draft for revision ────────────────
+    if (toolName === 'read_output_draft') {
+      try {
+        const { data: output, error } = await supabase
+          .from('content_outputs')
+          .select('id, client_id, title, content, primary_keyword, meta_description, word_count, images, approved, published_url, current_version, client_profiles(name)')
+          .eq('id', toolInput.output_id)
+          .single()
+        if (error || !output) return JSON.stringify({ success: false, error: 'Draft not found.' })
+        return JSON.stringify({
+          success: true,
+          output_id: output.id,
+          client_name: (output as any).client_profiles?.name || '',
+          title: output.title,
+          primary_keyword: output.primary_keyword,
+          meta_description: output.meta_description,
+          word_count: output.word_count,
+          images: output.images || [],
+          approved: output.approved,
+          published_url: output.published_url,
+          current_version: output.current_version || 1,
+          content: output.content,
+        })
+      } catch (e: any) { return JSON.stringify({ success: false, error: e?.message || 'Failed to read draft.' }) }
+    }
+
+    // ── update_output_draft: revise an existing content_outputs draft ─────────
+    if (toolName === 'update_output_draft') {
+      try {
+        const { data: existing, error: loadError } = await supabase
+          .from('content_outputs')
+          .select('*')
+          .eq('id', toolInput.output_id)
+          .single()
+        if (loadError || !existing) return JSON.stringify({ success: false, error: 'Draft not found.' })
+        if (existing.published_url) return JSON.stringify({ success: false, error: 'This output is already published. Ask Theo to update the live site instead.' })
+
+        const currentVersion = existing.current_version || 1
+        await supabase.from('output_versions').insert({
+          output_id: existing.id,
+          version_number: currentVersion,
+          content: existing.content,
+          title: existing.title,
+          meta_description: existing.meta_description,
+          word_count: existing.word_count,
+          edited_by: 'ada',
+        })
+
+        const cleaned = cleanContent(toolInput.content || '')
+        const wordCount = cleaned.replace(/^---[\s\S]*?---\s*/, '').trim().split(/\s+/).filter(Boolean).length
+        const update: Record<string, any> = {
+          content: cleaned,
+          word_count: wordCount,
+          current_version: currentVersion + 1,
+          last_edited_at: new Date().toISOString(),
+        }
+        if (toolInput.title) update.title = toolInput.title
+        if (toolInput.meta_description) update.meta_description = toolInput.meta_description
+        if (toolInput.primary_keyword) update.primary_keyword = toolInput.primary_keyword
+        if (Array.isArray(toolInput.images)) update.images = toolInput.images
+
+        const { data: updated, error: updateError } = await supabase
+          .from('content_outputs')
+          .update(update)
+          .eq('id', existing.id)
+          .select('id, title, word_count, images')
+          .single()
+        if (updateError || !updated) return JSON.stringify({ success: false, error: updateError?.message || 'Failed to update draft.' })
+
+        pendingDraftCardRef.current = {
+          title: updated.title || toolInput.title || existing.title || 'Revised draft',
+          word_count: updated.word_count || wordCount,
+          image_count: (updated.images || []).length,
+          review_url: `/outputs/${existing.id}`,
+        }
+        draftSavedRef.current = true
+
+        return JSON.stringify({
+          success: true,
+          output_id: existing.id,
+          review_url: `/outputs/${existing.id}`,
+          word_count: updated.word_count || wordCount,
+          image_count: (updated.images || []).length,
+          message: 'Draft updated successfully. Review at /outputs/' + existing.id + '.',
+        })
+      } catch (e: any) { return JSON.stringify({ success: false, error: e?.message || 'Failed to update draft.' }) }
     }
 
     // ── publish_content: publish an approved draft to the client site (Theo) ───
@@ -2159,7 +2288,10 @@ How to use this brief:
     if (!convId) {
       const { data, error } = await supabase.from('conversations').insert({ agent_id: id, title: draftText.slice(0, 60), user_id: uid }).select().single()
       if (!data) { console.error('Failed to create conversation:', error?.message); return }
-      convId = data.id; setActiveConv(convId); setConversations(prev => [data, ...prev])
+      const newConvId = data.id as string
+      convId = newConvId
+      rememberActiveConversation(newConvId)
+      setConversations(prev => [data, ...prev])
     }
     const displayUserMsg: Message = { id: crypto.randomUUID(), role: 'user', content: draftText, created_at: new Date().toISOString() }
     const isContinuation = (
@@ -2182,6 +2314,26 @@ How to use this brief:
     setThoughts([]); thoughtsRef.current = []
     pendingDraftCardRef.current = null
     await supabase.from('messages').insert({ conversation_id: convId, role: 'user', content: displayUserMsg.content, user_id: uid })
+    let assistantMessageId: string | null = null
+    const workingContent = () => encodeMessageMeta('Working...', taskLogRef.current, thoughtsRef.current.map(stripToolCallJson).filter(Boolean))
+    const { data: assistantRow, error: assistantInsertError } = await supabase
+      .from('messages')
+      .insert({ conversation_id: convId, role: 'assistant', content: workingContent(), user_id: uid })
+      .select('id, created_at')
+      .single()
+    if (assistantRow?.id) {
+      assistantMessageId = assistantRow.id
+    } else if (assistantInsertError) {
+      console.error('[chat] failed to persist working assistant message:', assistantInsertError.message)
+    }
+    const persistProgress = async () => {
+      if (!assistantMessageId) return
+      const { error } = await supabase
+        .from('messages')
+        .update({ content: workingContent() })
+        .eq('id', assistantMessageId)
+      if (error) console.error('[chat] failed to persist progress:', error.message)
+    }
     const promptActiveClientId = detectClientIdFromText(userMsg.content)
       || activeClientIdRef.current
       || activeClientId
@@ -2198,10 +2350,12 @@ How to use this brief:
       const entry: TaskEntry = { label, done, ts: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }
       taskLogRef.current = [...taskLogRef.current, entry]
       setTaskLog([...taskLogRef.current])
+      void persistProgress()
     }
     const completeLastTask = () => {
       taskLogRef.current = taskLogRef.current.map((t, i) => i === taskLogRef.current.length - 1 ? { ...t, done: true } : t)
       setTaskLog([...taskLogRef.current])
+      void persistProgress()
     }
     // Build agentic message loop — keeps going until Ada stops using tools
     // Strip any __META__ prefixes that snuck into state (defensive decode)
@@ -2217,7 +2371,15 @@ How to use this brief:
     const saveReply = async (reply: string) => {
       const cleanReply = addContinueSuggestion(stripToolCallJson(reply) || 'Done.')
       const stored = encodeMessageMeta(cleanReply, taskLogRef.current, thoughtsRef.current.map(stripToolCallJson).filter(Boolean))
-      await supabase.from('messages').insert({ conversation_id: convId, role: 'assistant', content: stored, user_id: uid })
+      if (assistantMessageId) {
+        const { error } = await supabase.from('messages').update({ content: stored }).eq('id', assistantMessageId)
+        if (error) {
+          console.error('[chat] failed to update assistant reply:', error.message)
+          await supabase.from('messages').insert({ conversation_id: convId, role: 'assistant', content: stored, user_id: uid })
+        }
+      } else {
+        await supabase.from('messages').insert({ conversation_id: convId, role: 'assistant', content: stored, user_id: uid })
+      }
       await supabase.from('conversations').update({ updated_at: new Date().toISOString(), title: displayUserMsg.content.slice(0, 60) }).eq('id', convId)
       setMessages(prev => prev.map(m => m.id === placeholder.id ? { ...m, content: cleanReply, _taskLog: [...taskLogRef.current], _thoughts: thoughtsRef.current.map(stripToolCallJson).filter(Boolean), _draftCard: pendingDraftCardRef.current || undefined } : m))
     }
@@ -2308,6 +2470,7 @@ How to use this brief:
         if (thinkingText) {
           thoughtsRef.current = [...thoughtsRef.current, thinkingText]
           setThoughts([...thoughtsRef.current])
+          void persistProgress()
         }
 
         if (data.stop_reason === 'tool_use') {
@@ -2352,6 +2515,7 @@ How to use this brief:
               idx === taskIndices[i] ? { ...t, done: true } : t
             )
             setTaskLog([...taskLogRef.current])
+            void persistProgress()
             // Trim large tool results before storing in history (read_file, audit_site can return 80KB+)
             const MAX_RESULT = 8000
             const trimmedResult = result.length > MAX_RESULT
@@ -2812,12 +2976,12 @@ Reply with JSON only using exactly these keys:
                       <div style={{ fontSize: 10, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: 8 }}>Quick actions</div>
                       <div style={{ display: 'flex', flexWrap: 'wrap' as const, gap: 6 }}>
                         {[
-                          { label: '🔍 Audit site', msg: `Audit the site for ${clients[0]?.name || 'the client'}. Call audit_site, identify the most impactful SEO issues, prioritise them, and tell me what to fix first.` },
-                          { label: '✍️ Write blog post', msg: `Write a complete, publish-ready blog post for ${clients[0]?.name || 'the client'}. Check search_history first to avoid repeating angles, then ask me for the target keyword before starting.` },
-                          { label: '🔁 Rewrite article', msg: `I need to rewrite an existing article. Call search_history for ${clients[0]?.name || 'the client'}, then ask me which piece to rework. Once I confirm, rewrite it as clean markdown with fresh SEO-named images and save it with write_content for review.` },
-                          { label: '📋 Content plan', msg: `Review the keyword bank and content history for ${clients[0]?.name || 'the client'}, then propose a 4-week content plan. For each piece include: target keyword, angle, content type, and why it's the right next move.` },
-                          { label: '🔗 Fix broken links', msg: `Audit the site for ${clients[0]?.name || 'the client'} and find any pages with placeholder or broken internal links. Read those files and fix the links to point to real pages from the site inventory.` },
-                          { label: '📈 Keyword gaps', msg: `Look at the keyword bank and content history for ${clients[0]?.name || 'the client'}. Identify the most valuable keyword gaps — high intent queries we haven't targeted yet — and recommend the top 5 to write next with a brief angle for each.` },
+                          { label: '🔍 Audit site', msg: 'Audit a client site and prioritise the most impactful issues. Ask me which client first.' },
+                          { label: '✍️ Write blog post', msg: 'Write a complete, publish-ready blog post. Ask me which client and target keyword before starting.' },
+                          { label: '🔁 Rewrite article', msg: 'Help me rewrite an existing article. Ask me which client and which piece to rework first.' },
+                          { label: '📋 Content plan', msg: 'Create a 4-week content plan. Ask me which client to plan for before starting.' },
+                          { label: '🔗 Fix broken links', msg: 'Find and prioritise broken or placeholder internal links. Ask me which client site to check first.' },
+                          { label: '📈 Keyword gaps', msg: 'Find the most valuable keyword gaps. Ask me which client to analyse before starting.' },
                         ].map(({ label, msg }) => (
                           <button key={label} onClick={() => { setDraft(msg) }} style={{ background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 99, padding: '5px 12px', fontSize: 12, color: 'var(--text-2)', cursor: 'pointer', transition: 'all 0.12s', whiteSpace: 'nowrap' as const }}
                             onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--brand)'; e.currentTarget.style.color = 'var(--text)' }}

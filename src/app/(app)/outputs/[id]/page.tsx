@@ -94,7 +94,7 @@ export default function OutputDetail() {
   useEffect(() => {
     if (!id) return
     supabase.auth.getUser().then(({ data }) => setUserId(data.user?.id ?? null))
-    supabase.from('agents').select('id').order('created_at').limit(1).maybeSingle().then(({ data }) => setFirstAgentId(data?.id ?? null))
+    supabase.from('agents').select('id').eq('agent_type', 'seo').order('created_at').limit(1).maybeSingle().then(({ data }) => setFirstAgentId(data?.id ?? null))
     supabase.from('content_outputs').select('*, client_profiles(*)').eq('id', id).single().then(({ data }) => {
       setOutput(data)
       setEditContent(data?.content || '')
@@ -124,7 +124,7 @@ export default function OutputDetail() {
     if (feedbackCustom.trim()) selected.push(feedbackCustom.trim())
     if (!selected.length) return null
     const tasks = selected.map((t, i) => `${i + 1}. ${t}`).join('\n')
-    return `Revise the article "${kw}"${client ? ` for ${client}` : ''}. Apply all of the following:\n\n${tasks}\n\nPresent the complete revised article when done.`
+    return `Revise the draft output ${output?.id} titled "${output?.title || kw}"${client ? ` for ${client}` : ''}. Apply all of the following:\n\n${tasks}\n\nFirst read the existing draft by its output ID. Update that same draft when done, do not create a separate new draft. Present the complete revised article when done.`
   }
 
   async function copyContent() {
