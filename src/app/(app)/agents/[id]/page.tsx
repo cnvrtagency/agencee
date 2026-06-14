@@ -876,6 +876,15 @@ function addContinueSuggestion(reply: string): string {
   return `${reply}\n\n<suggestions>\n["Continue"]\n</suggestions>`
 }
 
+function interruptedWorkingReply(taskLog: TaskEntry[]): string {
+  const lastTask = [...taskLog].reverse().find(t => t.done)?.label?.replace('…', '').trim()
+  return [
+    'This run was interrupted by a page refresh before Ada could finish.',
+    lastTask ? `Last completed step: ${lastTask}.` : '',
+    'Please send the request again. If a draft was already saved, review it from Outputs before retrying so work is not duplicated.',
+  ].filter(Boolean).join('\n\n')
+}
+
 function stripToolCallJson(content: string): string {
   let clean = content || ''
   clean = clean.replace(/```(?:json)?\s*([\s\S]*?)```/gi, (block, body) =>
@@ -1008,6 +1017,16 @@ export default function AgentPage() {
   useEffect(() => {
     if (scroller.current) scroller.current.scrollTop = scroller.current.scrollHeight
   }, [messages])
+
+  useEffect(() => {
+    if (!sending) return
+    const warnBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault()
+      event.returnValue = ''
+    }
+    window.addEventListener('beforeunload', warnBeforeUnload)
+    return () => window.removeEventListener('beforeunload', warnBeforeUnload)
+  }, [sending])
 
   // Auto-send when ?send=1 — fires once agent and clients are loaded
   useEffect(() => {
@@ -1261,10 +1280,23 @@ export default function AgentPage() {
   async function loadMessages(convId: string) {
     rememberActiveConversation(convId)
     const { data } = await supabase.from('messages').select('*').eq('conversation_id', convId).order('created_at')
+    const interruptedAssistantIds: Array<{ id: string; content: string }> = []
     const parsed = (data || []).map((m: any) => {
       if (m.role !== 'assistant') return m
       const { content, taskLog, thoughts } = decodeMessageMeta(m.content || '')
-      return { ...m, content: stripToolCallJson(content), _taskLog: taskLog, _thoughts: thoughts.map(stripToolCallJson).filter(Boolean) }
+      const cleanContent = stripToolCallJson(content)
+      if (cleanContent === 'Working...') {
+        const interrupted = interruptedWorkingReply(taskLog)
+        interruptedAssistantIds.push({
+          id: m.id,
+          content: encodeMessageMeta(interrupted, taskLog, thoughts.map(stripToolCallJson).filter(Boolean)),
+        })
+        return { ...m, content: interrupted, _taskLog: taskLog, _thoughts: thoughts.map(stripToolCallJson).filter(Boolean) }
+      }
+      return { ...m, content: cleanContent, _taskLog: taskLog, _thoughts: thoughts.map(stripToolCallJson).filter(Boolean) }
+    })
+    interruptedAssistantIds.forEach(({ id: messageId, content }) => {
+      void supabase.from('messages').update({ content }).eq('id', messageId)
     })
     setMessages(parsed)
     const detectedClientId = detectClientIdFromText(parsed.map((m: any) => m.content || '').join(' '))
