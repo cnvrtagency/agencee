@@ -17,6 +17,19 @@ function countWords(md: string): number {
   return stripped.split(/\s+/).length
 }
 
+function codebaseGitHubConnection(clientId: string): SiteConnection {
+  return {
+    id: 'codebase-github',
+    client_id: clientId,
+    platform: 'github',
+    label: 'GitHub codebase',
+    config: {},
+    status: 'connected',
+    last_tested_at: null,
+    created_at: new Date().toISOString(),
+  }
+}
+
 function relativeTime(d: string): string {
   const diff = Date.now() - new Date(d).getTime()
   const mins = Math.floor(diff / 60000)
@@ -100,8 +113,13 @@ export default function OutputDetail() {
       setEditContent(data?.content || '')
       if (data?.client_id) {
         supabase.from('site_connections').select('*').eq('client_id', data.client_id).then(({ data: conns }) => {
-          setConnections(conns || [])
-          if (conns?.length) setSelectedConnection(conns[0].id)
+          const savedConnections = conns || []
+          const hasGitHubConnection = savedConnections.some(conn => conn.platform === 'github')
+          const nextConnections = data.client_profiles?.github_repo && !hasGitHubConnection
+            ? [...savedConnections, codebaseGitHubConnection(data.client_id)]
+            : savedConnections
+          setConnections(nextConnections)
+          if (nextConnections.length) setSelectedConnection(nextConnections[0].id)
         })
       }
     })
@@ -201,9 +219,14 @@ export default function OutputDetail() {
     setPublishing(true)
     setPublishError('')
     try {
+      const { data: sessionData } = await supabase.auth.getSession()
+      const token = sessionData.session?.access_token
       const res = await fetch('/api/connections/publish', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify({ output_id: output.id, connection_id: selectedConnection }),
       })
       const data = await res.json().catch(() => ({ success: false, error: 'Unexpected response from the publish service' }))
@@ -617,7 +640,7 @@ export default function OutputDetail() {
               {publishing ? (
                 'Transferring images and committing content. This can take up to a minute.'
               ) : connections.length === 0 ? (
-                <>No site connection. <Link href={`/clients/${output.client_id}?tab=connections`} style={{ color: 'var(--accent)' }}>Add one in the client&apos;s Connections tab →</Link></>
+                <>No publishing target. <Link href={`/clients/${output.client_id}?tab=connections`} style={{ color: 'var(--accent)' }}>Add a site connection or connect GitHub in Codebase →</Link></>
               ) : connections.length === 1 ? (
                 <>Publishing to {connections[0].platform} · {connections[0].label || 'Unlabelled'}</>
               ) : null}

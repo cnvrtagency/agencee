@@ -80,8 +80,23 @@ export async function POST(req: NextRequest) {
     // 3. Load connection
     let connection: any = null
     if (connection_id) {
-      const { data } = await supabase.from('site_connections').select('*').eq('id', connection_id).single()
-      connection = data
+      if (connection_id === 'codebase-github') {
+        connection = {
+          id: 'codebase-github',
+          client_id: output.client_id,
+          platform: 'github',
+          label: 'GitHub codebase',
+          config: {},
+        }
+      } else {
+        const { data } = await supabase
+          .from('site_connections')
+          .select('*')
+          .eq('id', connection_id)
+          .eq('client_id', output.client_id)
+          .single()
+        connection = data
+      }
     } else if (output.client_id) {
       const { data } = await supabase
         .from('site_connections')
@@ -90,8 +105,17 @@ export async function POST(req: NextRequest) {
         .limit(1)
       connection = data?.[0] || null
     }
+    if (!connection && client?.github_repo) {
+      connection = {
+        id: 'codebase-github',
+        client_id: output.client_id,
+        platform: 'github',
+        label: 'GitHub codebase',
+        config: {},
+      }
+    }
     if (!connection) {
-      return fail(400, 'No site connection configured for this client. Add one in the client Connections tab.', output_id)
+      return fail(400, 'No site connection or GitHub codebase repo configured for this client.', output_id)
     }
 
     // 4. Slug from frontmatter, falling back to keyword/title
