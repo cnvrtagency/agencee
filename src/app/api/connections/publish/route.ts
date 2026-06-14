@@ -165,7 +165,7 @@ export async function POST(req: NextRequest) {
       }
 
       // Download every image from Supabase Storage; fail hard on any miss
-      const assetsPath: string = config.assets_path || 'next-public/public/assets'
+      const assetsPath: string = config.assets_path || 'public/assets'
       const imageFiles: CommitFile[] = []
       for (const img of images) {
         if (!img?.url || !img?.filename) continue
@@ -216,7 +216,7 @@ export async function POST(req: NextRequest) {
         }
       }
 
-      const contentPath: string = config.content_path || 'next-public/content/posts'
+      const contentPath: string = config.content_path || 'content/posts'
       const mdxPath = `${contentPath}/${slug}.mdx`
       const files: CommitFile[] = [{ path: mdxPath, content: publishContent }, ...imageFiles]
 
