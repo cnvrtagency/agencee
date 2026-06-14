@@ -885,6 +885,14 @@ function interruptedWorkingReply(taskLog: TaskEntry[]): string {
   ].filter(Boolean).join('\n\n')
 }
 
+function shouldUseServerRun(text: string): boolean {
+  const lower = text.toLowerCase()
+  return (
+    /\b(revise|revision|edit|rewrite|expand|update)\b/.test(lower) &&
+    /\b(draft|article|output|content|image|images|embed)\b/.test(lower)
+  )
+}
+
 function stripToolCallJson(content: string): string {
   let clean = content || ''
   clean = clean.replace(/```(?:json)?\s*([\s\S]*?)```/gi, (block, body) =>
@@ -941,6 +949,7 @@ export default function AgentPage() {
   const autoSendRef = useRef(false)
   const taskLogRef = useRef<TaskEntry[]>([])
   const thoughtsRef = useRef<string[]>([])
+  const pollingMessageRef = useRef<string | null>(null)
   const [settings, setSettings] = useState<Partial<Agent>>({})
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -1281,10 +1290,14 @@ export default function AgentPage() {
     rememberActiveConversation(convId)
     const { data } = await supabase.from('messages').select('*').eq('conversation_id', convId).order('created_at')
     const interruptedAssistantIds: Array<{ id: string; content: string }> = []
+    let serverRunMessageId: string | null = null
     const parsed = (data || []).map((m: any) => {
       if (m.role !== 'assistant') return m
       const { content, taskLog, thoughts } = decodeMessageMeta(m.content || '')
       const cleanContent = stripToolCallJson(content)
+      if (cleanContent === 'Run in progress...') {
+        serverRunMessageId = m.id
+      }
       if (cleanContent === 'Working...') {
         const interrupted = interruptedWorkingReply(taskLog)
         interruptedAssistantIds.push({
@@ -1310,6 +1323,90 @@ export default function AgentPage() {
     const lastWithTasks = [...parsed].reverse().find(m => m.role === 'assistant' && m._taskLog?.length > 0)
     setTaskLog(lastWithTasks?._taskLog || [])
     taskLogRef.current = lastWithTasks?._taskLog || []
+    if (serverRunMessageId) {
+      setSending(true)
+      setAgentStatus('Reconnected to server run...')
+      void pollServerRun(convId, serverRunMessageId)
+    }
+  }
+
+  async function pollServerRun(convId: string, assistantMessageId: string) {
+    pollingMessageRef.current = assistantMessageId
+    const poll = async () => {
+      if (pollingMessageRef.current !== assistantMessageId) return
+      const { data } = await supabase
+        .from('messages')
+        .select('*')
+        .eq('id', assistantMessageId)
+        .maybeSingle()
+      if (!data) {
+        setSending(false)
+        setAgentStatus(null)
+        return
+      }
+      const { content, taskLog, thoughts } = decodeMessageMeta(data.content || '')
+      const clean = stripToolCallJson(content)
+      const parsedMessage = {
+        ...data,
+        content: clean,
+        _taskLog: taskLog,
+        _thoughts: thoughts.map(stripToolCallJson).filter(Boolean),
+      }
+      setMessages(prev => {
+        const exists = prev.some(m => m.id === assistantMessageId)
+        return exists
+          ? prev.map(m => m.id === assistantMessageId ? parsedMessage : m)
+          : [...prev, parsedMessage]
+      })
+      setTaskLog(taskLog)
+      taskLogRef.current = taskLog
+      setThoughts(thoughts.map(stripToolCallJson).filter(Boolean))
+      if (clean === 'Run in progress...') {
+        setAgentStatus(taskLog.length ? taskLog[taskLog.length - 1].label : 'Running on server...')
+        window.setTimeout(poll, 2000)
+        return
+      }
+      pollingMessageRef.current = null
+      setSending(false)
+      setAgentStatus(null)
+      void loadConversations()
+    }
+    await poll()
+  }
+
+  async function startServerRun(prompt: string) {
+    setDraft('')
+    setSending(true)
+    setAgentStatus('Starting server run...')
+    setTaskLog([])
+    taskLogRef.current = []
+    setThoughts([])
+    thoughtsRef.current = []
+    try {
+      const headers = await apiJsonHeaders()
+      const res = await fetch('/api/agent-runs', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          agent_id: id,
+          conversation_id: activeConv,
+          prompt,
+          session_tokens: sessionTokensRef.current,
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || !data.success) throw new Error(data.error || 'Failed to start server run.')
+      rememberActiveConversation(data.conversation_id)
+      const userMsg: Message = { id: crypto.randomUUID(), role: 'user', content: prompt, created_at: new Date().toISOString() }
+      const assistantMsg: Message = { id: data.assistant_message_id, role: 'assistant', content: 'Run in progress...', created_at: new Date().toISOString() }
+      setMessages(prev => [...prev, userMsg, assistantMsg])
+      void pollServerRun(data.conversation_id, data.assistant_message_id)
+    } catch (e: any) {
+      const errReply = `⚠️ ${e.message || 'Failed to start server run.'}`
+      setMessages(prev => [...prev, { id: crypto.randomUUID(), role: 'assistant', content: errReply, created_at: new Date().toISOString() }])
+      setSending(false)
+      setAgentStatus(null)
+    }
   }
 
   // Holds the card data for a draft saved by write_content during the current
@@ -2343,6 +2440,10 @@ How to use this brief:
   async function send(submittedDraft?: string) {
     const draftText = (submittedDraft ?? draft).trim()
     if (!draftText || !agent || sending) return
+    if (shouldUseServerRun(draftText)) {
+      await startServerRun(draftText)
+      return
+    }
     // Resolve userId inline so RLS inserts never fail due to async state lag
     let uid = userId
     if (!uid) {
