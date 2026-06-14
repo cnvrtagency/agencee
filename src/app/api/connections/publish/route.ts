@@ -22,6 +22,31 @@ function stripFrontmatter(content: string): string {
   return content.replace(/^---\n[\s\S]*?\n---\n?/, '')
 }
 
+function normalizeHeading(text: string): string {
+  return text
+    .replace(/[*_`[\]()]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase()
+}
+
+function extractFrontmatterTitle(content: string): string | null {
+  const match = content.match(/^---\n[\s\S]*?^title:\s*["']?(.+?)["']?\s*$[\s\S]*?\n---/m)
+  return match?.[1]?.trim() || null
+}
+
+function stripDuplicateBodyH1(content: string, title?: string | null): string {
+  const frontmatter = content.match(/^---\n[\s\S]*?\n---\n?/)?.[0] || ''
+  const expectedTitle = title || extractFrontmatterTitle(content)
+  if (!expectedTitle) return content
+
+  const body = content.slice(frontmatter.length)
+  const h1 = body.match(/^(\s*)#\s+(.+?)\s*#?\s*(?:\r?\n){1,2}/)
+  if (!h1 || normalizeHeading(h1[2]) !== normalizeHeading(expectedTitle)) return content
+
+  return frontmatter + body.slice(h1[0].length).replace(/^\n+/, '')
+}
+
 async function markdownToHtml(markdown: string): Promise<string> {
   return marked.parse(stripFrontmatter(markdown))
 }
@@ -163,6 +188,7 @@ export async function POST(req: NextRequest) {
         ].join('\n')
         publishContent = fm + publishContent
       }
+      publishContent = stripDuplicateBodyH1(publishContent, output.title || output.primary_keyword)
 
       // Download every image from Supabase Storage; fail hard on any miss
       const assetsPath: string = config.assets_path || 'public/assets'
